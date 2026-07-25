@@ -148,7 +148,10 @@ public class CairoDriveLogger {
 			long now = System.currentTimeMillis();
 			if (now - lastCompassLogTime >= COMPASS_LOG_INTERVAL_MS) {
 				lastCompassLogTime = now;
-				log("COMPASS", "heading=" + format(Math.toDegrees(value)) + "deg raw=" + value);
+				// OsmAndLocationProvider#getAngle already returns degrees, normalised to
+				// [-180, 180] by MapUtils#unifyRotationTo360 despite its name. Logged as
+				// delivered so it matches the heading on the FIX and SAMPLE lines.
+				log("COMPASS", "headingDeg=" + format(value));
 			}
 		};
 		provider.addLocationListener(locationListener);
@@ -240,6 +243,8 @@ public class CairoDriveLogger {
 		log("SESSION", "locale=" + Locale.getDefault() + " timezone=" + java.util.TimeZone.getDefault().getID());
 		log("SESSION", "logDir=" + writer.getDirectory().getAbsolutePath()
 				+ " maxFileBytes=" + CairoDriveLogWriter.MAX_FILE_BYTES
+				+ " maxFileAgeMs=" + CairoDriveLogWriter.MAX_FILE_AGE_MS
+				+ " retentionMs=" + CairoDriveLogWriter.MAX_FILE_RETENTION_MS
 				+ " maxFiles=" + CairoDriveLogWriter.MAX_FILES
 				+ " maxTotalBytes=" + CairoDriveLogWriter.MAX_TOTAL_BYTES);
 		logSystemSample();
@@ -373,7 +378,7 @@ public class CairoDriveLogger {
 					.append(" networkEnabled=").append(provider.isNetworkEnabled());
 			Float heading = provider.getHeading();
 			if (heading != null) {
-				builder.append(" heading=").append(format(heading));
+				builder.append(" headingDeg=").append(format(heading));
 			}
 		} catch (Throwable t) {
 			builder.append("gpsStateError=").append(t.getClass().getSimpleName());

@@ -47,6 +47,12 @@ jobs:
     name: Bundle + APK
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      # The `secrets` context is not available in a step-level `if:` - only in a step's
+      # `env:`/`with:`/`run:` and in a job-level `env:` like this one. Testing the secret
+      # directly in the `if:` below would make the whole workflow file fail to parse with
+      # "Unrecognized named-value: 'secrets'", so the presence check is hoisted here.
+      HAS_KEYSTORE: ${{ secrets.CAIRODRIVE_KEYSTORE_BASE64 != '' }}
 
     steps:
       # OsmAnd's build scripts reach out of the module with ../../resources, so the
@@ -120,7 +126,7 @@ jobs:
       # checked-in debug keystore: fine for sideloading, rejected by Google Play.
       - name: Decode release keystore
         id: keystore
-        if: ${{ secrets.CAIRODRIVE_KEYSTORE_BASE64 != '' }}
+        if: env.HAS_KEYSTORE == 'true'
         env:
           KEYSTORE_BASE64: ${{ secrets.CAIRODRIVE_KEYSTORE_BASE64 }}
         run: |

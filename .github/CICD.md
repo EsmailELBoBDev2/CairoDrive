@@ -13,11 +13,13 @@ Two workflows drive this fork.
 osmandapp/OsmAnd@master  ──merge──▶  master  ──merge──▶  dev
 ```
 
-Both merges are committed and pushed automatically. If either one conflicts, the
-workflow runs `git merge --abort`, pushes nothing, and files (or comments on) an issue
-labelled `upstream-sync-conflict` listing the conflicting paths and the commands to
-resolve it locally. The `dev` merge is skipped entirely when `master` conflicted, so a
-partially merged tree can never reach the development branch.
+Each branch is committed and pushed as soon as its own merge is clean. If a merge
+conflicts, the workflow runs `git merge --abort`, leaves that branch untouched, and files
+(or comments on) an issue labelled `upstream-sync-conflict` listing the conflicting paths
+and the commands to resolve it locally. The `dev` merge is skipped entirely when `master`
+conflicted, so a partially merged tree can never reach the development branch — but note
+that a clean `master` is pushed even when `dev` then conflicts, and the issue body says
+which branches actually moved.
 
 `dev` is created from `master` on the first run if it does not exist yet.
 
@@ -131,10 +133,29 @@ Four streams land in the same rotating file set:
 * **crashes** — uncaught exceptions on any thread, with the last known position, flushed
   to disk before the process dies.
 
-Rotation is owned by the app, not by logcat: 8 MB per file, 40 files, 320 MB total
-(`CairoDriveLogWriter`). Writes are queued and drained on a background thread, so logging
-never blocks the UI; if a burst overflows the queue the dropped count is recorded in the
-next file header rather than being silently lost.
+Rotation is owned by the app, not by logcat (`CairoDriveLogWriter`):
+
+| Rule | Value | Effect |
+| --- | --- | --- |
+| `MAX_FILE_BYTES` | 8 MB | start a new file once the current one passes this size |
+| `MAX_FILE_AGE_MS` | 4 days | ...or once it is this old, whichever comes first |
+| `MAX_FILE_RETENTION_MS` | 4 days | delete a file once nothing has been appended to it for this long |
+| `MAX_FILES` | 40 | hard cap on file count, oldest deleted first |
+| `MAX_TOTAL_BYTES` | 320 MB | hard cap on total size, oldest deleted first |
+
+So a file covers at most 4 days, and a file is kept for 4 days after its last entry —
+a rolling window of roughly 4 to 8 days, bounded by the 40-file / 320 MB budget. Under
+heavy logcat traffic the size cap fires long before the age cap, and the storage budget
+becomes the binding constraint; the age rules matter for lightly-used devices, where they
+stop a single file from spanning weeks and stop stale files from lingering forever.
+
+The newest file is reopened and appended to on process start rather than superseded, so
+restarting the app does not consume the rotation window or churn the retention budget.
+
+Writes are queued and drained on a background thread, so logging never blocks the UI; if a
+burst overflows the queue the dropped count is recorded in the next file header rather than
+being silently lost. A failed open or write backs off for 10 s, so a full disk cannot spawn
+one file per line.
 
 Release builds have the logger compiled in but disabled. Build with
 `CAIRODRIVE_FULL_LOGGING=true` to enable it there too — note that a build which

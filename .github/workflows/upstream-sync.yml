@@ -180,6 +180,8 @@ jobs:
         if: steps.merge_main.outputs.conflict == 'true' || steps.merge_dev.outputs.conflict == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          MAIN_CONFLICT: ${{ steps.merge_main.outputs.conflict }}
+          MAIN_PUSHED: ${{ steps.merge_main.outputs.changed }}
           MAIN_CONFLICTS: ${{ steps.merge_main.outputs.conflicts }}
           DEV_CONFLICTS: ${{ steps.merge_dev.outputs.conflicts }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -187,7 +189,17 @@ jobs:
           set -euo pipefail
           {
             echo "The automatic upstream sync stopped because a merge conflicted."
-            echo "Both branches were left exactly as they were - nothing was pushed."
+            echo
+            # Each branch is pushed as soon as its own merge is clean, so a conflict on
+            # dev does not roll back a master that already merged. Say which is which
+            # instead of claiming nothing moved.
+            if [ "${MAIN_CONFLICT}" = "true" ]; then
+              echo "Nothing was pushed - both branches are exactly as they were."
+            elif [ "${MAIN_PUSHED}" = "true" ]; then
+              echo "\`${MAIN_BRANCH}\` merged cleanly and **was pushed**. Only \`${DEV_BRANCH}\` was left untouched."
+            else
+              echo "\`${MAIN_BRANCH}\` was already up to date and was not pushed. \`${DEV_BRANCH}\` was left untouched."
+            fi
             echo
             echo "- Upstream: \`${UPSTREAM_REPOSITORY}#${UPSTREAM_BRANCH}\` at \`${{ steps.fetch.outputs.upstream_sha }}\`"
             echo "- Run: ${RUN_URL}"
@@ -208,11 +220,17 @@ jobs:
             fi
             echo "Resolve locally, then re-run the workflow:"
             echo '```'
-            echo "git remote add upstream https://github.com/${UPSTREAM_REPOSITORY}.git"
-            echo "git fetch upstream ${UPSTREAM_BRANCH}"
-            echo "git checkout ${MAIN_BRANCH} && git merge upstream/${UPSTREAM_BRANCH}"
-            echo "# resolve, commit, push, then:"
-            echo "git checkout ${DEV_BRANCH} && git merge ${MAIN_BRANCH}"
+            echo "git fetch origin"
+            if [ "${MAIN_CONFLICT}" = "true" ]; then
+              echo "git remote add upstream https://github.com/${UPSTREAM_REPOSITORY}.git"
+              echo "git fetch upstream ${UPSTREAM_BRANCH}"
+              echo "git checkout ${MAIN_BRANCH} && git merge upstream/${UPSTREAM_BRANCH}"
+              echo "# resolve, commit, then:"
+              echo "git push origin ${MAIN_BRANCH}"
+            fi
+            echo "git checkout ${DEV_BRANCH} && git merge origin/${MAIN_BRANCH}"
+            echo "# resolve, commit, then:"
+            echo "git push origin ${DEV_BRANCH}"
             echo '```'
           } > /tmp/conflict-body.md
 
