@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          xmlns:tools="http://schemas.android.com/tools">
+
+	<application>
+		<!--
+			AndroidUtils#getUriForFile derives the authority from the application id,
+			so it has to follow the CairoDrive application id declared in cairodrive.gradle.
+		-->
+		<provider
+			android:name="androidx.core.content.FileProvider"
+			android:authorities="com.cairodrive.app.fileprovider"
+			tools:replace="android:authorities"/>
+	</application>
+</manifest>

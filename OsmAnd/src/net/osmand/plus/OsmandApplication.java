@@ -53,6 +53,7 @@ import net.osmand.plus.backup.BackupHelper;
 import net.osmand.plus.backup.NetworkSettingsHelper;
 import net.osmand.plus.base.MapViewTrackingUtilities;
 import net.osmand.plus.base.dialog.DialogManager;
+import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.configmap.routes.RouteLayersHelper;
 import net.osmand.plus.configmap.tracks.TrackSortModesHelper;
 import net.osmand.plus.download.DownloadIndexesThread;
@@ -247,6 +248,10 @@ public class OsmandApplication extends MultiDexApplication {
 		long timeToStart = System.currentTimeMillis();
 		enableStrictMode();
 		super.onCreate();
+
+		// Started before anything else so that the diagnostic capture covers application
+		// initialisation itself. No-op unless BuildConfig.CAIRODRIVE_FULL_LOGGING is set.
+		CairoDriveLogger.getInstance().init(this);
 
 		LifecycleObserver appLifecycleObserver = new DefaultLifecycleObserver() {
 			@Override
@@ -876,6 +881,7 @@ public class OsmandApplication extends MultiDexApplication {
 			}
 		}
 		appInitializer.startApplication();
+		CairoDriveLogger.getInstance().attach(this);
 	}
 
 	public TargetPointsHelper getTargetPointsHelper() {

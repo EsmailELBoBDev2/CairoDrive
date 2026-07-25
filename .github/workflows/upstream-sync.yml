@@ -1,0 +1,255 @@
+name: Sync with upstream OsmAnd
+
+# Pulls new commits from the repository this fork is based on and fast-forwards
+# both long-lived branches:
+#
+#   upstream/master  ->  master  ->  dev
+#
+# Each merge is committed and pushed automatically. If either merge hits a
+# conflict the workflow aborts that merge, leaves the branch untouched, and
+# reports the conflicting paths on a tracking issue instead of pushing a
+# half-resolved tree.
+
+on:
+  schedule:
+    # 03:17 UTC daily - off the hour so it does not queue behind everyone else's
+    # midnight cron jobs.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_repository:
+        description: 'Upstream repository to sync from'
+        required: false
+        default: 'osmandapp/OsmAnd'
+      upstream_branch:
+        description: 'Upstream branch to sync from'
+        required: false
+        default: 'master'
+      build_after_sync:
+        description: 'Trigger the dev build once the sync lands'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: ${{ inputs.upstream_repository || 'osmandapp/OsmAnd' }}
+  UPSTREAM_BRANCH: ${{ inputs.upstream_branch || 'master' }}
+  MAIN_BRANCH: master
+  DEV_BRANCH: dev
+
+jobs:
+  sync:
+    name: Merge upstream into master and dev
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Configure git identity
+        run: |
+          git config user.name "cairodrive-sync[bot]"
+          git config user.email "cairodrive-sync[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        id: fetch
+        run: |
+          set -euo pipefail
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          for attempt in 1 2 3 4; do
+            if git fetch --no-tags upstream "${UPSTREAM_BRANCH}"; then
+              break
+            fi
+            if [ "$attempt" = "4" ]; then
+              echo "::error::Could not fetch ${UPSTREAM_REPOSITORY}#${UPSTREAM_BRANCH} after 4 attempts"
+              exit 1
+            fi
+            sleep $((2 ** attempt))
+          done
+          echo "upstream_sha=$(git rev-parse upstream/${UPSTREAM_BRANCH})" >> "$GITHUB_OUTPUT"
+
+      - name: Merge upstream into ${{ env.MAIN_BRANCH }}
+        id: merge_main
+        run: |
+          set -uo pipefail
+          git checkout "${MAIN_BRANCH}"
+          git reset --hard "origin/${MAIN_BRANCH}"
+          before="$(git rev-parse HEAD)"
+
+          if git merge --no-edit -m "Merge ${UPSTREAM_REPOSITORY}@${UPSTREAM_BRANCH} into ${MAIN_BRANCH}" "upstream/${UPSTREAM_BRANCH}"; then
+            after="$(git rev-parse HEAD)"
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+            if [ "$before" = "$after" ]; then
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              echo "Already up to date with ${UPSTREAM_REPOSITORY}#${UPSTREAM_BRANCH}."
+            else
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            {
+              echo "conflict=true"
+              echo "changed=false"
+              echo "conflicts<<CONFLICT_EOF"
+              git diff --name-only --diff-filter=U
+              echo "CONFLICT_EOF"
+            } >> "$GITHUB_OUTPUT"
+            git merge --abort || true
+            echo "::warning::Conflicts merging upstream into ${MAIN_BRANCH}; branch left untouched."
+          fi
+
+      - name: Push ${{ env.MAIN_BRANCH }}
+        if: steps.merge_main.outputs.changed == 'true'
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3 4; do
+            if git push -u origin "${MAIN_BRANCH}"; then
+              exit 0
+            fi
+            sleep $((2 ** attempt))
+          done
+          echo "::error::Could not push ${MAIN_BRANCH}"
+          exit 1
+
+      # dev is only advanced from a master that is itself clean, so a conflicted
+      # master never leaks a partially merged tree into the development branch.
+      - name: Merge ${{ env.MAIN_BRANCH }} into ${{ env.DEV_BRANCH }}
+        id: merge_dev
+        if: steps.merge_main.outputs.conflict == 'false'
+        run: |
+          set -uo pipefail
+          if git ls-remote --exit-code --heads origin "${DEV_BRANCH}" >/dev/null 2>&1; then
+            git checkout -B "${DEV_BRANCH}" "origin/${DEV_BRANCH}"
+            created=false
+          else
+            echo "Branch ${DEV_BRANCH} does not exist yet; creating it from ${MAIN_BRANCH}."
+            git checkout -B "${DEV_BRANCH}" "${MAIN_BRANCH}"
+            created=true
+          fi
+          echo "created=${created}" >> "$GITHUB_OUTPUT"
+          before="$(git rev-parse HEAD)"
+
+          if [ "$created" = "true" ]; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif git merge --no-edit -m "Merge ${MAIN_BRANCH} into ${DEV_BRANCH}" "${MAIN_BRANCH}"; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+            if [ "$before" = "$(git rev-parse HEAD)" ]; then
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            {
+              echo "conflict=true"
+              echo "changed=false"
+              echo "conflicts<<CONFLICT_EOF"
+              git diff --name-only --diff-filter=U
+              echo "CONFLICT_EOF"
+            } >> "$GITHUB_OUTPUT"
+            git merge --abort || true
+            echo "::warning::Conflicts merging ${MAIN_BRANCH} into ${DEV_BRANCH}; branch left untouched."
+          fi
+
+      - name: Push ${{ env.DEV_BRANCH }}
+        if: steps.merge_dev.outputs.changed == 'true'
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3 4; do
+            if git push -u origin "${DEV_BRANCH}"; then
+              exit 0
+            fi
+            sleep $((2 ** attempt))
+          done
+          echo "::error::Could not push ${DEV_BRANCH}"
+          exit 1
+
+      - name: Report conflicts
+        if: steps.merge_main.outputs.conflict == 'true' || steps.merge_dev.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAIN_CONFLICTS: ${{ steps.merge_main.outputs.conflicts }}
+          DEV_CONFLICTS: ${{ steps.merge_dev.outputs.conflicts }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            echo "The automatic upstream sync stopped because a merge conflicted."
+            echo "Both branches were left exactly as they were - nothing was pushed."
+            echo
+            echo "- Upstream: \`${UPSTREAM_REPOSITORY}#${UPSTREAM_BRANCH}\` at \`${{ steps.fetch.outputs.upstream_sha }}\`"
+            echo "- Run: ${RUN_URL}"
+            echo
+            if [ -n "${MAIN_CONFLICTS}" ]; then
+              echo "**Conflicts merging upstream into \`${MAIN_BRANCH}\`:**"
+              echo '```'
+              echo "${MAIN_CONFLICTS}"
+              echo '```'
+              echo
+            fi
+            if [ -n "${DEV_CONFLICTS}" ]; then
+              echo "**Conflicts merging \`${MAIN_BRANCH}\` into \`${DEV_BRANCH}\`:**"
+              echo '```'
+              echo "${DEV_CONFLICTS}"
+              echo '```'
+              echo
+            fi
+            echo "Resolve locally, then re-run the workflow:"
+            echo '```'
+            echo "git remote add upstream https://github.com/${UPSTREAM_REPOSITORY}.git"
+            echo "git fetch upstream ${UPSTREAM_BRANCH}"
+            echo "git checkout ${MAIN_BRANCH} && git merge upstream/${UPSTREAM_BRANCH}"
+            echo "# resolve, commit, push, then:"
+            echo "git checkout ${DEV_BRANCH} && git merge ${MAIN_BRANCH}"
+            echo '```'
+          } > /tmp/conflict-body.md
+
+          existing="$(gh issue list --label upstream-sync-conflict --state open \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body-file /tmp/conflict-body.md
+          else
+            gh label create upstream-sync-conflict \
+              --description "Automatic upstream sync needs manual conflict resolution" \
+              --color B60205 2>/dev/null || true
+            gh issue create \
+              --title "Upstream sync blocked by merge conflicts" \
+              --label upstream-sync-conflict \
+              --body-file /tmp/conflict-body.md
+          fi
+          exit 1
+
+      # A push made with GITHUB_TOKEN deliberately does not fire `on: push`, so the
+      # dev build is dispatched explicitly instead of relying on the push event.
+      - name: Trigger dev build
+        if: >-
+          steps.merge_dev.outputs.changed == 'true' &&
+          (github.event_name == 'schedule' || inputs.build_after_sync)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run build-dev.yml --ref "${DEV_BRANCH}"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Upstream sync"
+            echo
+            echo "| Step | Result |"
+            echo "| --- | --- |"
+            echo "| Upstream | \`${UPSTREAM_REPOSITORY}#${UPSTREAM_BRANCH}\` @ \`${{ steps.fetch.outputs.upstream_sha }}\` |"
+            echo "| \`${MAIN_BRANCH}\` | conflict=${{ steps.merge_main.outputs.conflict }} updated=${{ steps.merge_main.outputs.changed }} |"
+            echo "| \`${DEV_BRANCH}\` | conflict=${{ steps.merge_dev.outputs.conflict }} updated=${{ steps.merge_dev.outputs.changed }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

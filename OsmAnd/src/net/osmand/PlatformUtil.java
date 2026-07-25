@@ -35,6 +35,12 @@ public class PlatformUtil {
 
 	public static String TAG = "net.osmand"; //$NON-NLS-1$
 
+	// android.util.Log#isLoggable reports INFO as the floor unless a device wide property
+	// is set through adb, which is not an option on a user's phone. CairoDrive diagnostic
+	// builds raise this flag so that trace/debug calls actually reach logcat, and from
+	// there the on-device log files (see CairoDriveLogger).
+	private static volatile boolean verboseLoggingForced;
+
 	private static OsmandRegions osmandRegions;
 
 	static {
@@ -139,7 +145,7 @@ public class PlatformUtil {
 
 		@Override
 		public boolean isTraceEnabled() {
-			return android.util.Log.isLoggable(TAG, android.util.Log.VERBOSE);
+			return verboseLoggingForced || android.util.Log.isLoggable(TAG, android.util.Log.VERBOSE);
 		}
 
 		@Override
@@ -151,22 +157,22 @@ public class PlatformUtil {
 
 		@Override
 		public boolean isErrorEnabled() {
-			return android.util.Log.isLoggable(TAG, android.util.Log.ERROR);
+			return verboseLoggingForced || android.util.Log.isLoggable(TAG, android.util.Log.ERROR);
 		}
 
 		@Override
 		public boolean isFatalEnabled() {
-			return android.util.Log.isLoggable(TAG, android.util.Log.ERROR);
+			return verboseLoggingForced || android.util.Log.isLoggable(TAG, android.util.Log.ERROR);
 		}
 
 		@Override
 		public boolean isInfoEnabled() {
-			return android.util.Log.isLoggable(TAG, android.util.Log.INFO);
+			return verboseLoggingForced || android.util.Log.isLoggable(TAG, android.util.Log.INFO);
 		}
 
 		@Override
 		public boolean isWarnEnabled() {
-			return android.util.Log.isLoggable(TAG, android.util.Log.WARN);
+			return verboseLoggingForced || android.util.Log.isLoggable(TAG, android.util.Log.WARN);
 		}
 
 		@Override
@@ -184,6 +190,15 @@ public class PlatformUtil {
 				android.util.Log.w(TAG, name + " " + message, t); //$NON-NLS-1$
 			}
 		}
+	}
+
+	/** Emits every log level regardless of {@link android.util.Log#isLoggable}. */
+	public static void setVerboseLoggingForced(boolean forced) {
+		verboseLoggingForced = forced;
+	}
+
+	public static boolean isVerboseLoggingForced() {
+		return verboseLoggingForced;
 	}
 
 	public static Log getLog(String name){

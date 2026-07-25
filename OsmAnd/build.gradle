@@ -271,3 +271,6 @@ afterEvaluate {
 		dependencies.add("opengldebugImplementation", "net.osmand:OsmAndCore_android:${remoteAarSnapshot}@aar")
 	}
 }
+
+// CairoDrive fork configuration (flavor, application id, signing, logging switch).
+apply from: "cairodrive.gradle"

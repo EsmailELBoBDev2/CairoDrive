@@ -1,0 +1,72 @@
+// CairoDrive fork configuration.
+//
+// Everything specific to this fork lives here instead of being spread across the
+// upstream build files, so that automated syncs with osmandapp/OsmAnd stay
+// conflict free. build.gradle only carries a single `apply from` line.
+//
+// Environment variables understood by this script:
+//   CAIRODRIVE_KEYSTORE_FILE     - path to the release keystore. Overrides the
+//                                  Jenkins-only path upstream hardcodes in the
+//                                  `publishing` signing config.
+//   CAIRODRIVE_KEYSTORE_PASSWORD - keystore password
+//   CAIRODRIVE_KEY_ALIAS         - key alias
+//   CAIRODRIVE_KEY_PASSWORD      - key password
+//   CAIRODRIVE_FULL_LOGGING      - "true"/"false", forces the verbose on-device
+//                                  logger on or off for every build type.
+//                                  Defaults to on for debug, off for release.
+
+def fullLogging = System.getenv("CAIRODRIVE_FULL_LOGGING")
+def debugLogging = fullLogging?.trim() ? fullLogging.trim() : "true"
+def releaseLogging = fullLogging?.trim() ? fullLogging.trim() : "false"
+
+android {
+	sourceSets {
+		// Same source set composition as nightlyFree: the Google in-app purchase
+		// implementation plus the self-updating "OsmAnd~" contribution screens.
+		cairodrive {
+			java.srcDirs = ["src-google", "src-osmand"]
+			manifest.srcFile "AndroidManifest-cairodrive.xml"
+		}
+	}
+
+	productFlavors {
+		cairodrive {
+			dimension "version"
+			applicationId "com.cairodrive.app"
+			resValue "string", "app_name", "CairoDrive"
+			resValue "string", "app_edition", System.getenv("APP_EDITION") ? System.getenv("APP_EDITION") : ""
+		}
+	}
+
+	buildTypes {
+		debug {
+			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", debugLogging
+		}
+		release {
+			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
+		}
+	}
+}
+
+// The upstream `publishing` signing config points at /var/lib/jenkins/osmand_key,
+// which does not exist outside of OsmAnd's own build server. Repoint it at the
+// keystore supplied through the environment, or - when none is supplied - at the
+// checked-in debug keystore so that `assembleRelease`/`bundleRelease` still
+// produce installable artifacts. Debug-signed bundles cannot be uploaded to
+// Google Play; the CI workflow says so explicitly in its build summary.
+def keystorePath = System.getenv("CAIRODRIVE_KEYSTORE_FILE")
+def publishing = android.signingConfigs.publishing
+if (keystorePath?.trim() && file(keystorePath.trim()).exists()) {
+	publishing.storeFile = file(keystorePath.trim())
+	publishing.storePassword = System.getenv("CAIRODRIVE_KEYSTORE_PASSWORD")
+	publishing.keyAlias = System.getenv("CAIRODRIVE_KEY_ALIAS")
+	publishing.keyPassword = System.getenv("CAIRODRIVE_KEY_PASSWORD")
+	logger.lifecycle("CairoDrive: release artifacts signed with ${keystorePath.trim()}")
+} else if (publishing.storeFile == null || !publishing.storeFile.exists()) {
+	publishing.storeFile = file("../keystores/debug.keystore")
+	publishing.storePassword = "android"
+	publishing.keyAlias = "androiddebugkey"
+	publishing.keyPassword = "android"
+	logger.lifecycle("CairoDrive: no release keystore configured, falling back to the debug keystore. " +
+			"Artifacts are installable but NOT uploadable to Google Play.")
+}
