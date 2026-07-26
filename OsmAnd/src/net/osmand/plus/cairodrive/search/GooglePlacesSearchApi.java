@@ -501,8 +501,16 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 		result.objectType = ObjectType.POI;
 		result.location = new LatLon(lat, lon);
 		result.preferredZoom = SearchCoreFactory.PREFERRED_POI_ZOOM;
-		// Google already ranked the response; keep that order rather than re-sorting by
-		// distance, which is the whole reason for preferring it over the offline index.
+		// Carries Google's own ranking into OsmAnd's sort. priorityDistance is left at 0, so
+		// getSearchDistance reduces to `priority - 1` and the physical distance has no effect
+		// at all - which is intended: Google already weighed proximity against relevance, and
+		// re-sorting its answer by distance would throw that away.
+		//
+		// It is not the whole story. SearchResultComparator only reaches priority at its
+		// fourth step; ahead of it sit found-word-count and phrase-match weight, so a place
+		// whose name matches more of what was typed is lifted above Google's order. That is
+		// left alone deliberately - for someone half way through typing a name it is usually
+		// the better answer, and it only ever reorders within Google's own result set.
 		result.priority = RESULT_PRIORITY + index;
 		return result;
 	}
