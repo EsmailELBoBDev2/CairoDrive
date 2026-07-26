@@ -5,9 +5,10 @@ name: Build CairoDrive (dev)
 #   * an APK  - sideloadable test build with the verbose on-device logger enabled
 #
 # The variant is the CairoDrive flavor (applicationId com.cairodrive.app, see
-# OsmAnd/cairodrive.gradle) built for a single ABI against the prebuilt OpenGL core
-# AAR, which is the fastest combination the project offers: no NDK compilation and
-# no fat-APK multiplication.
+# OsmAnd/cairodrive.gradle) built against the prebuilt OpenGL core AAR, so nothing is
+# compiled with the NDK. It covers all four ABIs by default because a bundle that omits
+# one cannot be rolled out on Play to users who are on it; the abi input narrows that
+# for a quicker throwaway build.
 
 on:
   push:
@@ -15,11 +16,11 @@ on:
   workflow_dispatch:
     inputs:
       abi:
-        description: 'ABI flavor'
+        description: 'ABI flavor. Anything narrower than fat cannot be rolled out on Google Play.'
         type: choice
         required: false
-        default: 'arm64'
-        options: [arm64, armonly, armv7, x86, fat]
+        default: 'fat'
+        options: [fat, armonly, arm64, armv7, x86]
       core:
         description: 'Core flavor. legacy compiles the native core with the NDK and is much slower.'
         type: choice
@@ -39,7 +40,11 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ABI: ${{ inputs.abi || 'arm64' }}
+  # fat covers arm64-v8a, armeabi-v7a, x86 and x86_64 in a single bundle. Play splits an
+  # AAB per device, so a fat bundle costs its users nothing in download size, while a
+  # single-ABI one strands everybody on the other three: "You can't rollout this release
+  # because it doesn't allow any existing users to upgrade to the newly added app bundles."
+  ABI: ${{ inputs.abi || 'fat' }}
   CORE: ${{ inputs.core || 'opengl' }}
 
 jobs:
@@ -101,6 +106,18 @@ jobs:
           set -euo pipefail
           capitalize() { printf '%s%s' "$(echo "${1:0:1}" | tr '[:lower:]' '[:upper:]')" "${1:1}"; }
           variant="Cairodrive$(capitalize "${CORE}")$(capitalize "${ABI}")"
+          # build.gradle pins versionCode 5399 unless APK_NUMBER_VERSION overrides it, so
+          # without this every dev build would carry the same code and Google Play would
+          # reject the second one: a release can only be rolled out if its versionCode is
+          # strictly greater than the one already live, otherwise no existing user has an
+          # upgrade path. Minutes elapsed since 2026-01-01 is monotonic without depending
+          # on run numbering (which resets if the workflow file is renamed), stays far
+          # below Play's 2100000000 ceiling, and is already well above the pinned 5399.
+          version_code="${{ inputs.version_code }}"
+          if [ -z "${version_code}" ]; then
+            version_code=$(( ( $(date -u +%s) - 1767225600 ) / 60 ))
+          fi
+
           {
             echo "variant=${variant}"
             echo "bundle_task=:OsmAnd:bundle${variant}Release"
@@ -108,7 +125,9 @@ jobs:
             echo "apk_release_task=:OsmAnd:assemble${variant}Release"
             echo "short_sha=$(git -C android rev-parse --short HEAD)"
             echo "app_edition=$(date -u +%Y-%m-%d)"
+            echo "version_code=${version_code}"
           } >> "$GITHUB_OUTPUT"
+          echo "versionCode for this build: ${version_code}"
 
           # The legacy core is the only variant that compiles native code. Blanking the
           # NDK location for the OpenGL build makes old-ndk-build.sh exit early instead
@@ -193,7 +212,7 @@ jobs:
         env:
           APP_EDITION: ${{ steps.variant.outputs.app_edition }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
-          APK_NUMBER_VERSION: ${{ inputs.version_code }}
+          APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
           CAIRODRIVE_KEYSTORE_FILE: ${{ steps.keystore.outputs.path }}
           CAIRODRIVE_KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
           CAIRODRIVE_KEY_ALIAS: ${{ secrets.CAIRODRIVE_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
@@ -217,7 +236,7 @@ jobs:
         env:
           APP_EDITION: ${{ steps.variant.outputs.app_edition }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
-          APK_NUMBER_VERSION: ${{ inputs.version_code }}
+          APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
           CAIRODRIVE_KEYSTORE_FILE: ${{ steps.keystore.outputs.path }}
           CAIRODRIVE_KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
           CAIRODRIVE_KEY_ALIAS: ${{ secrets.CAIRODRIVE_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
@@ -276,6 +295,13 @@ jobs:
             echo "- Variant: \`${{ steps.variant.outputs.variant }}\`"
             echo "- Application id: \`com.cairodrive.app\`"
             echo "- Commit: \`${{ steps.variant.outputs.short_sha }}\`"
+            echo "- versionCode: \`${{ steps.variant.outputs.version_code }}\`"
+            if [ "${ABI}" = "fat" ]; then
+              echo "- ABIs: \`arm64-v8a\`, \`armeabi-v7a\`, \`x86\`, \`x86_64\`"
+            else
+              echo "- ABIs: :warning: \`${ABI}\` only - Play will refuse to roll this bundle out"
+              echo "  to users on the ABIs it omits. Rebuild with the \`fat\` flavor to publish."
+            fi
             if [ "${HAS_KEYSTORE}" = "true" ] && [ "${HAS_KEYSTORE_PASSWORD}" = "true" ] \
                 && [ "${HAS_KEY_ALIAS}" = "true" ] && [ "${HAS_KEY_PASSWORD}" = "true" ]; then
               echo "- Signing: release keystore from repository secrets - **uploadable to Google Play**"
