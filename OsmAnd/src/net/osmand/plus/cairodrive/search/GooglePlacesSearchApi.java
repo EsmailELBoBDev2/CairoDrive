@@ -1,5 +1,10 @@
 package net.osmand.plus.cairodrive.search;
 
+import android.content.pm.PackageManager;
+import android.content.pm.Signature;
+import android.content.pm.SigningInfo;
+import android.os.Build;
+
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
@@ -33,6 +38,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -132,6 +138,9 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 
 	private final OsmandApplication app;
 	private final SearchProviderGate gate;
+	/** Empty once computed and unavailable, null while still unknown. */
+	@Nullable
+	private volatile String signingCertificate;
 
 	public GooglePlacesSearchApi(@NonNull OsmandApplication app, @NonNull SearchProviderGate gate) {
 		super(ObjectType.POI);
@@ -215,6 +224,53 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 		return true;
 	}
 
+	/**
+	 * SHA-1 of the certificate this build is signed with, uppercase hex without separators -
+	 * the form the Google API console stores and the X-Android-Cert header expects.
+	 * <p>
+	 * Read from the installed package rather than configured, because the answer differs
+	 * between the debug keystore, the upload key and the key Play App Signing re-signs with,
+	 * and only the running app knows which one it ended up with. All of them have to be
+	 * registered against the key for every distribution channel to work.
+	 *
+	 * @return the fingerprint, or null if it could not be determined - in which case the
+	 * headers are omitted and an unrestricted key still works.
+	 */
+	@Nullable
+	private String signingCertificateSha1() {
+		String cached = signingCertificate;
+		if (cached != null) {
+			return cached.isEmpty() ? null : cached;
+		}
+		String computed = "";
+		try {
+			PackageManager manager = app.getPackageManager();
+			Signature[] signatures;
+			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+				SigningInfo info = manager.getPackageInfo(app.getPackageName(),
+						PackageManager.GET_SIGNING_CERTIFICATES).signingInfo;
+				signatures = info.hasMultipleSigners()
+						? info.getApkContentsSigners() : info.getSigningCertificateHistory();
+			} else {
+				signatures = manager.getPackageInfo(app.getPackageName(),
+						PackageManager.GET_SIGNATURES).signatures;
+			}
+			if (signatures != null && signatures.length > 0) {
+				byte[] digest = MessageDigest.getInstance("SHA1").digest(signatures[0].toByteArray());
+				StringBuilder hex = new StringBuilder(digest.length * 2);
+				for (byte b : digest) {
+					hex.append(String.format("%02X", b));
+				}
+				computed = hex.toString();
+			}
+		} catch (Exception e) {
+			LOG.warn("Could not read the signing certificate, "
+					+ "an Android-restricted Places key will be rejected", e);
+		}
+		signingCertificate = computed;
+		return computed.isEmpty() ? null : computed;
+	}
+
 	@NonNull
 	private static String queryOf(@NonNull SearchPhrase phrase) {
 		String text = phrase.getFullSearchPhrase();
@@ -233,6 +289,16 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 			connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
 			connection.setRequestProperty("X-Goog-Api-Key", BuildConfig.GOOGLE_PLACES_API_KEY);
 			connection.setRequestProperty("X-Goog-FieldMask", FIELD_MASK);
+
+			// A key restricted to Android apps is checked against these two headers, which
+			// Google's own client libraries attach and a plain HTTPS call does not. Without
+			// them the request arrives with an empty package name and is rejected with
+			// API_KEY_ANDROID_APP_BLOCKED, no matter how the key is configured.
+			String androidCert = signingCertificateSha1();
+			if (androidCert != null) {
+				connection.setRequestProperty("X-Android-Package", app.getPackageName());
+				connection.setRequestProperty("X-Android-Cert", androidCert);
+			}
 
 			byte[] payload = requestBody(query, location).getBytes(StandardCharsets.UTF_8);
 			try (OutputStream out = connection.getOutputStream()) {
