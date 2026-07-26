@@ -248,8 +248,15 @@ public class CairoDriveLogWriter {
 				break;
 			} catch (Throwable t) {
 				// A logger must never take the process down with it.
-				closeWriter();
-				nextIoAttemptAt = SystemClock.elapsedRealtime() + IO_RETRY_DELAY_MS;
+				//
+				// Under the lock: both fields are guarded by it everywhere else, and
+				// flushBlocking() takes the same lock from the crash handler. Recovering out
+				// here raced that flush over `writer` - closing it underneath a flush in
+				// progress - at exactly the moment the crash log is worth having.
+				synchronized (this) {
+					closeWriter();
+					nextIoAttemptAt = SystemClock.elapsedRealtime() + IO_RETRY_DELAY_MS;
+				}
 			}
 		}
 		synchronized (this) {
@@ -270,6 +277,10 @@ public class CairoDriveLogWriter {
 				|| elapsed >= currentFileRotateAt) {
 			if (writer == null && elapsed < nextIoAttemptAt) {
 				// Storage is unavailable; drop the line rather than retrying per line.
+				// Counted, because the whole point of droppedLines is that a gap in the log
+				// is visible rather than silent - and a full disk drops far more here than
+				// the queue ever does.
+				droppedLines.incrementAndGet();
 				return;
 			}
 			rollFile();

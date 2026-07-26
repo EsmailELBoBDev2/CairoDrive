@@ -102,9 +102,14 @@ jobs:
             {
               echo "conflict=true"
               echo "changed=false"
-              echo "conflicts<<CONFLICT_EOF"
+              # Random delimiter: the interpolated values are upstream-controlled file
+              # names, and a file literally called CONFLICT_EOF would close the heredoc
+              # early and let the remaining paths be parsed as further key=value outputs -
+              # which drive the `if:` conditions and the build dispatch below.
+              delimiter="EOF_$(openssl rand -hex 16)"
+              echo "conflicts<<${delimiter}"
               git diff --name-only --diff-filter=U
-              echo "CONFLICT_EOF"
+              echo "${delimiter}"
             } >> "$GITHUB_OUTPUT"
             git merge --abort || true
             echo "::warning::Conflicts merging upstream into ${MAIN_BRANCH}; branch left untouched."
@@ -155,9 +160,14 @@ jobs:
             {
               echo "conflict=true"
               echo "changed=false"
-              echo "conflicts<<CONFLICT_EOF"
+              # Random delimiter: the interpolated values are upstream-controlled file
+              # names, and a file literally called CONFLICT_EOF would close the heredoc
+              # early and let the remaining paths be parsed as further key=value outputs -
+              # which drive the `if:` conditions and the build dispatch below.
+              delimiter="EOF_$(openssl rand -hex 16)"
+              echo "conflicts<<${delimiter}"
               git diff --name-only --diff-filter=U
-              echo "CONFLICT_EOF"
+              echo "${delimiter}"
             } >> "$GITHUB_OUTPUT"
             git merge --abort || true
             echo "::warning::Conflicts merging ${MAIN_BRANCH} into ${DEV_BRANCH}; branch left untouched."

@@ -220,14 +220,23 @@ public class CairoDriveLogger {
 		log(tag, message + "\n" + CairoDriveLogWriter.stackTraceToString(throwable));
 	}
 
+	/**
+	 * The logs live in the app's private data directory, not on shared storage.
+	 * <p>
+	 * These files are a second-by-second record of where the user has been - four days of
+	 * timestamped GPS fixes at full precision, plus every place they searched for. minSdk is
+	 * 24, and on API 24-29 there is no scoped storage: anything under
+	 * {@code Android/data/<package>} is readable by any installed app holding
+	 * READ_EXTERNAL_STORAGE, and by any USB host. A movement history is not something to
+	 * leave where a flashlight app can read it.
+	 * <p>
+	 * {@code getFilesDir()} is 0700 and unreadable without root or {@code adb run-as}, which
+	 * is the right default for this. The cost is that pulling logs off a device now needs
+	 * {@code adb run-as} or an in-app share, rather than a file manager.
+	 */
 	@Nullable
 	private File resolveLogDirectory(@NonNull Context context) {
-		File base = context.getExternalFilesDir(null);
-		if (base == null) {
-			// No shared storage mounted - fall back to the private data directory. Still
-			// readable through `adb run-as` / the app's own share sheet.
-			base = context.getFilesDir();
-		}
+		File base = context.getFilesDir();
 		if (base == null) {
 			return null;
 		}

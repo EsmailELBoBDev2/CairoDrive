@@ -59,8 +59,18 @@ import java.util.Map;
  * <p>
  * <b>Billing.</b> Text Search is charged per request and OsmAnd issues a search on every
  * keystroke, so this class debounces ({@link #DEBOUNCE_MS}), ignores queries shorter than
- * {@link #MIN_QUERY_LENGTH}, and caches recent responses. Typing one query costs one or two
- * billed requests rather than one per character.
+ * {@link #MIN_QUERY_LENGTH}, and caches recent responses.
+ * <p>
+ * Be honest about what that buys. The debounce here sits on top of upstream's own 700 ms
+ * {@code TIMEOUT_BETWEEN_CHARS}, so a prefix escapes to a billed request whenever typing
+ * pauses for roughly a second - which happens several times in a place name typed one-handed.
+ * The cache does not help within a single query either, because every prefix is a distinct
+ * key. Typing one name realistically costs a handful of requests, not one: budget for it, and
+ * cap the key's daily quota in the Google console rather than assuming this is cheap.
+ * <p>
+ * The honest fix is to debounce at the text field instead of inside a search provider, and to
+ * use Autocomplete - which is billed per session rather than per request - while the user is
+ * still typing, keeping Text Search for the submitted query. Neither is done here yet.
  */
 public class GooglePlacesSearchApi extends SearchBaseAPI {
 
@@ -74,8 +84,12 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 	private static final String FIELD_MASK = "places.id,places.displayName,places.formattedAddress,"
 			+ "places.location,places.types,places.primaryType";
 
-	/** Shorter queries match half the city and are not worth a billed request. */
-	private static final int MIN_QUERY_LENGTH = 3;
+	/**
+	 * Shorter queries match half the city and are not worth a billed request. Four rather
+	 * than three: three-letter prefixes are common as intermediate states while typing and
+	 * almost never the query the user meant to run.
+	 */
+	private static final int MIN_QUERY_LENGTH = 4;
 	/** Wait for typing to settle before spending a request. */
 	private static final long DEBOUNCE_MS = 400;
 	private static final int MAX_RESULTS = 20;
@@ -202,7 +216,7 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 		}
 
 		LatLon location = phrase.getSettings().getOriginalLocation();
-		String key = cacheKey(query, location);
+		String key = cacheKey(query, location, app.getLanguage());
 		String body = cached(key);
 		if (body == null) {
 			body = request(query, location);
@@ -279,7 +293,7 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 
 	@Nullable
 	private String request(@NonNull String query, @Nullable LatLon location) {
-		HttpURLConnection connection = null;
+		HttpURLConnection connection;
 		try {
 			connection = (HttpURLConnection) new URL(TEXT_SEARCH_URL).openConnection();
 			connection.setRequestMethod("POST");
@@ -317,11 +331,11 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 		} catch (IOException | RuntimeException e) {
 			LOG.error("Google Places search failed", e);
 			return null;
-		} finally {
-			if (connection != null) {
-				connection.disconnect();
-			}
 		}
+		// Deliberately no disconnect(). It tears the socket out of the keep-alive pool, so
+		// every search paid a fresh TCP and TLS handshake - 200-600 ms on mobile, before
+		// Google even sees the query. The streams are closed with try-with-resources, which
+		// is what actually returns the connection to the pool.
 	}
 
 	@NonNull
@@ -347,7 +361,7 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 			return body.toString();
 		} catch (JSONException e) {
 			LOG.error("Could not build Google Places request", e);
-			return "{\"textQuery\":\"" + query.replace("\"", "") + "\"}";
+			return "{\"textQuery\":" + JSONObject.quote(query) + "}";
 		}
 	}
 
@@ -500,13 +514,18 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 	}
 
 	@NonNull
-	private static String cacheKey(@NonNull String query, @Nullable LatLon location) {
+	private static String cacheKey(@NonNull String query, @Nullable LatLon location,
+			@NonNull String language) {
+		// Language belongs in the key because it is sent in the request body: without it a
+		// user switching app language kept getting the previous language's names until the
+		// entry expired.
+		String base = query.toLowerCase(Locale.US) + "|" + language;
 		if (location == null) {
-			return query.toLowerCase(Locale.US);
+			return base;
 		}
 		long lat = Math.round(location.getLatitude() / CACHE_LOCATION_PRECISION);
 		long lon = Math.round(location.getLongitude() / CACHE_LOCATION_PRECISION);
-		return query.toLowerCase(Locale.US) + "@" + lat + "," + lon;
+		return base + "@" + lat + "," + lon;
 	}
 
 	@Nullable

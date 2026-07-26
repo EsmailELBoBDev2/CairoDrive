@@ -28,6 +28,7 @@ import net.osmand.osm.PoiType;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.activities.MapActivity;
+import net.osmand.plus.cairodrive.search.GatedAmenityByTypeAPI;
 import net.osmand.plus.cairodrive.search.GatedAmenityTypesAPI;
 import net.osmand.plus.cairodrive.search.GatedSearchApi;
 import net.osmand.plus.cairodrive.search.GooglePlacesSearchApi;
@@ -212,9 +213,11 @@ public class QuickSearchHelper implements ResourceListener {
 				// reads custom POI filters out of the instance it was constructed with, and
 				// refreshCustomPoiFilters() only ever populates the registered one. Leaving
 				// it bound to the discarded instance would quietly break user POI filters.
-				core.registerAPI(new GatedSearchApi(
-						new SearchCoreFactory.SearchAmenityByTypeAPI(app.getPoiTypes(), typesApi),
-						searchGate));
+				//
+				// Subclassed rather than wrapped for the same reason as the types provider:
+				// getUnselectedPoiType() and getCustomNameFilter() find this one with an
+				// instanceof test, and a wrapper is not an instance of it.
+				core.registerAPI(new GatedAmenityByTypeAPI(app.getPoiTypes(), typesApi, searchGate));
 			} else {
 				core.registerAPI(new GatedSearchApi(api, searchGate));
 			}

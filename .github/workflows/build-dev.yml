@@ -194,8 +194,11 @@ jobs:
           # cannot be opened is worth catching now. keytool prints the alias list, which
           # also confirms CAIRODRIVE_KEY_ALIAS names a key that is actually in there.
           if [ -n "${KEYSTORE_PASSWORD}" ]; then
-            if ! aliases=$(keytool -list -keystore "${RUNNER_TEMP}/keystore/release.jks" \
-                -storepass "${KEYSTORE_PASSWORD}" 2>&1); then
+            # Password on stdin, not argv: an argument would be visible in
+            # /proc/<pid>/cmdline to anything else on the runner. Harmless on an ephemeral
+            # GitHub runner, a real exposure the day this moves to a self-hosted one.
+            if ! aliases=$(printf '%s\n' "${KEYSTORE_PASSWORD}" \
+                | keytool -list -keystore "${RUNNER_TEMP}/keystore/release.jks" 2>&1); then
               echo "::error::The release keystore could not be opened with the supplied password."
               echo "${aliases}" | grep -v -i 'password\|Warning' || true
               exit 1
