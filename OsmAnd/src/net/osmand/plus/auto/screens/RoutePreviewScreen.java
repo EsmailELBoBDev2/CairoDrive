@@ -30,6 +30,7 @@ import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.auto.NavigationSession;
 import net.osmand.plus.auto.TripUtils;
+import net.osmand.plus.cairodrive.CairoDriveNavigationView;
 import net.osmand.plus.helpers.TargetPoint;
 import net.osmand.plus.helpers.TargetPointsHelper;
 import net.osmand.plus.routing.IRouteInformationListener;
@@ -252,7 +253,13 @@ public final class RoutePreviewScreen extends BaseAndroidAutoScreen implements I
 
 	@Override
 	public void newRouteIsCalculated(boolean newRoute, ValueHolder<Boolean> showToast) {
-		zoomMapToRoute();
+		// Only while the route is still being planned. Unlike the phone path this had no
+		// guard at all, so a recalculation mid-drive pulled the head unit back to the whole
+		// route - and adjustMapToRect additionally resets rotation to north and the camera
+		// to flat, which is a worse interruption on a car screen than on a phone.
+		if (!CairoDriveNavigationView.isEnabled() || getApp().getRoutingHelper().isRoutePlanningMode()) {
+			zoomMapToRoute();
+		}
 		updateRoute(newRoute);
 	}
 

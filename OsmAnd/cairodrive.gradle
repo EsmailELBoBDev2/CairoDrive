@@ -30,6 +30,11 @@
 def unlockPro = System.getenv("CAIRODRIVE_UNLOCK_PRO")
 def proUnlocked = unlockPro?.trim() ? unlockPro.trim() : "true"
 
+// Start navigating on the vehicle arrow, close in and tilted, instead of on a zoomed-out
+// view of the whole route. See CairoDriveNavigationView.
+def drivingViewEnv = System.getenv("CAIRODRIVE_DRIVING_VIEW")
+def drivingView = drivingViewEnv?.trim() ? drivingViewEnv.trim() : "true"
+
 def fullLogging = System.getenv("CAIRODRIVE_FULL_LOGGING")
 def debugLogging = fullLogging?.trim() ? fullLogging.trim() : "true"
 def releaseLogging = fullLogging?.trim() ? fullLogging.trim() : "false"
@@ -67,11 +72,13 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", debugLogging
 			buildConfigField "String", "GOOGLE_PLACES_API_KEY", placesKeyLiteral
 			buildConfigField "boolean", "CAIRODRIVE_UNLOCK_PRO", proUnlocked
+			buildConfigField "boolean", "CAIRODRIVE_DRIVING_VIEW", drivingView
 		}
 		release {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
 			buildConfigField "String", "GOOGLE_PLACES_API_KEY", placesKeyLiteral
 			buildConfigField "boolean", "CAIRODRIVE_UNLOCK_PRO", proUnlocked
+			buildConfigField "boolean", "CAIRODRIVE_DRIVING_VIEW", drivingView
 		}
 	}
 }

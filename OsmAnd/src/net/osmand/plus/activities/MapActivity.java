@@ -1645,7 +1645,15 @@ public class MapActivity extends OsmandActionBarActivity implements DownloadEven
 		refreshMap();
 		RoutingHelper rh = app.getRoutingHelper();
 		if (newRoute && rh.isRoutePlanningMode() && !getMapView().isCarView()) {
-			app.runInUIThread(this::fitCurrentRouteToMap, 300);
+			// Re-check when it runs, not only when it is scheduled: tapping Go inside these
+			// 300 ms leaves planning mode, and the fit would then land on top of the driving
+			// camera - zooming back out to the whole route and, because fitRectToMap unlinks
+			// the map, dropping follow mode and bearing rotation with it.
+			app.runInUIThread(() -> {
+				if (rh.isRoutePlanningMode()) {
+					fitCurrentRouteToMap();
+				}
+			}, 300);
 		}
 		if (app.getSettings().simulateNavigation) {
 			OsmAndLocationSimulation sim = app.getLocationProvider().getLocationSimulation();

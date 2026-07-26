@@ -24,6 +24,7 @@ import net.osmand.plus.activities.MapActivity;
 import net.osmand.plus.activities.MapActivityActions;
 import net.osmand.plus.base.ContextMenuFragment.MenuState;
 import net.osmand.plus.base.MapViewTrackingUtilities;
+import net.osmand.plus.cairodrive.CairoDriveNavigationView;
 import net.osmand.plus.dialogs.DirectionsDialogs;
 import net.osmand.plus.helpers.TargetPoint;
 import net.osmand.plus.helpers.TargetPointsHelper;
@@ -492,7 +493,8 @@ public class MapActions {
 		if (settings.getApplicationMode() != routingHelper.getAppMode()) {
 			settings.setApplicationMode(routingHelper.getAppMode(), false);
 		}
-		float elevationAngle = settings.getLastKnownMapElevation();
+		float elevationAngle = CairoDriveNavigationView.startingElevationAngle(
+				settings, settings.getLastKnownMapElevation());
 		AnimateDraggingMapThread animateDraggingMapThread = app.getOsmandMap().getMapView().getAnimatedDraggingThread();
 		animateDraggingMapThread.startTilting(elevationAngle, 0);
 		if (routingHelper.isFollowingMode()) {
