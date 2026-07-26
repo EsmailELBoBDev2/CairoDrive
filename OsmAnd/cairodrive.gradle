@@ -11,6 +11,11 @@
 //   CAIRODRIVE_KEYSTORE_PASSWORD - keystore password
 //   CAIRODRIVE_KEY_ALIAS         - key alias
 //   CAIRODRIVE_KEY_PASSWORD      - key password
+//                                  Each of the four is also read under its ANDROID_*
+//                                  name (ANDROID_KEYSTORE_PASSWORD and so on), which is
+//                                  how they are stored as repository secrets. All four
+//                                  must be present: a keystore without its credentials
+//                                  falls back to the debug keystore.
 //   CAIRODRIVE_FULL_LOGGING      - "true"/"false", forces the verbose on-device
 //                                  logger on or off for every build type.
 //                                  Defaults to on for debug, off for release.
@@ -68,19 +73,26 @@ android {
 // checked-in debug keystore so that `assembleRelease`/`bundleRelease` still
 // produce installable artifacts. Debug-signed bundles cannot be uploaded to
 // Google Play; the CI workflow says so explicitly in its build summary.
-def keystorePath = System.getenv("CAIRODRIVE_KEYSTORE_FILE")?.trim()
-def storePassword = System.getenv("CAIRODRIVE_KEYSTORE_PASSWORD")
-def keyAlias = System.getenv("CAIRODRIVE_KEY_ALIAS")
-def keyPassword = System.getenv("CAIRODRIVE_KEY_PASSWORD")
+// Each credential is read under either spelling, so a local build can export the same
+// ANDROID_* names the repository secrets use instead of duplicating them.
+def credential = { String preferred, String fallback ->
+	def value = System.getenv(preferred)
+	value?.trim() ? value : System.getenv(fallback)
+}
+
+def keystorePath = credential("CAIRODRIVE_KEYSTORE_FILE", "ANDROID_KEYSTORE_FILE")?.trim()
+def storePassword = credential("CAIRODRIVE_KEYSTORE_PASSWORD", "ANDROID_KEYSTORE_PASSWORD")
+def keyAlias = credential("CAIRODRIVE_KEY_ALIAS", "ANDROID_KEY_ALIAS")
+def keyPassword = credential("CAIRODRIVE_KEY_PASSWORD", "ANDROID_KEY_PASSWORD")
 
 // A keystore is only usable with all three credentials. Checking them here rather than
 // letting a null password reach the signer matters: signing is the very last task of the
 // bundle, so an incomplete set otherwise costs a full compile before failing with a
 // BadPaddingException that says nothing about which secret is missing.
 def missingCredentials = []
-if (!storePassword?.trim()) missingCredentials << "CAIRODRIVE_KEYSTORE_PASSWORD"
-if (!keyAlias?.trim()) missingCredentials << "CAIRODRIVE_KEY_ALIAS"
-if (!keyPassword?.trim()) missingCredentials << "CAIRODRIVE_KEY_PASSWORD"
+if (!storePassword?.trim()) missingCredentials << "ANDROID_KEYSTORE_PASSWORD"
+if (!keyAlias?.trim()) missingCredentials << "ANDROID_KEY_ALIAS"
+if (!keyPassword?.trim()) missingCredentials << "ANDROID_KEY_PASSWORD"
 
 def publishing = android.signingConfigs.publishing
 if (keystorePath && file(keystorePath).exists() && missingCredentials.isEmpty()) {

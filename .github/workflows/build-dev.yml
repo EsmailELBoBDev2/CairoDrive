@@ -52,10 +52,15 @@ jobs:
       # `env:`/`with:`/`run:` and in a job-level `env:` like this one. Testing the secret
       # directly in the `if:` below would make the whole workflow file fail to parse with
       # "Unrecognized named-value: 'secrets'", so the presence check is hoisted here.
-      HAS_KEYSTORE: ${{ secrets.CAIRODRIVE_KEYSTORE_BASE64 != '' }}
-      HAS_KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD != '' }}
-      HAS_KEY_ALIAS: ${{ secrets.CAIRODRIVE_KEY_ALIAS != '' }}
-      HAS_KEY_PASSWORD: ${{ secrets.CAIRODRIVE_KEY_PASSWORD != '' }}
+      #
+      # Each credential is accepted under either name: the ANDROID_* spelling that the
+      # repository already uses, or a CAIRODRIVE_* one for symmetry with the keystore
+      # secret. `||` yields the first non-empty operand, so CAIRODRIVE_* wins when both
+      # are set and neither name is mandatory.
+      HAS_KEYSTORE: ${{ (secrets.CAIRODRIVE_KEYSTORE_BASE64 || secrets.ANDROID_KEYSTORE_BASE64) != '' }}
+      HAS_KEYSTORE_PASSWORD: ${{ (secrets.CAIRODRIVE_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD) != '' }}
+      HAS_KEY_ALIAS: ${{ (secrets.CAIRODRIVE_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS) != '' }}
+      HAS_KEY_PASSWORD: ${{ (secrets.CAIRODRIVE_KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD) != '' }}
       HAS_PLACES_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY != '' }}
 
     steps:
@@ -121,9 +126,9 @@ jobs:
           set -euo pipefail
           if [ "${HAS_KEYSTORE}" = "true" ]; then
             missing=""
-            [ "${HAS_KEYSTORE_PASSWORD}" = "true" ] || missing="${missing} CAIRODRIVE_KEYSTORE_PASSWORD"
-            [ "${HAS_KEY_ALIAS}" = "true" ] || missing="${missing} CAIRODRIVE_KEY_ALIAS"
-            [ "${HAS_KEY_PASSWORD}" = "true" ] || missing="${missing} CAIRODRIVE_KEY_PASSWORD"
+            [ "${HAS_KEYSTORE_PASSWORD}" = "true" ] || missing="${missing} ANDROID_KEYSTORE_PASSWORD"
+            [ "${HAS_KEY_ALIAS}" = "true" ] || missing="${missing} ANDROID_KEY_ALIAS"
+            [ "${HAS_KEY_PASSWORD}" = "true" ] || missing="${missing} ANDROID_KEY_PASSWORD"
             if [ -n "${missing}" ]; then
               echo "::warning::A release keystore is configured but these secrets are missing:${missing}. Falling back to the debug keystore - artifacts will NOT be uploadable to Google Play."
             else
@@ -157,12 +162,31 @@ jobs:
         id: keystore
         if: env.HAS_KEYSTORE == 'true'
         env:
-          KEYSTORE_BASE64: ${{ secrets.CAIRODRIVE_KEYSTORE_BASE64 }}
+          KEYSTORE_BASE64: ${{ secrets.CAIRODRIVE_KEYSTORE_BASE64 || secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CAIRODRIVE_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/keystore"
           printf '%s' "${KEYSTORE_BASE64}" | base64 -d > "${RUNNER_TEMP}/keystore/release.jks"
           echo "path=${RUNNER_TEMP}/keystore/release.jks" >> "$GITHUB_OUTPUT"
+
+          # Signing runs as the very last task of a nine minute build, so a keystore that
+          # cannot be opened is worth catching now. keytool prints the alias list, which
+          # also confirms CAIRODRIVE_KEY_ALIAS names a key that is actually in there.
+          if [ -n "${KEYSTORE_PASSWORD}" ]; then
+            if ! aliases=$(keytool -list -keystore "${RUNNER_TEMP}/keystore/release.jks" \
+                -storepass "${KEYSTORE_PASSWORD}" 2>&1); then
+              echo "::error::The release keystore could not be opened with the supplied password."
+              echo "${aliases}" | grep -v -i 'password\|Warning' || true
+              exit 1
+            fi
+            echo "Keystore opened. Aliases present:"
+            echo "${aliases}" | grep -i 'PrivateKeyEntry\|trustedCertEntry' || true
+            if [ -n "${KEY_ALIAS}" ] && ! printf '%s' "${aliases}" | grep -qi "^${KEY_ALIAS},"; then
+              echo "::warning::The alias in CAIRODRIVE_KEY_ALIAS/ANDROID_KEY_ALIAS was not found in the keystore listing above."
+            fi
+          fi
 
       - name: Build release bundle (AAB)
         working-directory: android
@@ -171,9 +195,9 @@ jobs:
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
           APK_NUMBER_VERSION: ${{ inputs.version_code }}
           CAIRODRIVE_KEYSTORE_FILE: ${{ steps.keystore.outputs.path }}
-          CAIRODRIVE_KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD }}
-          CAIRODRIVE_KEY_ALIAS: ${{ secrets.CAIRODRIVE_KEY_ALIAS }}
-          CAIRODRIVE_KEY_PASSWORD: ${{ secrets.CAIRODRIVE_KEY_PASSWORD }}
+          CAIRODRIVE_KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
+          CAIRODRIVE_KEY_ALIAS: ${{ secrets.CAIRODRIVE_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
+          CAIRODRIVE_KEY_PASSWORD: ${{ secrets.CAIRODRIVE_KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD }}
         run: ./gradlew --no-daemon --stacktrace ${{ steps.variant.outputs.bundle_task }}
 
       # Debug build: CAIRODRIVE_FULL_LOGGING defaults to true here, so this APK writes
@@ -195,9 +219,9 @@ jobs:
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
           APK_NUMBER_VERSION: ${{ inputs.version_code }}
           CAIRODRIVE_KEYSTORE_FILE: ${{ steps.keystore.outputs.path }}
-          CAIRODRIVE_KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD }}
-          CAIRODRIVE_KEY_ALIAS: ${{ secrets.CAIRODRIVE_KEY_ALIAS }}
-          CAIRODRIVE_KEY_PASSWORD: ${{ secrets.CAIRODRIVE_KEY_PASSWORD }}
+          CAIRODRIVE_KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
+          CAIRODRIVE_KEY_ALIAS: ${{ secrets.CAIRODRIVE_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
+          CAIRODRIVE_KEY_PASSWORD: ${{ secrets.CAIRODRIVE_KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD }}
         run: ./gradlew --no-daemon --stacktrace ${{ steps.variant.outputs.apk_release_task }}
 
       - name: Stage artifacts
@@ -257,9 +281,10 @@ jobs:
               echo "- Signing: release keystore from repository secrets - **uploadable to Google Play**"
             else
               echo "- Signing: :warning: debug keystore fallback - installable for testing, **rejected by Google Play**."
-              echo "  Needs all four of \`CAIRODRIVE_KEYSTORE_BASE64\`, \`CAIRODRIVE_KEYSTORE_PASSWORD\`,"
-              echo "  \`CAIRODRIVE_KEY_ALIAS\`, \`CAIRODRIVE_KEY_PASSWORD\`; a keystore without its"
-              echo "  credentials is not enough."
+              echo "  Needs the keystore in \`CAIRODRIVE_KEYSTORE_BASE64\` (or \`ANDROID_KEYSTORE_BASE64\`)"
+              echo "  together with all three of \`ANDROID_KEYSTORE_PASSWORD\`, \`ANDROID_KEY_ALIAS\` and"
+              echo "  \`ANDROID_KEY_PASSWORD\` (the \`CAIRODRIVE_\` spelling of each is accepted too);"
+              echo "  a keystore without its credentials is not enough."
             fi
             if [ "${HAS_PLACES_KEY}" = "true" ]; then
               echo "- Search: Google Places"
