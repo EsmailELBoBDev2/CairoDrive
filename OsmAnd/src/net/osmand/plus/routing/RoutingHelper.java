@@ -13,6 +13,7 @@ import net.osmand.plus.NavigationService;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.auto.NavigationSession;
+import net.osmand.plus.cairodrive.CairoDriveOffRoute;
 import net.osmand.plus.helpers.TargetPointsHelper;
 import net.osmand.plus.helpers.TargetPoint;
 import net.osmand.plus.notifications.OsmandNotification.NotificationType;
@@ -66,6 +67,8 @@ public class RoutingHelper {
 	private final RouteProvider provider;
 	private final VoiceRouter voiceRouter;
 	private final RouteRecalculationHelper routeRecalculationHelper;
+	/** Requires corroboration before a deviation triggers a recalculation. */
+	private final CairoDriveOffRoute offRouteHysteresis = new CairoDriveOffRoute();
 	private final TransportRoutingHelper transportRoutingHelper;
 
 	private boolean isFollowingMode;
@@ -123,6 +126,8 @@ public class RoutingHelper {
 
 	void setRoute(RouteCalculationResult route) {
 		this.route = route;
+		// Evidence of deviating from the previous route says nothing about this one.
+		offRouteHysteresis.reset();
 	}
 
 	long getDeviateFromRouteDetected() {
@@ -463,7 +468,10 @@ public class RoutingHelper {
 					} else {
 						distOrth = RoutingHelperUtils.getOrthogonalDistance(currentLocation, routeNodes.get(currentRoute - 1), routeNodes.get(currentRoute));
 					}
-					if (distOrth > allowableDeviation) {
+					// A single fix past the threshold is not enough to spend a recalculation
+					// on - see CairoDriveOffRoute. The distance test is unchanged; what
+					// changes is how much agreement it takes to be believed.
+					if (offRouteHysteresis.shouldRecalculate(currentLocation, distOrth > allowableDeviation)) {
 						log.info("Recalculate route, because correlation  : " + distOrth); //$NON-NLS-1$
 						isDeviatedFromRoute = true;
 						calculateRoute = !settings.DISABLE_OFFROUTE_RECALC.get();

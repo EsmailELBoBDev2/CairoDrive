@@ -35,6 +35,11 @@ def proUnlocked = unlockPro?.trim() ? unlockPro.trim() : "true"
 def drivingViewEnv = System.getenv("CAIRODRIVE_DRIVING_VIEW")
 def drivingView = drivingViewEnv?.trim() ? drivingViewEnv.trim() : "true"
 
+// Require corroboration from several fixes before a deviation costs a route recalculation.
+// See CairoDriveOffRoute.
+def offRouteEnv = System.getenv("CAIRODRIVE_OFFROUTE_HYSTERESIS")
+def offRouteHysteresis = offRouteEnv?.trim() ? offRouteEnv.trim() : "true"
+
 def fullLogging = System.getenv("CAIRODRIVE_FULL_LOGGING")
 def debugLogging = fullLogging?.trim() ? fullLogging.trim() : "true"
 def releaseLogging = fullLogging?.trim() ? fullLogging.trim() : "false"
@@ -73,12 +78,14 @@ android {
 			buildConfigField "String", "GOOGLE_PLACES_API_KEY", placesKeyLiteral
 			buildConfigField "boolean", "CAIRODRIVE_UNLOCK_PRO", proUnlocked
 			buildConfigField "boolean", "CAIRODRIVE_DRIVING_VIEW", drivingView
+			buildConfigField "boolean", "CAIRODRIVE_OFFROUTE_HYSTERESIS", offRouteHysteresis
 		}
 		release {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
 			buildConfigField "String", "GOOGLE_PLACES_API_KEY", placesKeyLiteral
 			buildConfigField "boolean", "CAIRODRIVE_UNLOCK_PRO", proUnlocked
 			buildConfigField "boolean", "CAIRODRIVE_DRIVING_VIEW", drivingView
+			buildConfigField "boolean", "CAIRODRIVE_OFFROUTE_HYSTERESIS", offRouteHysteresis
 		}
 	}
 }
