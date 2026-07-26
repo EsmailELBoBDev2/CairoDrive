@@ -226,7 +226,11 @@ public class AppInitializer implements IProgress {
 
 	private void checkMapUpdates() {
 		long diff = System.currentTimeMillis() - app.getSettings().LAST_CHECKED_UPDATES.get();
-		if (diff >= 2 * 24 * 60 * 60L && new Random().nextInt(5) == 0 &&
+		// Milliseconds, so the interval needs the * 1000L. Without it the threshold is
+		// 172800 ms - under three minutes, not two days - and the only thing left throttling
+		// a download of the worldwide map catalogue is the one-in-five random. That is a
+		// meaningful amount of mobile data for anyone who opens the app several times a day.
+		if (diff >= 2 * 24 * 60 * 60 * 1000L && new Random().nextInt(5) == 0 &&
 				app.getSettings().isInternetConnectionAvailable()) {
 			app.getDownloadThread().runReloadIndexFiles();
 		} else if (Version.isDeveloperVersion(app)) {

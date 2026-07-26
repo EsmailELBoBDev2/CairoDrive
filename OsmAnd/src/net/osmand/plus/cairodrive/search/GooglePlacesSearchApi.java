@@ -90,8 +90,13 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 	 * almost never the query the user meant to run.
 	 */
 	private static final int MIN_QUERY_LENGTH = 4;
-	/** Wait for typing to settle before spending a request. */
-	private static final long DEBOUNCE_MS = 400;
+	/**
+	 * Wait for typing to settle before spending a request. 800 rather than 400: upstream
+	 * already waits 700 ms, and at 400 on top of that a normal pause mid-name still escaped
+	 * to a billed request, so a place name cost several. Long enough to halve that, short
+	 * enough that a finished query still feels immediate.
+	 */
+	private static final long DEBOUNCE_MS = 800;
 	private static final int MAX_RESULTS = 20;
 	private static final int CONNECT_TIMEOUT_MS = 10000;
 	private static final int READ_TIMEOUT_MS = 15000;
@@ -178,6 +183,14 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 	@Override
 	public int getSearchPriority(SearchPhrase phrase) {
 		if (!isActive(app) || queryOf(phrase).length() < MIN_QUERY_LENGTH) {
+			return -1;
+		}
+		// A selected word means the user tapped a category rather than typing a place name -
+		// "Fuel", "Restaurants". The offline POI-by-type search answers that correctly and
+		// for free, whereas Text Search bills a Pro request for it and, because the gate
+		// then stands the offline providers down, replaces a structured category result with
+		// a text match. Worse answer, and it costs money.
+		if (phrase.getLastSelectedWord() != null) {
 			return -1;
 		}
 		return SEARCH_PRIORITY;
