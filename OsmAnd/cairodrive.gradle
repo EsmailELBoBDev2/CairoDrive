@@ -14,10 +14,22 @@
 //   CAIRODRIVE_FULL_LOGGING      - "true"/"false", forces the verbose on-device
 //                                  logger on or off for every build type.
 //                                  Defaults to on for debug, off for release.
+//   GOOGLE_PLACES_API_KEY        - key for the Google Places API (New). When set, place
+//                                  search is served by Google instead of the offline OSM
+//                                  index; when empty the build behaves like stock OsmAnd.
 
 def fullLogging = System.getenv("CAIRODRIVE_FULL_LOGGING")
 def debugLogging = fullLogging?.trim() ? fullLogging.trim() : "true"
 def releaseLogging = fullLogging?.trim() ? fullLogging.trim() : "false"
+
+// Escaped and quoted because buildConfigField takes a Java literal, not a bare string.
+def placesKey = System.getenv("GOOGLE_PLACES_API_KEY")?.trim() ?: ""
+def placesKeyLiteral = "\"" + placesKey.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+if (placesKey) {
+	logger.lifecycle("CairoDrive: Google Places search enabled (key supplied via GOOGLE_PLACES_API_KEY)")
+} else {
+	logger.lifecycle("CairoDrive: GOOGLE_PLACES_API_KEY not set, falling back to offline OSM search")
+}
 
 android {
 	sourceSets {
@@ -41,9 +53,11 @@ android {
 	buildTypes {
 		debug {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", debugLogging
+			buildConfigField "String", "GOOGLE_PLACES_API_KEY", placesKeyLiteral
 		}
 		release {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
+			buildConfigField "String", "GOOGLE_PLACES_API_KEY", placesKeyLiteral
 		}
 	}
 }

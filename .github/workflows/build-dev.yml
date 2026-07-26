@@ -139,6 +139,7 @@ jobs:
         working-directory: android
         env:
           APP_EDITION: ${{ steps.variant.outputs.app_edition }}
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
           APK_NUMBER_VERSION: ${{ inputs.version_code }}
           CAIRODRIVE_KEYSTORE_FILE: ${{ steps.keystore.outputs.path }}
           CAIRODRIVE_KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD }}
@@ -152,6 +153,7 @@ jobs:
         working-directory: android
         env:
           APP_EDITION: ${{ steps.variant.outputs.app_edition }}
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
           APK_VERSION_SUFFIX: '#${{ github.run_number }}-${{ steps.variant.outputs.short_sha }}'
         run: ./gradlew --no-daemon --stacktrace ${{ steps.variant.outputs.apk_debug_task }}
 
@@ -161,6 +163,7 @@ jobs:
         working-directory: android
         env:
           APP_EDITION: ${{ steps.variant.outputs.app_edition }}
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
           APK_NUMBER_VERSION: ${{ inputs.version_code }}
           CAIRODRIVE_KEYSTORE_FILE: ${{ steps.keystore.outputs.path }}
           CAIRODRIVE_KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD }}

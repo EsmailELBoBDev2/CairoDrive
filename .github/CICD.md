@@ -100,6 +100,54 @@ Build-time environment variables:
 | `CAIRODRIVE_KEYSTORE_FILE` | path to the release keystore |
 | `CAIRODRIVE_KEYSTORE_PASSWORD` / `CAIRODRIVE_KEY_ALIAS` / `CAIRODRIVE_KEY_PASSWORD` | its credentials |
 | `CAIRODRIVE_FULL_LOGGING` | `true`/`false`, forces the diagnostic logger on or off for all build types |
+| `GOOGLE_PLACES_API_KEY` | key for Google Places search (see below) |
+
+## 3a. Google Places search
+
+Place search is served by the **Google Places API (New)** Text Search endpoint instead of
+the offline OSM index, because Google's POI coverage is far denser. Routing, rendering and
+offline maps are untouched — this only changes where search results come from.
+
+Add one repository secret:
+
+| Secret | Value |
+| --- | --- |
+| `GOOGLE_PLACES_API_KEY` | your Places API (New) key |
+
+The workflow passes it to Gradle, which compiles it into `BuildConfig.GOOGLE_PLACES_API_KEY`
+(`OsmAnd/cairodrive.gradle`). With the secret unset the build still succeeds and search
+falls back to stock offline OSM behaviour.
+
+**Restrict the key.** It ships inside the APK and can be extracted from any copy of the app.
+In the Google Cloud console set an *Android apps* restriction on it — package name
+`com.cairodrive.app` plus the SHA-1 of the signing certificate (add both the release
+certificate and the debug one, `keytool -list -v -keystore keystores/debug.keystore
+-storepass android`) — and an API restriction limiting it to the Places API (New). An
+unrestricted key on a public APK is billable by anyone who finds it.
+
+What is registered, in `QuickSearchHelper.initSearchUICore()`:
+
+| State | Typed search results |
+| --- | --- |
+| Key set **and** online | Google Places only — no OSM text, address, favourite, history, track or coordinate providers |
+| Offline, or no key | Stock OsmAnd: the full offline OSM provider set |
+
+The choice is re-evaluated in `getCore()` whenever reachability flips, so losing signal
+mid-drive hands search back to the offline index rather than returning nothing.
+
+Category browse (the Categories tab: Fuel, Restaurants, …) stays OSM-backed in both states.
+It is a different feature — "every fuel station near me" is an offline index query that Text
+Search does not replace — and the tab drives it through
+`shallowSearch(SearchAmenityTypesAPI.class)`, so dropping that provider would leave the tab
+empty. Remove the two `SearchAmenityTypesAPI` / `SearchAmenityByTypeAPI` registrations in the
+Google branch to make search Google-only in the most literal sense.
+
+Text Search is billed per request and OsmAnd searches on every keystroke, so
+`GooglePlacesSearchApi` waits 400 ms for typing to settle, ignores queries under 3
+characters, and caches responses for 5 minutes keyed on the query and a ~1 km rounded map
+centre. A typed query costs one or two billed requests rather than one per character. The
+requested field mask is also the cheapest set that still supports a map pin and a context
+menu — adding fields to `FIELD_MASK` can move the request to a more expensive SKU.
 
 ## 4. Diagnostic logging in test builds
 

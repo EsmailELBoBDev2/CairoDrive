@@ -28,6 +28,7 @@ import net.osmand.osm.PoiType;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.activities.MapActivity;
+import net.osmand.plus.cairodrive.search.GooglePlacesSearchApi;
 import net.osmand.plus.download.DownloadActivityType;
 import net.osmand.plus.download.DownloadIndexesThread;
 import net.osmand.plus.download.DownloadResourceGroup;
@@ -94,6 +95,8 @@ public class QuickSearchHelper implements ResourceListener {
 	private final SearchUICore core;
 	private SearchResultCollection resultCollection;
 	private boolean mapsIndexed;
+	/** Which provider set is currently registered, so getCore() can spot a flip. */
+	private boolean googlePlacesActive;
 
 	public QuickSearchHelper(OsmandApplication app) {
 		this.app = app;
@@ -109,7 +112,19 @@ public class QuickSearchHelper implements ResourceListener {
 			mapsIndexed = false;
 			setRepositoriesForSearchUICore(app);
 		}
+		// The providers are otherwise chosen once at startup, freezing that choice for the
+		// whole session: losing signal mid-drive would leave the Google API registered and
+		// searching nothing. Swap the set when reachability flips. Safe to do at any time -
+		// SearchUICore snapshots the provider list per search, so a search already running
+		// finishes on the set it started with.
+		if (googlePlacesActive != shouldUseGooglePlaces()) {
+			registerSearchProviders();
+		}
 		return core;
+	}
+
+	private boolean shouldUseGooglePlaces() {
+		return !useSpatialTextSearch() && GooglePlacesSearchApi.isActive(app);
 	}
 
 	public SearchResultCollection getResultCollection() {
@@ -123,15 +138,43 @@ public class QuickSearchHelper implements ResourceListener {
 	public void initSearchUICore() {
 		mapsIndexed = false;
 		setRepositoriesForSearchUICore(app);
-		core.clearAPIs();
 		core.resetSearch();
 		resultCollection = null;
+		registerSearchProviders();
+	}
+
+	/**
+	 * Chooses and registers the search providers. Split out of {@link #initSearchUICore()}
+	 * so that swapping between the Google-backed and offline provider sets does not have to
+	 * drag along resetSearch(), which would blank a result list already on screen.
+	 */
+	private void registerSearchProviders() {
+		core.clearAPIs();
 		if (useSpatialTextSearch()) {
+			googlePlacesActive = false;
 			core.registerAPI(new SearchAmenityTypesAPI(app.getPoiTypes()));
 			core.registerAPI(new SpatialTextSearchAPI(app.getPoiTypes()));
 			refreshCustomPoiFilters();
 			return;
 		}
+
+		// CairoDrive: while Google Places is reachable it owns the typed search results
+		// outright - none of the OSM text providers are registered, so what the list shows
+		// is exactly what Google returned. Category browse is deliberately kept: the
+		// Categories tab drives it through shallowSearch(SearchAmenityTypesAPI.class) and
+		// would otherwise be empty, and "all fuel stations near me" is an offline index
+		// query that Text Search does not replace. Drop these two registrations to make
+		// the search Google-only in the most literal sense.
+		googlePlacesActive = GooglePlacesSearchApi.isActive(app);
+		if (googlePlacesActive) {
+			core.registerAPI(new GooglePlacesSearchApi(app));
+			SearchAmenityTypesAPI typesApi = new SearchAmenityTypesAPI(app.getPoiTypes());
+			core.registerAPI(typesApi);
+			core.registerAPI(new SearchCoreFactory.SearchAmenityByTypeAPI(app.getPoiTypes(), typesApi));
+			refreshCustomPoiFilters();
+			return;
+		}
+
 		core.init();
 
 		// Register index item api
