@@ -626,6 +626,10 @@ public class SearchUICore {
 		apis.add(api);
 	}
 
+	public List<SearchCoreAPI> getAPIs() {
+		return apis;
+	}
+
 
 	public SearchResultCollection getCurrentSearchResult() {
 		return currentSearchResult;

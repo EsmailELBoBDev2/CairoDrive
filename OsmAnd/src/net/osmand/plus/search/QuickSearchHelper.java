@@ -28,7 +28,10 @@ import net.osmand.osm.PoiType;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.activities.MapActivity;
+import net.osmand.plus.cairodrive.search.GatedAmenityTypesAPI;
+import net.osmand.plus.cairodrive.search.GatedSearchApi;
 import net.osmand.plus.cairodrive.search.GooglePlacesSearchApi;
+import net.osmand.plus.cairodrive.search.SearchProviderGate;
 import net.osmand.plus.download.DownloadActivityType;
 import net.osmand.plus.download.DownloadIndexesThread;
 import net.osmand.plus.download.DownloadResourceGroup;
@@ -55,6 +58,7 @@ import net.osmand.search.SearchUICore.SearchResultCollection;
 import net.osmand.search.SearchUICore.SearchResultMatcher;
 import net.osmand.search.core.CustomSearchPoiFilter;
 import net.osmand.search.core.ObjectType;
+import net.osmand.search.core.SearchCoreAPI;
 import net.osmand.search.core.SearchCoreFactory;
 import net.osmand.search.core.SearchCoreFactory.SearchAmenityTypesAPI;
 import net.osmand.search.core.SearchCoreFactory.SearchBaseAPI;
@@ -95,8 +99,8 @@ public class QuickSearchHelper implements ResourceListener {
 	private final SearchUICore core;
 	private SearchResultCollection resultCollection;
 	private boolean mapsIndexed;
-	/** Which provider set is currently registered, so getCore() can spot a flip. */
-	private boolean googlePlacesActive;
+	/** Shared by the Google provider and the gated OSM providers wrapped around it. */
+	private final SearchProviderGate searchGate = new SearchProviderGate();
 
 	public QuickSearchHelper(OsmandApplication app) {
 		this.app = app;
@@ -112,19 +116,7 @@ public class QuickSearchHelper implements ResourceListener {
 			mapsIndexed = false;
 			setRepositoriesForSearchUICore(app);
 		}
-		// The providers are otherwise chosen once at startup, freezing that choice for the
-		// whole session: losing signal mid-drive would leave the Google API registered and
-		// searching nothing. Swap the set when reachability flips. Safe to do at any time -
-		// SearchUICore snapshots the provider list per search, so a search already running
-		// finishes on the set it started with.
-		if (googlePlacesActive != shouldUseGooglePlaces()) {
-			registerSearchProviders();
-		}
 		return core;
-	}
-
-	private boolean shouldUseGooglePlaces() {
-		return !useSpatialTextSearch() && GooglePlacesSearchApi.isActive(app);
 	}
 
 	public SearchResultCollection getResultCollection() {
@@ -144,33 +136,14 @@ public class QuickSearchHelper implements ResourceListener {
 	}
 
 	/**
-	 * Chooses and registers the search providers. Split out of {@link #initSearchUICore()}
-	 * so that swapping between the Google-backed and offline provider sets does not have to
-	 * drag along resetSearch(), which would blank a result list already on screen.
+	 * Registers the search providers: the stock OsmAnd set, then
+	 * {@link #applyGooglePlacesSearch()} on top of it.
 	 */
 	private void registerSearchProviders() {
 		core.clearAPIs();
 		if (useSpatialTextSearch()) {
-			googlePlacesActive = false;
 			core.registerAPI(new SearchAmenityTypesAPI(app.getPoiTypes()));
 			core.registerAPI(new SpatialTextSearchAPI(app.getPoiTypes()));
-			refreshCustomPoiFilters();
-			return;
-		}
-
-		// CairoDrive: while Google Places is reachable it owns the typed search results
-		// outright - none of the OSM text providers are registered, so what the list shows
-		// is exactly what Google returned. Category browse is deliberately kept: the
-		// Categories tab drives it through shallowSearch(SearchAmenityTypesAPI.class) and
-		// would otherwise be empty, and "all fuel stations near me" is an offline index
-		// query that Text Search does not replace. Drop these two registrations to make
-		// the search Google-only in the most literal sense.
-		googlePlacesActive = GooglePlacesSearchApi.isActive(app);
-		if (googlePlacesActive) {
-			core.registerAPI(new GooglePlacesSearchApi(app));
-			SearchAmenityTypesAPI typesApi = new SearchAmenityTypesAPI(app.getPoiTypes());
-			core.registerAPI(typesApi);
-			core.registerAPI(new SearchCoreFactory.SearchAmenityByTypeAPI(app.getPoiTypes(), typesApi));
 			refreshCustomPoiFilters();
 			return;
 		}
@@ -193,7 +166,53 @@ public class QuickSearchHelper implements ResourceListener {
 
 		core.registerAPI(new SearchOnlineApi(app));
 
+		applyGooglePlacesSearch();
 		refreshCustomPoiFilters();
+	}
+
+	/**
+	 * CairoDrive: makes Google Places the only source of typed search results.
+	 * <p>
+	 * Every provider registered above is wrapped so that it stands down for any phrase
+	 * Google answered, and the Google provider is added in front of them. OSM therefore
+	 * contributes only when Google could not: no key, no connection, a failed request, or
+	 * an empty response - which is also why the wrapping is driven by whether a key was
+	 * compiled in rather than by the current connection. Offline, the Google provider
+	 * reports "do not run" and the gate never closes, so the offline index answers exactly
+	 * as it does in stock OsmAnd.
+	 * <p>
+	 * Wrapping what was registered, rather than hand-picking providers, means a provider
+	 * added by a future upstream sync is gated too instead of silently leaking OSM results
+	 * back into the list.
+	 */
+	private void applyGooglePlacesSearch() {
+		if (!GooglePlacesSearchApi.isConfigured()) {
+			return;
+		}
+		List<SearchCoreAPI> offlineApis = new ArrayList<>(core.getAPIs());
+		// The category provider is subclassed rather than wrapped: the Categories tab and
+		// Android Auto look it up with shallowSearch(SearchAmenityTypesAPI.class), and
+		// custom POI filters find it with instanceof. Both need the type identity, which a
+		// delegating wrapper would hide.
+		GatedAmenityTypesAPI typesApi = new GatedAmenityTypesAPI(app.getPoiTypes(), searchGate);
+
+		core.clearAPIs();
+		core.registerAPI(new GooglePlacesSearchApi(app, searchGate));
+		for (SearchCoreAPI api : offlineApis) {
+			if (api instanceof SearchAmenityTypesAPI) {
+				core.registerAPI(typesApi);
+			} else if (api instanceof SearchCoreFactory.SearchAmenityByTypeAPI) {
+				// Rebuilt against the gated types provider rather than wrapped as-is: it
+				// reads custom POI filters out of the instance it was constructed with, and
+				// refreshCustomPoiFilters() only ever populates the registered one. Leaving
+				// it bound to the discarded instance would quietly break user POI filters.
+				core.registerAPI(new GatedSearchApi(
+						new SearchCoreFactory.SearchAmenityByTypeAPI(app.getPoiTypes(), typesApi),
+						searchGate));
+			} else {
+				core.registerAPI(new GatedSearchApi(api, searchGate));
+			}
+		}
 	}
 
 	private boolean useSpatialTextSearch() {

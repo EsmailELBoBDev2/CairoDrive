@@ -82,11 +82,10 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 	private static final double CACHE_LOCATION_PRECISION = 0.01;
 
 	/**
-	 * When this provider runs relative to the others, not a quality score. Deliberately
-	 * after the local category providers: this one sleeps for the debounce and then waits
-	 * on the network, so running it first would stall the instant category rows behind it.
+	 * Runs before every other provider. The OSM set is gated on this one's outcome, so it
+	 * has to take its turn - and record whether it answered - first.
 	 */
-	private static final int SEARCH_PRIORITY = 350;
+	private static final int SEARCH_PRIORITY = 5;
 	/**
 	 * Where the results land in the finished list. Below SEARCH_AMENITY_TYPE_PRIORITY so
 	 * actual places outrank the category row they arrived after.
@@ -132,10 +131,12 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 			};
 
 	private final OsmandApplication app;
+	private final SearchProviderGate gate;
 
-	public GooglePlacesSearchApi(@NonNull OsmandApplication app) {
+	public GooglePlacesSearchApi(@NonNull OsmandApplication app, @NonNull SearchProviderGate gate) {
 		super(ObjectType.POI);
 		this.app = app;
+		this.gate = gate;
 	}
 
 	/** True when a key was compiled in. See {@code OsmAnd/cairodrive.gradle}. */
@@ -166,8 +167,15 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 		return false;
 	}
 
+	/**
+	 * Every early return leaves the gate cleared, which is what lets the offline OSM
+	 * providers take over: they are suppressed only for a phrase this method answered with
+	 * at least one result.
+	 */
 	@Override
 	public boolean search(SearchPhrase phrase, SearchResultMatcher matcher) throws IOException {
+		gate.markUnsatisfied();
+
 		String query = queryOf(phrase);
 		if (query.length() < MIN_QUERY_LENGTH || !isActive(app)) {
 			return true;
@@ -190,6 +198,7 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 		if (body == null) {
 			body = request(query, location);
 			if (body == null) {
+				// Transport failure or a non-200 response - fall through to OSM.
 				return true;
 			}
 			store(key, body);
@@ -197,7 +206,12 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 		if (matcher.isCancelled()) {
 			return true;
 		}
-		publish(phrase, matcher, body);
+		int published = publish(phrase, matcher, body);
+		if (published > 0) {
+			gate.markSatisfied(phrase);
+		}
+		// published == 0 means Google simply knows nothing here, so the offline index gets
+		// its turn rather than the user being shown an empty list.
 		return true;
 	}
 
@@ -271,12 +285,15 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 		}
 	}
 
-	private void publish(@NonNull SearchPhrase phrase, @NonNull SearchResultMatcher matcher,
+	/** @return how many results reached the matcher; 0 hands the search to OSM. */
+	private int publish(@NonNull SearchPhrase phrase, @NonNull SearchResultMatcher matcher,
 			@NonNull String body) {
+		int published = 0;
 		try {
 			JSONArray places = new JSONObject(body).optJSONArray("places");
 			if (places == null) {
-				return;
+				// A 200 with no "places" is Google's empty result, not a malformed body.
+				return 0;
 			}
 			MapPoiTypes poiTypes = app.getPoiTypes();
 			for (int i = 0; i < places.length() && !matcher.isCancelled(); i++) {
@@ -285,13 +302,14 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 					continue;
 				}
 				SearchResult result = toSearchResult(phrase, place, poiTypes, i);
-				if (result != null) {
-					matcher.publish(result);
+				if (result != null && matcher.publish(result)) {
+					published++;
 				}
 			}
 		} catch (JSONException e) {
 			LOG.error("Could not parse Google Places response", e);
 		}
+		return published;
 	}
 
 	@Nullable

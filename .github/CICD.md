@@ -125,22 +125,39 @@ certificate and the debug one, `keytool -list -v -keystore keystores/debug.keyst
 -storepass android`) — and an API restriction limiting it to the Places API (New). An
 unrestricted key on a public APK is billable by anyone who finds it.
 
-What is registered, in `QuickSearchHelper.initSearchUICore()`:
+**Google answers, or nobody does.** OSM is a fallback, never a supplement — the two never
+mix in one result list:
 
-| State | Typed search results |
+| Google's outcome | Typed search results |
 | --- | --- |
-| Key set **and** online | Google Places only — no OSM text, address, favourite, history, track or coordinate providers |
-| Offline, or no key | Stock OsmAnd: the full offline OSM provider set |
+| At least one result | Google only. No OSM text, address, category, favourite, history, track or coordinate rows. |
+| Zero results | OSM, the full stock provider set |
+| Request failed, or non-200 | OSM |
+| No connection, or query under 3 characters | OSM |
+| No key compiled in | OSM (stock OsmAnd, nothing is wrapped at all) |
 
-The choice is re-evaluated in `getCore()` whenever reachability flips, so losing signal
-mid-drive hands search back to the offline index rather than returning nothing.
+How it works, in `QuickSearchHelper.applyGooglePlacesSearch()`: the stock providers are
+registered as usual, then each is wrapped in a `GatedSearchApi` and `GooglePlacesSearchApi`
+is put in front. `SearchUICore` re-checks `getSearchPriority()` for each provider at its turn
+in the run loop rather than once up front, so Google takes its turn first, records the
+outcome in a shared `SearchProviderGate`, and every wrapped provider then reports "do not
+run" for exactly the phrase Google answered. The gate is keyed by phrase, so a verdict from
+the previous keystroke can never suppress the fallback for the next one.
 
-Category browse (the Categories tab: Fuel, Restaurants, …) stays OSM-backed in both states.
-It is a different feature — "every fuel station near me" is an offline index query that Text
-Search does not replace — and the tab drives it through
-`shallowSearch(SearchAmenityTypesAPI.class)`, so dropping that provider would leave the tab
-empty. Remove the two `SearchAmenityTypesAPI` / `SearchAmenityByTypeAPI` registrations in the
-Google branch to make search Google-only in the most literal sense.
+Wrapping whatever was registered — instead of hand-picking providers — means a provider
+added by a future upstream sync is gated automatically rather than silently leaking OSM
+results back into the list.
+
+Two details worth knowing:
+
+* `SearchAmenityTypesAPI` is *subclassed* (`GatedAmenityTypesAPI`) rather than wrapped,
+  because the Categories tab and the Android Auto category screen look it up by type with
+  `shallowSearch(SearchAmenityTypesAPI.class, …)` and custom POI filters find it with
+  `instanceof`. A delegating wrapper would hide the type from both. `shallowSearch` calls
+  `search()` directly without consulting `getSearchPriority()`, so those screens keep
+  working while Google owns the typed result list.
+* `SearchAmenityByTypeAPI` is rebuilt against the gated types provider rather than wrapped
+  as-is, because it reads custom POI filters out of the instance it was constructed with.
 
 Text Search is billed per request and OsmAnd searches on every keystroke, so
 `GooglePlacesSearchApi` waits 400 ms for typing to settle, ignores queries under 3
