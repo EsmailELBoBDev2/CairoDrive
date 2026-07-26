@@ -138,19 +138,47 @@ Rotation is owned by the app, not by logcat (`CairoDriveLogWriter`):
 | Rule | Value | Effect |
 | --- | --- | --- |
 | `MAX_FILE_BYTES` | 8 MB | start a new file once the current one passes this size |
-| `MAX_FILE_AGE_MS` | 4 days | ...or once it is this old, whichever comes first |
-| `MAX_FILE_RETENTION_MS` | 4 days | delete a file once nothing has been appended to it for this long |
+| `MAX_FILE_AGE_MS` | 1 day | ...or once it spans this much time, whichever comes first |
+| `MAX_FILE_RETENTION_MS` | **4 days** | delete a file once its first entry is older than this |
 | `MAX_FILES` | 40 | hard cap on file count, oldest deleted first |
 | `MAX_TOTAL_BYTES` | 320 MB | hard cap on total size, oldest deleted first |
 
-So a file covers at most 4 days, and a file is kept for 4 days after its last entry —
-a rolling window of roughly 4 to 8 days, bounded by the 40-file / 320 MB budget. Under
-heavy logcat traffic the size cap fires long before the age cap, and the storage budget
-becomes the binding constraint; the age rules matter for lightly-used devices, where they
-stop a single file from spanning weeks and stop stale files from lingering forever.
+**Log data is cleared on a 4-day cycle — nothing older than 4 days survives.** Deletion
+works on whole files, so files are cut at one day (or 8 MB) to make the sweep accurate to
+the day.
+
+Four days is a **ceiling, not a floor**. Two things shorten the window:
+
+* the 40-file / 320 MB caps are enforced with no age floor, and under heavy logcat traffic
+  8 MB fills in hours — so the retained history can be well under two days;
+* logging only accrues while the app runs, so an intermittently-used device holds a few
+  hours of logs spread across a four-day window, not four days of logs.
+
+The sweep runs when a file rotates *and* once an hour on its own, so the clearing keeps to
+its schedule on a device that logs too lightly to rotate — but only **while the app is
+running**. Nothing sweeps in the background: files left by an app that has not been
+launched stay on disk until its next start, when the first write clears them.
+
+File names and line timestamps are both UTC, so a trace stays monotonic across a timezone
+change and a name can be read directly against the entries under it; the device's local
+zone is recorded once on the `SESSION` line. The flush, sweep, back-off and rotation timers
+run off the monotonic clock, so a clock correction cannot stall the sweep or strand files
+past the window.
+
+Retention itself is necessarily keyed on wall time. A device whose clock was wrong when a
+file was written — a head unit booting with a dead RTC, before it picks up network time —
+dates that file by the wrong clock, and no on-disk signal can recover its true age. So the
+4-day guarantee holds for a device whose clock was right at the time of writing, and
+degrades in both directions otherwise:
+
+* a clock that was **behind** makes the file look older once corrected, and it is retired
+  early — at worst immediately, losing the drive just recorded;
+* a clock that was **ahead** makes it look younger, extending its life by roughly the size
+  of the error, to at most just under 8 days. Beyond that the name is still in the future
+  at sweep time, which is treated as expired and cleared at once.
 
 The newest file is reopened and appended to on process start rather than superseded, so
-restarting the app does not consume the rotation window or churn the retention budget.
+restarting the app does not fragment the day's log into a file per launch.
 
 Writes are queued and drained on a background thread, so logging never blocks the UI; if a
 burst overflows the queue the dropped count is recorded in the next file header rather than

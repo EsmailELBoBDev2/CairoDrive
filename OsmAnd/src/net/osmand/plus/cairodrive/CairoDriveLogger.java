@@ -15,6 +15,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.StatFs;
+import android.os.SystemClock;
 import android.text.TextUtils;
 
 import androidx.annotation.NonNull;
@@ -36,6 +37,7 @@ import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import java.util.TimeZone;
 
 /**
  * Exhaustive on-device diagnostic logger for CairoDrive test builds.
@@ -69,11 +71,17 @@ public class CairoDriveLogger {
 	/** Compass updates arrive at sensor rate; log at most one per this interval. */
 	private static final long COMPASS_LOG_INTERVAL_MS = 500;
 	private static final long LOGCAT_RESTART_DELAY_MS = 2000;
+	/** A logcat command that ran at least this long counts as accepted by the platform. */
+	private static final long LOGCAT_ACCEPTED_AFTER_MS = 30000;
 
 	private static final CairoDriveLogger INSTANCE = new CairoDriveLogger();
 
-	private final SimpleDateFormat timestampFormat =
-			new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US);
+	/**
+	 * UTC, like the file names and like the logcat stream this interleaves with. A trace
+	 * that a driver carries across a timezone stays monotonic, and the device's local zone
+	 * is recorded once on the SESSION line instead of being baked into every stamp.
+	 */
+	private final SimpleDateFormat timestampFormat;
 
 	private CairoDriveLogWriter writer;
 	private HandlerThread samplerThread;
@@ -91,6 +99,8 @@ public class CairoDriveLogger {
 	private long sampleCounter;
 
 	private CairoDriveLogger() {
+		timestampFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS'Z'", Locale.US);
+		timestampFormat.setTimeZone(TimeZone.getTimeZone("UTC"));
 	}
 
 	@NonNull
@@ -393,7 +403,7 @@ public class CairoDriveLogger {
 		builder.append("heapUsedMb=").append(usedMb)
 				.append(" heapTotalMb=").append(runtime.totalMemory() / (1024 * 1024))
 				.append(" heapMaxMb=").append(runtime.maxMemory() / (1024 * 1024))
-				.append(" uptimeMs=").append(android.os.SystemClock.elapsedRealtime());
+				.append(" uptimeMs=").append(SystemClock.elapsedRealtime());
 
 		OsmandApplication app = this.app;
 		if (app != null) {
@@ -455,14 +465,22 @@ public class CairoDriveLogger {
 	 */
 	private void startLogcatPump() {
 		logcatThread = new Thread(() -> {
+			// utc keeps the logcat stamps in the same zone as this class' own lines and the
+			// file names. Each rung drops modifiers the previous one might not be accepted
+			// with; the last rung still asks for utc, in the alternative spelling, so a
+			// degraded pump does not silently start writing local time into a UTC file.
 			String[][] commands = {
-					{"logcat", "-v", "threadtime,year,uid", "-b", "main,system,crash", "*:V"},
+					{"logcat", "-v", "threadtime,year,uid,utc", "-b", "main,system,crash", "*:V"},
+					{"logcat", "-v", "threadtime,utc", "*:V"},
+					{"logcat", "-v", "threadtime", "-v", "utc", "*:V"},
 					{"logcat", "-v", "threadtime", "*:V"},
 			};
 			int attempt = 0;
 			while (started && !Thread.currentThread().isInterrupted()) {
 				String[] command = commands[Math.min(attempt, commands.length - 1)];
 				Process process = null;
+				boolean produced = false;
+				long runStartedAt = SystemClock.elapsedRealtime();
 				try {
 					process = new ProcessBuilder(command).redirectErrorStream(true).start();
 					log("LOGCAT", "pump started: " + TextUtils.join(" ", command));
@@ -470,6 +488,7 @@ public class CairoDriveLogger {
 							process.getInputStream(), StandardCharsets.UTF_8), 32768)) {
 						String line;
 						while (started && (line = reader.readLine()) != null) {
+							produced = true;
 							writer.write("LOGCAT| " + line);
 						}
 					}
@@ -483,7 +502,15 @@ public class CairoDriveLogger {
 						process.destroy();
 					}
 				}
-				attempt++;
+				// Only step down a rung when the command looks rejected. A child that
+				// produced output, or that lived a while, was accepted by this platform -
+				// its later death is logd restarting or the process being killed, and
+				// degrading the format for that would lose the UTC stamps for good.
+				if (produced || SystemClock.elapsedRealtime() - runStartedAt >= LOGCAT_ACCEPTED_AFTER_MS) {
+					attempt = 0;
+				} else {
+					attempt++;
+				}
 				if (!started) {
 					break;
 				}
