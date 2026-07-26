@@ -68,19 +68,40 @@ android {
 // checked-in debug keystore so that `assembleRelease`/`bundleRelease` still
 // produce installable artifacts. Debug-signed bundles cannot be uploaded to
 // Google Play; the CI workflow says so explicitly in its build summary.
-def keystorePath = System.getenv("CAIRODRIVE_KEYSTORE_FILE")
+def keystorePath = System.getenv("CAIRODRIVE_KEYSTORE_FILE")?.trim()
+def storePassword = System.getenv("CAIRODRIVE_KEYSTORE_PASSWORD")
+def keyAlias = System.getenv("CAIRODRIVE_KEY_ALIAS")
+def keyPassword = System.getenv("CAIRODRIVE_KEY_PASSWORD")
+
+// A keystore is only usable with all three credentials. Checking them here rather than
+// letting a null password reach the signer matters: signing is the very last task of the
+// bundle, so an incomplete set otherwise costs a full compile before failing with a
+// BadPaddingException that says nothing about which secret is missing.
+def missingCredentials = []
+if (!storePassword?.trim()) missingCredentials << "CAIRODRIVE_KEYSTORE_PASSWORD"
+if (!keyAlias?.trim()) missingCredentials << "CAIRODRIVE_KEY_ALIAS"
+if (!keyPassword?.trim()) missingCredentials << "CAIRODRIVE_KEY_PASSWORD"
+
 def publishing = android.signingConfigs.publishing
-if (keystorePath?.trim() && file(keystorePath.trim()).exists()) {
-	publishing.storeFile = file(keystorePath.trim())
-	publishing.storePassword = System.getenv("CAIRODRIVE_KEYSTORE_PASSWORD")
-	publishing.keyAlias = System.getenv("CAIRODRIVE_KEY_ALIAS")
-	publishing.keyPassword = System.getenv("CAIRODRIVE_KEY_PASSWORD")
-	logger.lifecycle("CairoDrive: release artifacts signed with ${keystorePath.trim()}")
-} else if (publishing.storeFile == null || !publishing.storeFile.exists()) {
+if (keystorePath && file(keystorePath).exists() && missingCredentials.isEmpty()) {
+	publishing.storeFile = file(keystorePath)
+	publishing.storePassword = storePassword
+	publishing.keyAlias = keyAlias
+	publishing.keyPassword = keyPassword
+	logger.lifecycle("CairoDrive: release artifacts signed with ${keystorePath}")
+} else {
+	if (keystorePath && file(keystorePath).exists()) {
+		// Warn rather than fail: a green build with installable debug-signed artifacts is
+		// more use than no artifacts at all, and Google Play rejects the bundle anyway.
+		logger.warn("CairoDrive: a release keystore was supplied but "
+				+ missingCredentials.join(", ") + (missingCredentials.size() == 1 ? " is" : " are")
+				+ " missing, so the debug keystore is used instead.")
+	} else {
+		logger.lifecycle("CairoDrive: no release keystore configured, using the debug keystore.")
+	}
 	publishing.storeFile = file("../keystores/debug.keystore")
 	publishing.storePassword = "android"
 	publishing.keyAlias = "androiddebugkey"
 	publishing.keyPassword = "android"
-	logger.lifecycle("CairoDrive: no release keystore configured, falling back to the debug keystore. " +
-			"Artifacts are installable but NOT uploadable to Google Play.")
+	logger.lifecycle("CairoDrive: artifacts are installable but NOT uploadable to Google Play.")
 }

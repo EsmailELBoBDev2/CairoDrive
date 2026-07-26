@@ -53,6 +53,10 @@ jobs:
       # directly in the `if:` below would make the whole workflow file fail to parse with
       # "Unrecognized named-value: 'secrets'", so the presence check is hoisted here.
       HAS_KEYSTORE: ${{ secrets.CAIRODRIVE_KEYSTORE_BASE64 != '' }}
+      HAS_KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD != '' }}
+      HAS_KEY_ALIAS: ${{ secrets.CAIRODRIVE_KEY_ALIAS != '' }}
+      HAS_KEY_PASSWORD: ${{ secrets.CAIRODRIVE_KEY_PASSWORD != '' }}
+      HAS_PLACES_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY != '' }}
 
     steps:
       # OsmAnd's build scripts reach out of the module with ../../resources, so the
@@ -107,6 +111,31 @@ jobs:
           if [ "${CORE}" != "legacy" ]; then
             echo "ANDROID_NDK_ROOT=" >> "$GITHUB_ENV"
             echo "ANDROID_NDK=" >> "$GITHUB_ENV"
+          fi
+
+      # Signing is the last task of a nine minute build, so an incomplete secret set is
+      # reported here instead of being discovered at the end. A warning, not a failure:
+      # the build still produces debug-signed artifacts that are useful for testing.
+      - name: Check secrets
+        run: |
+          set -euo pipefail
+          if [ "${HAS_KEYSTORE}" = "true" ]; then
+            missing=""
+            [ "${HAS_KEYSTORE_PASSWORD}" = "true" ] || missing="${missing} CAIRODRIVE_KEYSTORE_PASSWORD"
+            [ "${HAS_KEY_ALIAS}" = "true" ] || missing="${missing} CAIRODRIVE_KEY_ALIAS"
+            [ "${HAS_KEY_PASSWORD}" = "true" ] || missing="${missing} CAIRODRIVE_KEY_PASSWORD"
+            if [ -n "${missing}" ]; then
+              echo "::warning::A release keystore is configured but these secrets are missing:${missing}. Falling back to the debug keystore - artifacts will NOT be uploadable to Google Play."
+            else
+              echo "Release signing fully configured."
+            fi
+          else
+            echo "::notice::No release keystore configured; artifacts will be debug-signed."
+          fi
+          if [ "${HAS_PLACES_KEY}" = "true" ]; then
+            echo "Google Places search enabled."
+          else
+            echo "::warning::GOOGLE_PLACES_API_KEY is not set - search will fall back to the offline OSM index."
           fi
 
       - name: Configure Gradle memory
@@ -223,12 +252,19 @@ jobs:
             echo "- Variant: \`${{ steps.variant.outputs.variant }}\`"
             echo "- Application id: \`com.cairodrive.app\`"
             echo "- Commit: \`${{ steps.variant.outputs.short_sha }}\`"
-            if [ -n "${{ steps.keystore.outputs.path }}" ]; then
+            if [ "${HAS_KEYSTORE}" = "true" ] && [ "${HAS_KEYSTORE_PASSWORD}" = "true" ] \
+                && [ "${HAS_KEY_ALIAS}" = "true" ] && [ "${HAS_KEY_PASSWORD}" = "true" ]; then
               echo "- Signing: release keystore from repository secrets - **uploadable to Google Play**"
             else
               echo "- Signing: :warning: debug keystore fallback - installable for testing, **rejected by Google Play**."
-              echo "  Add the \`CAIRODRIVE_KEYSTORE_BASE64\`, \`CAIRODRIVE_KEYSTORE_PASSWORD\`,"
-              echo "  \`CAIRODRIVE_KEY_ALIAS\` and \`CAIRODRIVE_KEY_PASSWORD\` secrets to sign for release."
+              echo "  Needs all four of \`CAIRODRIVE_KEYSTORE_BASE64\`, \`CAIRODRIVE_KEYSTORE_PASSWORD\`,"
+              echo "  \`CAIRODRIVE_KEY_ALIAS\`, \`CAIRODRIVE_KEY_PASSWORD\`; a keystore without its"
+              echo "  credentials is not enough."
+            fi
+            if [ "${HAS_PLACES_KEY}" = "true" ]; then
+              echo "- Search: Google Places"
+            else
+              echo "- Search: :warning: offline OSM index - \`GOOGLE_PLACES_API_KEY\` is not set"
             fi
             echo
             echo "The debug APK writes its full diagnostic trace to"
