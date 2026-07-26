@@ -458,6 +458,34 @@ class RouteRecalculationHelper {
 			super(1, 1, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>());
 		}
 
+		/**
+		 * A route calculation is CPU bound for seconds at a time on a single thread. Left at the default
+		 * priority it is scheduled as an equal of the UI thread, so on a mid-range phone a reroute and the map
+		 * redraw fight for the same big core: the map stutters while rerouting, and the reroute itself is
+		 * slowed by having to share.
+		 * <p>
+		 * THREAD_PRIORITY_DEFAULT is what a bare Java thread gets; Android's own guidance is that background
+		 * work should sit at THREAD_PRIORITY_BACKGROUND. That is too low here - a backgrounded thread is
+		 * confined to the "bg" cpuset on most devices and a reroute is latency critical, it is the thing the
+		 * driver is waiting for. THREAD_PRIORITY_DEFAULT + THREAD_PRIORITY_LESS_FAVORABLE is one nice step
+		 * below the UI: still on the foreground cpuset and still scheduled promptly, but it yields to the UI
+		 * thread instead of competing with it.
+		 * <p>
+		 * Set from beforeExecute rather than a ThreadFactory so it also applies if the pool ever replaces its
+		 * worker after an uncaught exception.
+		 */
+		@Override
+		protected void beforeExecute(Thread t, Runnable r) {
+			super.beforeExecute(t, r);
+			try {
+				android.os.Process.setThreadPriority(
+						android.os.Process.THREAD_PRIORITY_DEFAULT + android.os.Process.THREAD_PRIORITY_LESS_FAVORABLE);
+			} catch (RuntimeException e) {
+				// setThreadPriority can throw SecurityException/IllegalArgumentException; never fatal here.
+				LOG.warn("Could not lower route calculation thread priority", e);
+			}
+		}
+
 		protected void afterExecute(Runnable r, Throwable t) {
 			super.afterExecute(r, t);
 			RouteRecalculationTask task = null;

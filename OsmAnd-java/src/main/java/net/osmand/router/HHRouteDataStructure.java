@@ -457,6 +457,18 @@ public class HHRouteDataStructure {
 		double addQueueTime = 0;
 		double pollQueueTime = 0;
 		double prepTime = 0;
+
+		/**
+		 * Compact single line dump of the phases that dominate an HH calculation, for the on-device timing
+		 * log. The fields themselves stay package private (they are written from all over the planner); this
+		 * is the only thing outside {@code net.osmand.router} is meant to read.
+		 */
+		public String toLogString() {
+			return String.format(java.util.Locale.US,
+					"loadPoints=%.0fms searchPoints=%.0fms routing=%.0fms prep=%.0fms queue=%.0fms visited=%d",
+					loadPointsTime, searchPointsTime, routingTime, prepTime, addQueueTime + pollQueueTime,
+					visitedVertices);
+		}
 	}
 	
 	public static class HHNetworkRouteRes extends RouteCalcResult {

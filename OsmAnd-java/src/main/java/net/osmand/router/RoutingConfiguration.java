@@ -214,22 +214,7 @@ public class RoutingConfiguration {
 
 			i.router.setImpassableRoads(new HashSet<>(impassableRoadLocations));
 			i.ZOOM_TO_LOAD_TILES = parseSilentInt(getAttribute(i.router, "zoomToLoadTiles"), i.ZOOM_TO_LOAD_TILES);
-			int memoryLimitMB = memoryLimits.memoryLimitMb;
-			int desirable = parseSilentInt(getAttribute(i.router, "memoryLimitInMB"), 0);
-			if (desirable != 0) {
-				i.memoryLimitation = desirable * (1l << 20);
-			} else {
-				if (memoryLimitMB == 0) {
-					memoryLimitMB = DEFAULT_MEMORY_LIMIT;
-				}
-				i.memoryLimitation = memoryLimitMB * (1l << 20);
-			}
-			int desirableNativeLimit = parseSilentInt(getAttribute(i.router, "nativeMemoryLimitInMB"), 0);
-			if (desirableNativeLimit != 0) {
-				i.nativeMemoryLimitation = desirableNativeLimit * (1l << 20);
-			} else {
-				i.nativeMemoryLimitation = memoryLimits.nativeMemoryLimitMb * (1l << 20);
-			}
+			applyMemoryLimits(i, memoryLimits);
 			i.planRoadDirection = parseSilentInt(getAttribute(i.router, "planRoadDirection"), i.planRoadDirection);
 			if (directionPointsBuilder != null) {
 				QuadRect rect = new QuadRect(0, 0, Integer.MAX_VALUE, Integer.MAX_VALUE);
@@ -246,6 +231,38 @@ public class RoutingConfiguration {
 			return i;
 		}
 		
+		/**
+		 * Derives {@link RoutingConfiguration#memoryLimitation} and
+		 * {@link RoutingConfiguration#nativeMemoryLimitation} from the caller supplied limits, letting the
+		 * routing profile override either of them through its {@code memoryLimitInMB} /
+		 * {@code nativeMemoryLimitInMB} attributes.
+		 * <p>
+		 * Extracted out of {@link #build} so that a configuration which is kept alive across several
+		 * calculations (see the warm routing environment in {@code RouteProvider}) can be re-pointed at the
+		 * heap headroom measured now instead of the headroom that happened to be free when it was built.
+		 * The limits are a tile-cache budget only - they never change which road is chosen - so refreshing
+		 * them on a reused configuration is safe, while leaving a stale (possibly far too generous) budget
+		 * in place would not be.
+		 */
+		public void applyMemoryLimits(RoutingConfiguration i, RoutingMemoryLimits memoryLimits) {
+			int memoryLimitMB = memoryLimits.memoryLimitMb;
+			int desirable = parseSilentInt(getAttribute(i.router, "memoryLimitInMB"), 0);
+			if (desirable != 0) {
+				i.memoryLimitation = desirable * (1l << 20);
+			} else {
+				if (memoryLimitMB == 0) {
+					memoryLimitMB = DEFAULT_MEMORY_LIMIT;
+				}
+				i.memoryLimitation = memoryLimitMB * (1l << 20);
+			}
+			int desirableNativeLimit = parseSilentInt(getAttribute(i.router, "nativeMemoryLimitInMB"), 0);
+			if (desirableNativeLimit != 0) {
+				i.nativeMemoryLimitation = desirableNativeLimit * (1l << 20);
+			} else {
+				i.nativeMemoryLimitation = memoryLimits.nativeMemoryLimitMb * (1l << 20);
+			}
+		}
+
 		public Builder setDirectionPoints(QuadTree<Node> directionPoints) {
 			this.directionPointsBuilder = directionPoints;
 			return this;

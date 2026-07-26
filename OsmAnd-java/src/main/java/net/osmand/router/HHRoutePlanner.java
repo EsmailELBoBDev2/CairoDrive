@@ -320,6 +320,10 @@ public class HHRoutePlanner<T extends NetworkDBPoint> {
 			RouteResultPreparation.printResults(hctx.rctx, start, end, route.detailed);
 		}
 		printGCInformation(false);
+		// Hand the phase timings to the caller. HHNetworkRouteRes has always declared this field but nothing
+		// ever filled it in, so the breakdown was only reachable through System.out. The on-device timing log
+		// in RouteProvider reads it to tell "the network was reloaded" apart from "the search itself was slow".
+		route.stats = hctx.stats;
 		hctx.clearAll(stPoints, endPoints);
 		if (SL >= 0) {
 			printFinalMessage("", start, end, startTime, hctx);

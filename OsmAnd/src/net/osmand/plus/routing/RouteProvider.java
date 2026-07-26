@@ -5,7 +5,9 @@ import android.os.Bundle;
 import android.util.Base64;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
+import net.osmand.IndexConstants;
 import net.osmand.Location;
 import net.osmand.LocationsHolder;
 import net.osmand.PlatformUtil;
@@ -27,6 +29,7 @@ import net.osmand.plus.onlinerouting.OnlineRoutingHelper;
 import net.osmand.plus.onlinerouting.engine.OnlineRoutingEngine;
 import net.osmand.plus.onlinerouting.engine.OnlineRoutingEngine.OnlineRoutingResponse;
 import net.osmand.plus.render.NativeOsmandLibrary;
+import net.osmand.plus.resources.ResourceManager;
 import net.osmand.plus.routing.GPXRouteParams.GPXRouteParamsBuilder;
 import net.osmand.plus.settings.backend.ApplicationMode;
 import net.osmand.plus.settings.backend.OsmandSettings;
@@ -53,6 +56,7 @@ import org.json.JSONException;
 import org.xml.sax.SAXException;
 
 import java.io.ByteArrayInputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -71,6 +75,282 @@ public class RouteProvider {
 	private static final int MIN_STRAIGHT_DIST = 50000;
 
 	private final GpxRouteHelper gpxRouteHelper = new GpxRouteHelper(this);
+
+	// ------------------------------------------------------------------------------------------------
+	// CairoDrive: warm routing environment
+	//
+	// RoutingHelper builds exactly one RouteProvider and keeps it for the life of the process, so this is
+	// app scoped state. Every calculation used to build a brand new RoutePlannerFrontEnd, RoutingConfiguration
+	// and RoutingContext, which throws away the Highway Hierarchies network index (loadNetworkPoints,
+	// groupByClusters and a QuadTree fill, see HHRoutePlanner.initHCtx) on every single reroute. Keeping one
+	// set alive lets HHRoutePlanner take its `if (hctx.initialized) return hctx;` early exit.
+	//
+	// The whole risk here is staleness: routing on a network index or a router configuration that no longer
+	// matches what the user has set or what is on disk is far worse than routing slowly. The rule below is
+	// therefore "rebuild unless we can cheaply prove nothing relevant changed" - see buildWarmSignature.
+	// ------------------------------------------------------------------------------------------------
+
+	/**
+	 * Master switch for the warm routing environment. Left as a mutable static so the behaviour can be
+	 * disabled from a debugger or a test without a rebuild; there is no user facing setting for it.
+	 */
+	public static boolean USE_WARM_ROUTING_ENVIRONMENT = true;
+
+	/** Grep handle for the per-calculation timing line. */
+	private static final String TIMING_TAG = "CD_ROUTE_TIMING";
+
+	/**
+	 * One cached, reusable routing environment. Immutable apart from the reuse counter - everything that
+	 * varies per calculation is reset on the contexts and re-applied on the configuration before use.
+	 */
+	static class WarmRoutingEnvironment {
+		final String signature;
+		final RoutePlannerFrontEnd router;
+		final RoutingConfiguration config;
+		final RoutingContext ctx;
+		/** May be null when this profile never uses the two phase COMPLEX context. */
+		final RoutingContext complexCtx;
+		/**
+		 * penaltyForReverseDirection as built from the routing profile. HHRoutePlanner.runHHRoute halves it
+		 * for intermediate targets and restores it afterwards, but not through a finally block - so snapshot
+		 * the built value and restore it on every reuse rather than trusting that it was put back.
+		 */
+		final double penaltyForReverseDirection;
+		/** Value of {@link RouteProvider#mapGeneration} when the reader array behind this entry was read. */
+		final long mapGeneration;
+		int reuseCount;
+
+		WarmRoutingEnvironment(String signature, RoutePlannerFrontEnd router, RoutingConfiguration config,
+		                       RoutingContext ctx, RoutingContext complexCtx, double penaltyForReverseDirection,
+		                       long mapGeneration) {
+			this.signature = signature;
+			this.router = router;
+			this.config = config;
+			this.ctx = ctx;
+			this.complexCtx = complexCtx;
+			this.penaltyForReverseDirection = penaltyForReverseDirection;
+			this.mapGeneration = mapGeneration;
+		}
+	}
+
+	/** Result of asking for the cache: what we got, and whether we are allowed to fill it when we are done. */
+	private static class WarmCheckout {
+		static final WarmCheckout NONE = new WarmCheckout(null, false);
+
+		final WarmRoutingEnvironment environment;
+		final boolean mayCache;
+
+		WarmCheckout(WarmRoutingEnvironment environment, boolean mayCache) {
+			this.environment = environment;
+			this.mayCache = mayCache;
+		}
+	}
+
+	private final Object warmLock = new Object();
+	private WarmRoutingEnvironment warmEnvironment;
+	/**
+	 * The thread that currently owns the cache slot. The cache is single tenant on purpose: a RoutingContext
+	 * is not remotely thread safe, and while reroutes are serialised on RouteRecalculationHelper's single
+	 * thread executor, nothing structurally prevents a second calculation from starting elsewhere. A second
+	 * caller simply builds its own throwaway environment, exactly like before this cache existed.
+	 */
+	private Thread warmSessionOwner;
+	/**
+	 * Bumped from the ResourceManager callbacks whenever the map files change underneath us.
+	 * <p>
+	 * A counter rather than a flag, and read <em>before</em> the reader array is taken, so that a map change
+	 * landing in the middle of a calculation cannot be mistaken for one that landed before it. An entry is
+	 * only reused, and only stored, while the generation it was built at is still current.
+	 * <p>
+	 * This is a second line of defence: buildWarmSignature already fingerprints the reader array, so a map
+	 * that was downloaded, deleted or replaced by an OsmAnd Live update is caught even without the listener.
+	 * The listener additionally covers a reader object surviving while its content is re-indexed.
+	 */
+	private volatile long mapGeneration;
+	private boolean resourceListenerRegistered;
+
+	/**
+	 * Registers the map-change listener once, lazily. It cannot be done in the constructor: AppInitializer
+	 * creates RoutingHelper (and therefore this) before it creates ResourceManager.
+	 */
+	private void ensureResourceListenerRegistered(@NonNull OsmandApplication app) {
+		synchronized (warmLock) {
+			if (resourceListenerRegistered) {
+				return;
+			}
+			resourceListenerRegistered = true;
+		}
+		app.getResourceManager().addResourceListener(new ResourceManager.ResourceListener() {
+			@Override
+			public void onMapsIndexed() {
+				invalidateWarmEnvironment("maps indexed");
+			}
+
+			@Override
+			public void onReaderIndexed(BinaryMapIndexReader reader) {
+				invalidateWarmEnvironment("reader indexed");
+			}
+
+			@Override
+			public void onReaderClosed(BinaryMapIndexReader reader) {
+				invalidateWarmEnvironment("reader closed");
+			}
+
+			@Override
+			public void onMapClosed(String fileName) {
+				invalidateWarmEnvironment("map closed");
+			}
+		});
+	}
+
+	/**
+	 * Drops the cached environment. Safe to call from any thread at any time: it only raises a flag and clears
+	 * the reference. A calculation that is mid-flight keeps using the objects it already holds - it was
+	 * started against the map set that was current when it started, which is exactly the guarantee OsmAnd
+	 * gives today - but the flag stops the environment from being handed to the next one.
+	 */
+	public void invalidateWarmEnvironment(@NonNull String reason) {
+		synchronized (warmLock) {
+			mapGeneration++;
+			if (warmEnvironment != null) {
+				log.info(TIMING_TAG + " warm environment dropped: " + reason);
+				warmEnvironment = null;
+			}
+		}
+	}
+
+	/**
+	 * @param generation the value of {@link #mapGeneration} read before the caller took its snapshot of the
+	 * routing map readers.
+	 */
+	@NonNull
+	private WarmCheckout checkOutWarmEnvironment(@NonNull RouteCalculationParams params, @NonNull String signature,
+	                                             long generation) {
+		ensureResourceListenerRegistered(params.ctx);
+		synchronized (warmLock) {
+			if (warmSessionOwner != null) {
+				// Another calculation holds the slot. Do not reuse and do not overwrite - build throwaway.
+				return WarmCheckout.NONE;
+			}
+			warmSessionOwner = Thread.currentThread();
+			WarmRoutingEnvironment cached = warmEnvironment;
+			if (cached != null && cached.mapGeneration != mapGeneration) {
+				log.info(TIMING_TAG + " warm environment dropped: map files changed");
+				cached = null;
+				warmEnvironment = null;
+			}
+			if (cached != null && !cached.signature.equals(signature)) {
+				log.info(TIMING_TAG + " warm environment dropped: routing signature changed");
+				cached = null;
+				warmEnvironment = null;
+			}
+			if (cached != null) {
+				cached.reuseCount++;
+			}
+			// A map change that landed after the caller read the reader array makes this calculation's
+			// environment stale by construction: use it for this route, but never cache it.
+			return new WarmCheckout(cached, generation == mapGeneration);
+		}
+	}
+
+	/**
+	 * Ends the cache session opened by {@link #checkOutWarmEnvironment}. Must be reached on every path out of
+	 * a calculation, including exceptions, or the slot stays locked and the cache silently stops working.
+	 *
+	 * @param keep false whenever the calculation did not finish cleanly. A context that was abandoned part way
+	 * through - cancelled, out of memory, or a RuntimeException swallowed by calcOfflineRouteImpl - is not
+	 * worth the risk of reusing, and rebuilding costs one cold calculation.
+	 */
+	private void finishWarmSession(@Nullable RoutingEnvironment env, boolean keep) {
+		WarmRoutingEnvironment entry = env != null ? env.getWarmEnvironment() : null;
+		synchronized (warmLock) {
+			if (warmSessionOwner != Thread.currentThread()) {
+				return;
+			}
+			warmSessionOwner = null;
+			if (entry != null && keep && entry.mapGeneration == mapGeneration) {
+				warmEnvironment = entry;
+			} else {
+				warmEnvironment = null;
+			}
+		}
+	}
+
+	/**
+	 * Fingerprint of everything the cached environment was built from. Any difference forces a rebuild.
+	 * <p>
+	 * Covered here:
+	 * <ul>
+	 *     <li><b>application / routing profile</b> - mode key, derived profile and resolved routing profile;</li>
+	 *     <li><b>routing parameters and preferences</b> - the full parameter map that GeneralRouter is built
+	 *         with, plus the calculation method, approximation type, safe mode and missing-map flags;</li>
+	 *     <li><b>the routing configuration itself</b> - identity of the RoutingConfiguration.Builder and of the
+	 *         template GeneralRouter, so reloading routing.xml or switching to a custom routing file rebuilds;</li>
+	 *     <li><b>the set of loaded map files</b> - identity and order of the BinaryMapIndexReader array, which
+	 *         changes whenever a map is downloaded, deleted, re-indexed or updated by OsmAnd Live;</li>
+	 *     <li><b>avoided roads and direction points</b> - the impassable road ids baked into the router, and the
+	 *         selected avoid-roads files with their size and mtime, since their contents are parsed into the
+	 *         configuration's direction point tree;</li>
+	 *     <li><b>the native library</b> - identity, so loading it after a cold start rebuilds.</li>
+	 * </ul>
+	 * Deliberately not covered, because they are re-applied on every reuse instead: memory limits, initial
+	 * bearing, conditional-routing timestamp, minor-turns flag, left-hand driving and the transport-stop flags.
+	 */
+	@NonNull
+	private String buildWarmSignature(@NonNull RouteCalculationParams params, @NonNull OsmandSettings settings,
+	                                  @NonNull Builder configBuilder, @NonNull GeneralRouter generalRouter,
+	                                  @NonNull Map<String, String> routingParams,
+	                                  @NonNull BinaryMapIndexReader[] files, @Nullable NativeOsmandLibrary lib,
+	                                  @NonNull RouteCalculationMethod method,
+	                                  @NonNull ApproximationType approximationType) {
+		StringBuilder sb = new StringBuilder(256);
+		sb.append("mode=").append(params.mode.getStringKey())
+				.append('|').append(params.mode.getDerivedProfile())
+				.append('|').append(getRoutingProfileName(params.mode));
+		sb.append(";builder=").append(System.identityHashCode(configBuilder));
+		sb.append(";router=").append(System.identityHashCode(generalRouter));
+		sb.append(";params=").append(routingParams);
+		sb.append(";method=").append(method).append(',').append(approximationType);
+		sb.append(";safe=").append(settings.SAFE_MODE.get());
+		sb.append(";missing=").append(OsmandSettings.IGNORE_MISSING_MAPS).append(',').append(OsmandSettings.STOP_ON_MISSING_MAPS);
+		sb.append(";lib=").append(System.identityHashCode(lib));
+		// The impassable road ids are baked into the built GeneralRouter, so list them rather than hashing
+		// them - the set is a handful of entries and a hash collision here would mean silently routing over a
+		// road the user asked to avoid.
+		List<Long> impassable = new ArrayList<>(configBuilder.getImpassableRoadLocations());
+		Collections.sort(impassable);
+		sb.append(";impassable=").append(impassable);
+		sb.append(";avoidFiles=").append(avoidRoadsFilesSignature(params));
+		sb.append(";maps=").append(files.length);
+		for (BinaryMapIndexReader reader : files) {
+			sb.append(',').append(System.identityHashCode(reader));
+		}
+		return sb.toString();
+	}
+
+	/**
+	 * The avoid-roads (direction point) files selected for this mode, with size and last-modified time.
+	 * <p>
+	 * DirectionPointsHelper.getDirectionPoints re-parses these JSON files on every calculation and the result
+	 * is baked into the RoutingConfiguration, so a reused configuration must be able to notice that a file was
+	 * added, removed or edited. Almost always the selection is empty and this costs nothing.
+	 */
+	@NonNull
+	private String avoidRoadsFilesSignature(@NonNull RouteCalculationParams params) {
+		List<String> selected = params.ctx.getAvoidSpecificRoads().getPointsHelper().getSelectedFilesForMode(params.mode);
+		if (Algorithms.isEmpty(selected)) {
+			return "none";
+		}
+		StringBuilder sb = new StringBuilder();
+		File dir = params.ctx.getAppPath(IndexConstants.ROUTING_PROFILES_DIR);
+		List<String> sorted = new ArrayList<>(selected);
+		Collections.sort(sorted);
+		for (String name : sorted) {
+			File f = new File(dir, name);
+			sb.append(name).append(':').append(f.length()).append(':').append(f.lastModified()).append(';');
+		}
+		return sb.toString();
+	}
 
 	public static Location createLocation(@NonNull WptPt pt) {
 		Location loc = new Location("OsmandRouteProvider");
@@ -292,8 +572,21 @@ public class RouteProvider {
 	}
 
 	protected RoutingEnvironment calculateRoutingEnvironment(RouteCalculationParams params, boolean calcGPXRoute, boolean skipComplex) throws IOException {
+		return calculateRoutingEnvironment(params, calcGPXRoute, skipComplex, false);
+	}
+
+	/**
+	 * @param allowWarmEnvironment when true this call may be served from - and may populate - the warm routing
+	 * environment cache. Only the offline navigation path ({@link #findVectorMapsRoute}) passes true; every
+	 * other caller (GPX approximation, route-preview helpers) keeps building throwaway objects, because those
+	 * run on other threads and with other lifetimes and the cache is deliberately single-tenant.
+	 */
+	protected RoutingEnvironment calculateRoutingEnvironment(RouteCalculationParams params, boolean calcGPXRoute,
+	                                                         boolean skipComplex, boolean allowWarmEnvironment) throws IOException {
+		// Read before the reader array so that a map change racing with this calculation is always seen as
+		// "after" it, never as "before".
+		long mapGenerationAtStart = mapGeneration;
 		BinaryMapIndexReader[] files = params.ctx.getResourceManager().getRoutingMapFiles();
-		RoutePlannerFrontEnd router = new RoutePlannerFrontEnd();
 
 		OsmandSettings settings = params.ctx.getSettings();
 
@@ -301,29 +594,62 @@ public class RouteProvider {
 		RoutePlannerFrontEnd.CONTINUE_ON_MISSING_MAPS = !OsmandSettings.STOP_ON_MISSING_MAPS;
 
 		RouteCalculationMethod method = settings.ROUTE_CALCULATION_METHOD.getModeValue(params.mode);
-
-		if (method.isFastRoutingPossible(params.mode)) {
-			router.setDefaultHHRoutingConfig();
-		} else {
-			router.setHHRoutingConfig(null);
-		}
-
-		router.setHHRouteCpp(!settings.SAFE_MODE.get());
-		router.setUseOnlyHHRouting(method.isFastRoutingOnly(params.mode));
-
 		ApproximationType approximationType = settings.APPROXIMATION_TYPE.getModeValue(params.mode);
-		router.setUseNativeApproximation(approximationType.isNativeApproximation());
-		router.setUseGeometryBasedApproximation(approximationType.isGeoApproximation());
 
 		RoutingConfiguration.Builder config = params.ctx.getRoutingConfigForMode(params.mode);
 		GeneralRouter generalRouter = params.ctx.getRouter(config, params.mode);
 		if (generalRouter == null) {
 			return null;
 		}
-		RoutingConfiguration cf = initOsmAndRoutingConfig(config, params, settings, generalRouter);
-		if (cf == null) {
-			return null;
+		Map<String, String> routingParams = collectRoutingParameters(params, settings, generalRouter);
+
+		// BUILD context
+		NativeOsmandLibrary lib = settings.SAFE_MODE.get() ? null : NativeOsmandLibrary.getLoadedLibrary();
+
+		// A GPX-guided route carries a PrecalculatedRouteDirection derived from the track, and a public
+		// transport calculation drives the context differently again; neither is a plain navigation reroute,
+		// so neither is allowed to read from or write to the warm cache.
+		boolean warmAllowed = allowWarmEnvironment && USE_WARM_ROUTING_ENVIRONMENT
+				&& !calcGPXRoute && !skipComplex && !params.inPublicTransportMode;
+		String signature = warmAllowed
+				? buildWarmSignature(params, settings, config, generalRouter, routingParams, files, lib, method, approximationType)
+				: null;
+		WarmCheckout checkout = signature != null
+				? checkOutWarmEnvironment(params, signature, mapGenerationAtStart) : WarmCheckout.NONE;
+		WarmRoutingEnvironment warm = checkout.environment;
+
+		RoutePlannerFrontEnd router;
+		RoutingConfiguration cf;
+		if (warm != null) {
+			router = warm.router;
+			cf = warm.config;
+			// The HH network cache and the built GeneralRouter come along untouched - the signature above is
+			// what guarantees they still describe the current profile, parameters and map files. Only the
+			// genuinely per-calculation fields are refreshed.
+			cf.penaltyForReverseDirection = warm.penaltyForReverseDirection;
+			config.applyMemoryLimits(cf, currentMemoryLimits(settings, false));
+			applyPerCalculationSettings(cf, params, settings);
+		} else {
+			router = new RoutePlannerFrontEnd();
+			if (method.isFastRoutingPossible(params.mode)) {
+				// Ask the HH planner to hold on to its loaded network between calls. It only ever acts on
+				// this when the same RoutingContext comes back, which is exactly what the warm cache provides
+				// and what a throwaway front end never will - so passing warmAllowed here is a hint, not a
+				// correctness decision.
+				router.setDefaultHHRoutingConfig(warmAllowed);
+			} else {
+				router.setHHRoutingConfig(null);
+			}
+			cf = initOsmAndRoutingConfig(config, params, settings, generalRouter, routingParams);
+			if (cf == null) {
+				return null;
+			}
 		}
+		router.setHHRouteCpp(!settings.SAFE_MODE.get());
+		router.setUseOnlyHHRouting(method.isFastRoutingOnly(params.mode));
+		router.setUseNativeApproximation(approximationType.isNativeApproximation());
+		router.setUseGeometryBasedApproximation(approximationType.isGeoApproximation());
+
 		PrecalculatedRouteDirection precalculated = null;
 		if (calcGPXRoute) {
 			ArrayList<Location> sublist = findStartAndEndLocationsFromRoute(params.gpxRoute.points,
@@ -336,8 +662,6 @@ public class RouteProvider {
 			precalculated.setFollowNext(true);
 			//cf.planRoadDirection = 1;
 		}
-		// BUILD context
-		NativeOsmandLibrary lib = settings.SAFE_MODE.get() ? null : NativeOsmandLibrary.getLoadedLibrary();
 		// check loaded files
 		int leftX = MapUtils.get31TileNumberX(params.start.getLongitude());
 		int rightX = leftX;
@@ -359,7 +683,16 @@ public class RouteProvider {
 
 		params.ctx.getResourceManager().getRenderer().checkInitialized(15, lib, leftX, rightX, bottomY, topY);
 
-		RoutingContext ctx = router.buildRoutingContext(cf, lib, files, RouteCalculationMode.NORMAL);
+		RoutingContext ctx;
+		if (warm != null) {
+			ctx = warm.ctx;
+			ctx.resetForNewCalculation();
+			if (warm.complexCtx != null) {
+				warm.complexCtx.resetForNewCalculation();
+			}
+		} else {
+			ctx = router.buildRoutingContext(cf, lib, files, RouteCalculationMode.NORMAL);
+		}
 		ctx.leftSideNavigation = params.leftSide;
 		ctx.calculationProgress = params.calculationProgress;
 		ctx.publicTransport = params.inPublicTransportMode;
@@ -372,36 +705,83 @@ public class RouteProvider {
 				ctx.previouslyCalculatedRoute = originalRoute.subList(currentRoute, originalRoute.size());
 			}
 		}
-		boolean complex = !skipComplex && params.mode.isDerivedRoutingFrom(ApplicationMode.CAR)
+		boolean complexPossible = !skipComplex && params.mode.isDerivedRoutingFrom(ApplicationMode.CAR)
 				// Setting using RoutingType A_STAR_CLASSIC/A_STAR_2_PHASE is deprecated
-				&& precalculated == null && router.getRecalculationEnd(ctx) == null;
+				&& precalculated == null;
+		boolean complex = complexPossible && router.getRecalculationEnd(ctx) == null;
 
-		RoutingContext complexCtx = null;
-		if (complex) {
-			complexCtx = router.buildRoutingContext(cf, lib, files, RouteCalculationMode.COMPLEX);
+		// Whether the COMPLEX context is needed flips during a drive: it is used unless getRecalculationEnd
+		// found a reusable tail of the previous route, which in practice means the initial calculation and the
+		// last ~20km (config.recalculateDistance) use COMPLEX while the middle of a long drive uses NORMAL.
+		// A cache entry holding only one of the two would rebuild at every flip, so when we are going to cache
+		// we build both up front and let each calculation pick. The HH network cache still follows whichever
+		// context is actually searched, so a flip costs one cold calculation - not one per reroute.
+		RoutingContext cachedComplexCtx;
+		if (warm != null) {
+			cachedComplexCtx = warm.complexCtx;
+		} else if (complexPossible && (complex || checkout.mayCache && warmAllowed)) {
+			cachedComplexCtx = router.buildRoutingContext(cf, lib, files, RouteCalculationMode.COMPLEX);
+		} else {
+			cachedComplexCtx = null;
+		}
+		RoutingContext complexCtx = complex ? cachedComplexCtx : null;
+		if (complexCtx != null) {
 			complexCtx.calculationProgress = params.calculationProgress;
 			complexCtx.leftSideNavigation = params.leftSide;
 			complexCtx.previouslyCalculatedRoute = ctx.previouslyCalculatedRoute;
 		}
-		return new RoutingEnvironment(router, ctx, complexCtx, precalculated);
+
+		RoutingEnvironment env = new RoutingEnvironment(router, ctx, complexCtx, precalculated);
+		if (warm != null) {
+			env.setWarmEnvironment(warm);
+		} else if (warmAllowed && checkout.mayCache) {
+			env.setWarmEnvironment(new WarmRoutingEnvironment(signature, router, cf, ctx, cachedComplexCtx,
+					cf.penaltyForReverseDirection, mapGenerationAtStart));
+		}
+		return env;
 	}
 
 	protected RouteCalculationResult findVectorMapsRoute(RouteCalculationParams params, boolean calcGPXRoute) throws IOException {
-		RoutingEnvironment env = calculateRoutingEnvironment(params, calcGPXRoute, false);
-		if (env == null) {
-			return applicationModeNotSupported(params);
+		long startNanos = System.nanoTime();
+		RoutingEnvironment env = null;
+		RouteCalculationResult result = null;
+		try {
+			env = calculateRoutingEnvironment(params, calcGPXRoute, false, true);
+			if (env == null) {
+				return applicationModeNotSupported(params);
+			}
+			long setupNanos = System.nanoTime() - startNanos;
+			LatLon st = new LatLon(params.start.getLatitude(), params.start.getLongitude());
+			LatLon en = new LatLon(params.end.getLatitude(), params.end.getLongitude());
+			List<LatLon> inters = new ArrayList<>();
+			if (params.intermediates != null) {
+				inters = new ArrayList<>(params.intermediates);
+			}
+			result = calcOfflineRouteImpl(params, env.getRouter(), env.getCtx(), env.getComplexCtx(), st, en,
+					inters, env.getPrecalculated(), env, setupNanos);
+			return result;
+		} finally {
+			// Only a clean, completed calculation leaves the environment in a state worth reusing. Anything
+			// else - cancelled by a newer reroute, out of memory, a RuntimeException that calcOfflineRouteImpl
+			// turned into an error result - drops the cache and costs one cold calculation next time.
+			boolean keep = result != null && result.isCalculated()
+					&& (params.calculationProgress == null || !params.calculationProgress.isCancelled);
+			finishWarmSession(env, keep);
 		}
-		LatLon st = new LatLon(params.start.getLatitude(), params.start.getLongitude());
-		LatLon en = new LatLon(params.end.getLatitude(), params.end.getLongitude());
-		List<LatLon> inters = new ArrayList<>();
-		if (params.intermediates != null) {
-			inters = new ArrayList<>(params.intermediates);
-		}
-		return calcOfflineRouteImpl(params, env.getRouter(), env.getCtx(), env.getComplexCtx(), st, en, inters, env.getPrecalculated());
 	}
 
-	private RoutingConfiguration initOsmAndRoutingConfig(Builder builder, RouteCalculationParams params, OsmandSettings settings,
-	                                                     GeneralRouter generalRouter) {
+	/**
+	 * Collects the routing parameter values that {@code GeneralRouter} is built with for this mode.
+	 * <p>
+	 * Split out of {@link #initOsmAndRoutingConfig} because the warm routing environment has to compare
+	 * exactly these values to decide whether a cached configuration is still valid. Deriving the cache key
+	 * from a second, independently written copy of this loop would be the classic way to end up routing on
+	 * stale preferences, so both callers read the same map.
+	 */
+	@NonNull
+	private Map<String, String> collectRoutingParameters(@NonNull RouteCalculationParams params,
+	                                                     @NonNull OsmandSettings settings,
+	                                                     @NonNull GeneralRouter generalRouter) {
 		Map<String, String> paramsR = new LinkedHashMap<String, String>();
 		for (Map.Entry<String, RoutingParameter> e : RoutingHelperUtils.getParametersForDerivedProfile(params.mode, generalRouter).entrySet()) {
 			String key = e.getKey();
@@ -433,50 +813,90 @@ public class RouteProvider {
 		if (maxSpeed > 0) {
 			paramsR.put(GeneralRouter.MAX_SPEED, String.valueOf(maxSpeed));
 		}
-		OsmandApplication app = settings.getContext();
-		DirectionPointsHelper helper = app.getAvoidSpecificRoads().getPointsHelper();
-		builder.setDirectionPoints(helper.getDirectionPoints(params.mode));
+		return paramsR;
+	}
 
+	@NonNull
+	private RoutingMemoryLimits currentMemoryLimits(@NonNull OsmandSettings settings, boolean verbose) {
 		float mb = (1 << 20);
 		Runtime rt = Runtime.getRuntime();
 		// make visible
 		int memoryLimitMb = (int) (0.95 * ((rt.maxMemory() - rt.totalMemory()) + rt.freeMemory()) / mb);
 		int nativeMemoryLimitMb = settings.MEMORY_ALLOCATED_FOR_ROUTING.get();
-		RoutingMemoryLimits memoryLimits = new RoutingMemoryLimits(memoryLimitMb, nativeMemoryLimitMb);
-		log.warn("Use " + memoryLimitMb + " MB Free " + rt.freeMemory() / mb + " of " + rt.totalMemory() / mb + " max " + rt.maxMemory() / mb);
-		log.warn("Use " + nativeMemoryLimitMb + " MB of native memory ");
-		String derivedProfile = params.mode.getDerivedProfile();
-		String routingProfile = "default".equals(derivedProfile) ? params.mode.getRoutingProfile() : derivedProfile;
+		if (verbose) {
+			log.warn("Use " + memoryLimitMb + " MB Free " + rt.freeMemory() / mb + " of " + rt.totalMemory() / mb + " max " + rt.maxMemory() / mb);
+			log.warn("Use " + nativeMemoryLimitMb + " MB of native memory ");
+		}
+		return new RoutingMemoryLimits(memoryLimitMb, nativeMemoryLimitMb);
+	}
+
+	@NonNull
+	private static String getRoutingProfileName(@NonNull ApplicationMode mode) {
+		String derivedProfile = mode.getDerivedProfile();
+		return "default".equals(derivedProfile) ? mode.getRoutingProfile() : derivedProfile;
+	}
+
+	private RoutingConfiguration initOsmAndRoutingConfig(Builder builder, RouteCalculationParams params, OsmandSettings settings,
+	                                                     GeneralRouter generalRouter, Map<String, String> paramsR) {
+		OsmandApplication app = settings.getContext();
+		DirectionPointsHelper helper = app.getAvoidSpecificRoads().getPointsHelper();
+		builder.setDirectionPoints(helper.getDirectionPoints(params.mode));
+
+		RoutingMemoryLimits memoryLimits = currentMemoryLimits(settings, true);
+		String routingProfile = getRoutingProfileName(params.mode);
 		Double direction = params.start.hasBearing() ? params.start.getBearing() / 180d * Math.PI : null;
 
 		RoutingConfiguration configuration = builder.build(routingProfile, direction, memoryLimits, paramsR);
-		if (settings.ENABLE_TIME_CONDITIONAL_ROUTING.getModeValue(params.mode)) {
-			configuration.routeCalculationTime = System.currentTimeMillis();
-		}
-		configuration.showMinorTurns = settings.SHOW_MINOR_TURNS.getModeValue(params.mode);
+		applyPerCalculationSettings(configuration, params, settings);
 
 		return configuration;
 	}
 
+	/**
+	 * The handful of configuration fields that legitimately differ between two consecutive calculations made
+	 * with otherwise identical settings. They are re-applied both when the configuration is built and when a
+	 * cached one is reused, so a warm configuration never carries the previous calculation's heading or
+	 * conditional-routing timestamp into the next one.
+	 */
+	private void applyPerCalculationSettings(@NonNull RoutingConfiguration configuration,
+	                                         @NonNull RouteCalculationParams params,
+	                                         @NonNull OsmandSettings settings) {
+		configuration.initialDirection = params.start.hasBearing() ? params.start.getBearing() / 180d * Math.PI : null;
+		configuration.routeCalculationTime = settings.ENABLE_TIME_CONDITIONAL_ROUTING.getModeValue(params.mode)
+				? System.currentTimeMillis() : 0;
+		configuration.showMinorTurns = settings.SHOW_MINOR_TURNS.getModeValue(params.mode);
+	}
+
 	private RouteCalculationResult calcOfflineRouteImpl(RouteCalculationParams params,
 	                                                    RoutePlannerFrontEnd router, RoutingContext ctx, RoutingContext complexCtx, LatLon st, LatLon en,
-	                                                    List<LatLon> inters, PrecalculatedRouteDirection precalculated) throws IOException {
+	                                                    List<LatLon> inters, PrecalculatedRouteDirection precalculated,
+	                                                    RoutingEnvironment env, long setupNanos) throws IOException {
+		// Sampled before the search: after it the HH config always holds a context, so asking afterwards
+		// cannot tell a warm start from a cold one.
+		boolean warmHHContext = router.isHHCalculationContextCached();
+		int reuseCount = env != null && env.getWarmEnvironment() != null ? env.getWarmEnvironment().reuseCount : 0;
+		long searchStartNanos = System.nanoTime();
 		try {
 			RouteResultPreparation.RouteCalcResult result = null;
-			if (complexCtx != null) {
-				try {
-					result = router.searchRoute(complexCtx, st, en, inters, precalculated);
-					// discard ctx and replace with calculated
-					ctx = complexCtx;
-				} catch(RuntimeException e) {
-					params.ctx.runInUIThread(() -> {
-						log.error("Runtime error: " + e.getMessage(), e);
-						params.ctx.showToastMessage(R.string.complex_route_calculation_failed, e.getMessage());
-					});
+			try {
+				if (complexCtx != null) {
+					try {
+						result = router.searchRoute(complexCtx, st, en, inters, precalculated);
+						// discard ctx and replace with calculated
+						ctx = complexCtx;
+					} catch (RuntimeException e) {
+						params.ctx.runInUIThread(() -> {
+							log.error("Runtime error: " + e.getMessage(), e);
+							params.ctx.showToastMessage(R.string.complex_route_calculation_failed, e.getMessage());
+						});
+					}
 				}
-			}
-			if (result == null) {
-				result = router.searchRoute(ctx, st, en, inters);
+				if (result == null) {
+					result = router.searchRoute(ctx, st, en, inters);
+				}
+			} finally {
+				logRouteCalculationTiming(params, router, ctx, result, warmHHContext, reuseCount,
+						setupNanos, System.nanoTime() - searchStartNanos);
 			}
 
 			if (result == null || result.getList().isEmpty()) {
@@ -517,6 +937,78 @@ public class RouteProvider {
 			String s = " (" + avl + " MB available of " + max  + ") ";
 			return new RouteCalculationResult("Not enough process memory "+ s);
 		}
+	}
+
+	/**
+	 * One greppable line per offline route calculation, written through the ordinary commons-logging Log.
+	 * CairoDriveLogger pumps this process' logcat into the rotating on-device files, so nothing extra is
+	 * needed to get these lines off the phone - {@code grep CD_ROUTE_TIMING} over a pulled log is enough.
+	 * <p>
+	 * The point of the split is to say <em>where</em> a slow reroute went:
+	 * <ul>
+	 *     <li>{@code setup} - building the routing environment: routing configuration, GeneralRouter clone,
+	 *         avoid-roads parsing, RoutingContext construction. This is the part the warm cache removes, so
+	 *         {@code warm=1} lines should show it collapse;</li>
+	 *     <li>{@code search} - wall time inside RoutePlannerFrontEnd.searchRoute, i.e. the actual routing;</li>
+	 *     <li>{@code find}/{@code load}/{@code headers}/{@code calc} - the engine's own breakdown from
+	 *         RouteCalculationProgress (initial segment search, tile data, tile headers, total);</li>
+	 *     <li>{@code hh} - the Highway Hierarchies phase timings, present only on the Java HH path.</li>
+	 * </ul>
+	 * If {@code setup} is small and {@code search} dominates on a warm line, the remaining latency is in the
+	 * engine and not in this cache.
+	 */
+	private void logRouteCalculationTiming(@NonNull RouteCalculationParams params,
+	                                       @NonNull RoutePlannerFrontEnd router,
+	                                       @NonNull RoutingContext ctx,
+	                                       @Nullable RouteResultPreparation.RouteCalcResult result,
+	                                       boolean warmHHContext, int reuseCount,
+	                                       long setupNanos, long searchNanos) {
+		try {
+			RouteCalculationProgress progress = params.calculationProgress;
+			String engine;
+			if (result instanceof HHRouteDataStructure.HHNetworkRouteRes) {
+				engine = "hh-java";
+			} else if (router.isHHRoutingConfigured()) {
+				engine = ctx.nativeLib != null ? "hh-cpp" : "hh-java-failed";
+			} else {
+				engine = ctx.nativeLib != null ? "astar-cpp" : "astar-java";
+			}
+			StringBuilder sb = new StringBuilder(220);
+			sb.append(TIMING_TAG)
+					.append(" mode=").append(params.mode.getStringKey())
+					.append(" engine=").append(engine)
+					.append(" reroute=").append(params.previousToRecalculate != null ? 1 : 0)
+					.append(" warm=").append(warmHHContext ? 1 : 0)
+					.append(" reuse=").append(reuseCount)
+					.append(" setup=").append(ms(setupNanos))
+					.append(" search=").append(ms(searchNanos));
+			if (progress != null) {
+				sb.append(" find=").append(ms(progress.timeToFindInitialSegments))
+						.append(" load=").append(ms(progress.timeToLoad))
+						.append(" headers=").append(ms(progress.timeToLoadHeaders))
+						.append(" calc=").append(ms(progress.timeToCalculate))
+						.append(" tiles=").append(progress.loadedTiles)
+						.append('/').append(progress.distinctLoadedTiles)
+						.append(" visited=").append(progress.visitedSegments)
+						.append(" cancelled=").append(progress.isCancelled ? 1 : 0);
+			}
+			sb.append(" routingTime=").append(String.format(Locale.US, "%.0f", ctx.routingTime));
+			sb.append(" ok=").append(result != null && result.isCorrect() ? 1 : 0);
+			if (result instanceof HHRouteDataStructure.HHNetworkRouteRes) {
+				HHRouteDataStructure.RoutingStats stats = ((HHRouteDataStructure.HHNetworkRouteRes) result).stats;
+				if (stats != null) {
+					sb.append(" hh[").append(stats.toLogString()).append(']');
+				}
+			}
+			log.info(sb.toString());
+		} catch (RuntimeException e) {
+			// Diagnostics must never be able to break a navigation calculation.
+			log.error(TIMING_TAG + " failed to log timing", e);
+		}
+	}
+
+	private static String ms(long nanos) {
+		return String.format(Locale.US, "%.0f", nanos / 1.0e6);
 	}
 
 	private RouteCalculationResult applicationModeNotSupported(RouteCalculationParams params) {

@@ -206,6 +206,71 @@ public class RoutingContext {
 		targetSegmentInd = end.getSegmentStart();
 	}
 	
+	/**
+	 * Returns this context to the state a freshly constructed one would be in, keeping only the parts that
+	 * are expensive to rebuild and provably independent of a single calculation: {@link #config},
+	 * {@link #calculationMode}, {@link #map} / {@link #reverseMap} (the cloned {@code RouteSubregion} tree)
+	 * and {@link #nativeLib}.
+	 * <p>
+	 * This exists so that a navigation reroute can reuse one context instead of rebuilding it - see the warm
+	 * routing environment in {@code RouteProvider}. Reuse is only correct if every field that carries the
+	 * result or the inputs of the <em>previous</em> calculation is cleared here, so this method deliberately
+	 * touches each of the "1. Initial variables", cache and debug groups above rather than a hand picked
+	 * subset. When a field is added to this class it must be added here too, otherwise a reroute can silently
+	 * inherit the previous route's start, target or precalculated direction.
+	 * <p>
+	 * The native routing context is destroyed rather than carried over. The C++ side owns whatever
+	 * {@link #nativeRoutingContext} points at and this fork cannot see that source, so there is no way to
+	 * prove that reusing the handle across two unrelated calculations is safe; destroying it reproduces
+	 * exactly what happens today (a context per calculation) and costs nothing that was not already being
+	 * paid. {@link #deleteNativeRoutingContext()} is a no-op when the handle is already 0.
+	 */
+	public void resetForNewCalculation() {
+		deleteNativeRoutingContext();
+		keepNativeRoutingContext = false;
+		requestNativePrepareResult = false;
+
+		// 1. Initial variables
+		startX = 0;
+		startY = 0;
+		startRoadId = 0;
+		startSegmentInd = 0;
+		startTransportStop = false;
+		targetX = 0;
+		targetY = 0;
+		targetRoadId = 0;
+		targetSegmentInd = 0;
+		targetTransportStop = false;
+		intermediatesX = new int[0];
+		intermediatesY = new int[0];
+		dijkstraMode = 0;
+		publicTransport = false;
+		regionsCoveringStartAndTargets = new String[0];
+		hhHasUnsupportedParameters = false;
+		calculationProgress = null;
+		calculationProgressFirstPhase = null;
+		leftSideNavigation = false;
+		previouslyCalculatedRoute = null;
+		precalculatedRouteDirection = null;
+
+		// 2. + 3. Memory caches. unloadAllData() clears subregionTiles, indexedSubregions and
+		// mapIndexReaderFilter; the two warm segment lists are scratch space of the segment expansion.
+		unloadAllData();
+		segmentsToVisitPrescripted.clear();
+		segmentsToVisitNotForbidden.clear();
+		conditionalHelper = new RouteConditionalHelper();
+
+		// 5. Debug / accounting
+		global = new TileStatistics();
+		memoryOverhead = 0;
+		memoryHits = 0;
+		routingTime = 0;
+		visitor = null;
+		alertFasterRoadToVisitedSegments = 0;
+		alertSlowerSegmentedWasVisitedEarlier = 0;
+		finalRouteSegment = null;
+	}
+
 	public void unloadAllData() {
 		unloadAllData(null);
 	}

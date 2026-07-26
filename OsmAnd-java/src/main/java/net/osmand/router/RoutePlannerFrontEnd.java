@@ -250,9 +250,37 @@ public class RoutePlannerFrontEnd {
 	}
 
 	public void setDefaultHHRoutingConfig() {
-		this.hhRoutingConfig = defaultHHConfig();
+		setDefaultHHRoutingConfig(false);
 	}
-	
+
+	/**
+	 * @param cacheCalculationContext when true the HH planner is allowed to keep its loaded network points,
+	 * cluster index and point QuadTree on this front end's config between calls, instead of rebuilding them
+	 * from the .obf on every calculation (see {@code HHRoutePlanner.initHCtx}).
+	 * <p>
+	 * The cached context is only reused when the {@link RoutingContext} handed to
+	 * {@code HHRoutePlanner.runRouting} is the very same object it was built against, so switching this on
+	 * has no effect at all unless the caller also keeps the routing context alive - the guard exists exactly
+	 * to stop a cached network from being applied to a context built over a different set of map files or a
+	 * different profile. Callers that build a fresh context per calculation can pass true harmlessly.
+	 */
+	public void setDefaultHHRoutingConfig(boolean cacheCalculationContext) {
+		this.hhRoutingConfig = defaultHHConfig();
+		if (cacheCalculationContext) {
+			this.hhRoutingConfig.cacheContext(null);
+		}
+	}
+
+	/**
+	 * True when the previous calculation left a reusable HH network context on this front end. Only meaningful
+	 * for the Java HH planner - the C++ engine keeps its own state inside the native routing context and never
+	 * populates this one.
+	 */
+	public boolean isHHCalculationContextCached() {
+		return hhRoutingConfig != null && hhRoutingConfig.cacheCtx != null;
+	}
+
+
 	public RoutePlannerFrontEnd setUseOnlyHHRouting(boolean useOnlyHHRouting) {
 		this.useOnlyHHRouting = useOnlyHHRouting;
 		if (useOnlyHHRouting && hhRoutingConfig == null) {
