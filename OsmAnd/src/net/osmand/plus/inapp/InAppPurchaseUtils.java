@@ -4,6 +4,7 @@ import androidx.annotation.NonNull;
 
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.Version;
+import net.osmand.plus.cairodrive.CairoDriveFeatures;
 import net.osmand.plus.settings.backend.backup.exporttype.ExportType;
 import net.osmand.plus.views.mapwidgets.WidgetType;
 import net.osmand.shared.gpx.organization.enums.OrganizeByType;
@@ -115,11 +116,13 @@ public class InAppPurchaseUtils {
 	}
 
 	public static boolean isProWidgetsAvailable(@NonNull OsmandApplication app) {
-		return isOsmAndProAvailable(app) || isBrandPromoAvailable(app);
+		return CairoDriveFeatures.isClientSideProUnlocked()
+				|| isOsmAndProAvailable(app) || isBrandPromoAvailable(app);
 	}
 
 	public static boolean is3dMapsAvailable(@NonNull OsmandApplication app) {
-		return isOsmAndProAvailable(app) || isBrandPromoAvailable(app);
+		return CairoDriveFeatures.isClientSideProUnlocked()
+				|| isOsmAndProAvailable(app) || isBrandPromoAvailable(app);
 	}
 
 	public static boolean isExportTypeAvailable(@NonNull OsmandApplication app,
@@ -136,7 +139,8 @@ public class InAppPurchaseUtils {
 	}
 
 	public static boolean isColoringTypeAvailable(@NonNull OsmandApplication app) {
-		return isOsmAndProAvailable(app) || isBrandPromoAvailable(app);
+		return CairoDriveFeatures.isClientSideProUnlocked()
+				|| isOsmAndProAvailable(app) || isBrandPromoAvailable(app);
 	}
 
 	public static boolean isBrandPromoAvailable(@NonNull OsmandApplication app) {
