@@ -106,6 +106,13 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 
 	private static final Log LOG = PlatformUtil.getLog(GooglePlacesSearchApi.class);
 
+	/**
+	 * Grep handle for the per-query trace. Every message this class writes carries it, so
+	 * {@code adb logcat | grep CD_SEARCH} shows the whole search story - successes included -
+	 * without having to know which class logged what.
+	 */
+	private static final String TRACE_TAG = "CD_SEARCH";
+
 	private static final String TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText";
 	/**
 	 * Google bills by the fields requested, so this asks for the cheapest set that still
@@ -262,14 +269,20 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 		LatLon location = phrase.getSettings().getOriginalLocation();
 		String normalised = normalise(query);
 		String scope = cacheScope(location, app.getLanguage());
+		String source = "cache";
 		String body = cached(cacheKey(normalised, scope));
 		if (body == null) {
 			body = cachedByPrefix(normalised, scope);
+			source = "prefix";
 		}
 		if (body == null) {
+			source = "network";
 			body = request(query, location);
 			if (body == null) {
-				// Transport failure or a non-200 response - fall through to OSM.
+				// Transport failure or a non-200 response - fall through to OSM. The
+				// request() call above has already logged why.
+				LOG.info(TRACE_TAG + " query='" + query + "' source=network result=failed"
+						+ " (falling back to the offline index)");
 				return true;
 			}
 			// Only a response Google actually sent is stored. A prefix-filtered body is a
@@ -284,8 +297,13 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 		if (published > 0) {
 			gate.markSatisfied(phrase);
 		}
-		// published == 0 means Google simply knows nothing here, so the offline index gets
-		// its turn rather than the user being shown an empty list.
+		// One line per query that got as far as an answer, so "is Google search actually
+		// working" is a grep rather than an inference from the absence of an error. source
+		// says whether this cost a billed request: network did, cache and prefix did not.
+		// published=0 means Google answered and knew nothing, which is not a failure - the
+		// offline index gets its turn rather than the user being shown an empty list.
+		LOG.info(TRACE_TAG + " query='" + query + "' source=" + source
+				+ " published=" + published + " osmSuppressed=" + (published > 0));
 		return true;
 	}
 
@@ -329,7 +347,7 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 				computed = hex.toString();
 			}
 		} catch (Exception e) {
-			LOG.warn("Could not read the signing certificate, "
+			LOG.warn(TRACE_TAG + " could not read the signing certificate, "
 					+ "an Android-restricted Places key will be rejected", e);
 		}
 		signingCertificate = computed;
@@ -374,13 +392,13 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 			if (code != HttpURLConnection.HTTP_OK) {
 				// 403 here almost always means the key's Android app restriction does not
 				// match this build's package name and signing certificate.
-				LOG.error("Google Places search failed: HTTP " + code + " "
+				LOG.error(TRACE_TAG + " request failed: HTTP " + code + " "
 						+ read(connection.getErrorStream()));
 				return null;
 			}
 			return read(connection.getInputStream());
 		} catch (IOException | RuntimeException e) {
-			LOG.error("Google Places search failed", e);
+			LOG.error(TRACE_TAG + " request failed", e);
 			return null;
 		}
 		// Deliberately no disconnect(). It tears the socket out of the keep-alive pool, so
@@ -411,7 +429,7 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 			}
 			return body.toString();
 		} catch (JSONException e) {
-			LOG.error("Could not build Google Places request", e);
+			LOG.error(TRACE_TAG + " could not build the request", e);
 			return "{\"textQuery\":" + JSONObject.quote(query) + "}";
 		}
 	}
@@ -438,7 +456,7 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 				}
 			}
 		} catch (JSONException e) {
-			LOG.error("Could not parse Google Places response", e);
+			LOG.error(TRACE_TAG + " could not parse the response", e);
 		}
 		return published;
 	}
@@ -661,7 +679,7 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 			}
 			return new JSONObject().put("places", kept).toString();
 		} catch (JSONException e) {
-			LOG.error("Could not filter a cached Google Places response", e);
+			LOG.error(TRACE_TAG + " could not filter a cached response", e);
 			return null;
 		}
 	}
