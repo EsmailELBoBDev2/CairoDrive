@@ -2,7 +2,19 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
           xmlns:tools="http://schemas.android.com/tools">
 
-	<application>
+	<!--
+		Upstream opts into Android Auto Backup, so OsmandBackupAgent uploads the settings
+		and favourites to the user's Google account and the system restores them at install
+		time - before the app is first launched, on `adb install` exactly as on a Play
+		install. Uninstalling does not clear that dataset, so a reinstalled build silently
+		inherits the previous one's settings and no amount of uninstalling produces a clean
+		device. That makes a fork impossible to test honestly, and OsmAnd already offers
+		Settings > Backup & Restore and OsmAnd Cloud, so nothing is lost by staying out of
+		the system mechanism.
+	-->
+	<application
+		android:allowBackup="false"
+		tools:replace="android:allowBackup">
 		<!--
 			AndroidUtils#getUriForFile derives the authority from the application id,
 			so it has to follow the CairoDrive application id declared in cairodrive.gradle.
