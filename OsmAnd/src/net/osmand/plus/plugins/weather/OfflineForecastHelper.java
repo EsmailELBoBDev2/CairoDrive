@@ -99,6 +99,7 @@ public class OfflineForecastHelper implements ResetTotalWeatherCacheSizeListener
 	private boolean totalCacheSizeCalculationInProgress;
 	private List<RemoveLocalForecastListener> removeLocalForecastListeners = new ArrayList<>();
 	private List<String> regionsRemoveInProgress = new ArrayList<>();
+	private final Set<String> regionsDownloadInProgress = ConcurrentHashMap.newKeySet();
 
 	public OfflineForecastHelper(@NonNull OsmandApplication app) {
 		this.app = app;
@@ -747,6 +748,21 @@ public class OfflineForecastHelper implements ResetTotalWeatherCacheSizeListener
 	public void setPreferenceDownloadState(@NonNull String regionId,
 	                                       @NonNull WeatherForecastDownloadState downloadState) {
 		getDownloadStatePreference(regionId).set(downloadState);
+		if (downloadState == IN_PROGRESS) {
+			regionsDownloadInProgress.add(regionId);
+		} else {
+			regionsDownloadInProgress.remove(regionId);
+		}
+	}
+
+	/**
+	 * Whether the user has an offline forecast download running right now. Tracked in memory
+	 * rather than read back from the download-state preferences, because a process that died
+	 * mid-download leaves those saying IN_PROGRESS forever - and this answer decides whether
+	 * {@link WeatherWebClient} is allowed to spend mobile data.
+	 */
+	public boolean isDownloadInProgress() {
+		return !regionsDownloadInProgress.isEmpty();
 	}
 
 	@NonNull
@@ -837,6 +853,12 @@ public class OfflineForecastHelper implements ResetTotalWeatherCacheSizeListener
 
 	public CommonPreference<Boolean> getWifiPreference(@NonNull String regionId) {
 		String prefKey = PREF_FORECAST_WIFI_PREFIX + regionId;
+		// Left defaulting to false on purpose, unlike the live-updates equivalent. Nothing in
+		// the app ever writes this preference - there is no switch for it on any screen - so
+		// turning the default on would make the offline forecast undownloadable on a metered
+		// connection with no way for the user to say otherwise. The unattended traffic this
+		// was meant to guard is handled in WeatherWebClient instead; what reaches here is a
+		// download the user tapped, with the size in front of them.
 		return settings.registerBooleanPreference(prefKey, false).makeGlobal();
 	}
 

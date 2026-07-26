@@ -14,6 +14,7 @@ import androidx.annotation.NonNull;
 import net.osmand.PlatformUtil;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
+import net.osmand.plus.cairodrive.CairoDriveDataSaver;
 import net.osmand.plus.download.AbstractDownloadActivity;
 import net.osmand.plus.download.DownloadActivity;
 import net.osmand.plus.download.DownloadActivityType;
@@ -120,11 +121,15 @@ public class PerformLiveUpdateAsyncTask
 				boolean downloadViaWiFi =
 						LiveUpdatesHelper.preferenceDownloadViaWiFi(localIndexFileName, settings).get();
 
+				// Metered rather than isWifiConnected(): a tethered hotspot and a Wi-Fi network
+				// the user flagged as metered both read as Wi-Fi and both cost the same as
+				// cellular. See LiveUpdatesAlarmReceiver for the other half of this check.
+				boolean metered = CairoDriveDataSaver.isMetered(app);
 				LOG.debug("Internet connection available: " + settings.isInternetConnectionAvailable());
 				LOG.debug("Download via Wifi: " + downloadViaWiFi);
-				LOG.debug("Is wifi available: " + settings.isWifiConnected());
+				LOG.debug("Is connection metered: " + metered);
 				if (settings.isInternetConnectionAvailable()) {
-					if (userRequested || settings.isWifiConnected() || !downloadViaWiFi) {
+					if (userRequested || !metered || !downloadViaWiFi) {
 						long szLong = 0;
 						for (IndexItem es : downloadThread.getCurrentDownloadingItems()) {
 							szLong += es.getContentSize();

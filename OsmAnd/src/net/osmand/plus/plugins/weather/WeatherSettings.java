@@ -69,6 +69,18 @@ public class WeatherSettings {
 	public WeatherSettings(@NonNull OsmandApplication app) {
 		OsmandSettings settings = app.getSettings();
 
+		// Left on, as upstream ships it. With weatherContoursEnabled also on and
+		// weatherContoursType defaulting to TEMPERATURE this is enough for WeatherContourLayer
+		// to draw, so the map starts pulling geotiles as soon as it moves - and
+		// CAIRODRIVE_UNLOCK_PRO hands that to a user who never subscribed and never went
+		// looking for it. Defaulting the whole feature off was the obvious answer and is the
+		// wrong one: unlocking weather is a thing this fork was asked for, and a feature the
+		// user has to go and find is not unlocked in any way that matters.
+		//
+		// The bill is stopped one level down instead, at WeatherWebClient.downloadFile, which
+		// is the single choke point every online weather byte passes through. So the layer
+		// works on an unmetered connection and simply fetches nothing on a metered one, rather
+		// than being absent until someone digs it out of Configure map.
 		weatherEnabled = settings.registerBooleanPreference("weatherEnabled", true).makeProfile();
 
 		weatherSource = settings.registerStringPreference("weatherSource", WeatherSource.Companion.getDefaultSource().getSettingValue()).makeProfile();

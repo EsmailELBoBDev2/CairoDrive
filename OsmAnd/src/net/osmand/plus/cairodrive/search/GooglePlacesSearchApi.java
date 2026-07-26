@@ -40,9 +40,11 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Place search backed by the Google Places API (New) Text Search endpoint.
@@ -61,12 +63,40 @@ import java.util.Map;
  * keystroke, so this class debounces ({@link #DEBOUNCE_MS}), ignores queries shorter than
  * {@link #MIN_QUERY_LENGTH}, and caches recent responses.
  * <p>
- * Be honest about what that buys. The debounce here sits on top of upstream's own 700 ms
- * {@code TIMEOUT_BETWEEN_CHARS}, so a prefix escapes to a billed request whenever typing
- * pauses for roughly a second - which happens several times in a place name typed one-handed.
- * The cache does not help within a single query either, because every prefix is a distinct
- * key. Typing one name realistically costs a handful of requests, not one: budget for it, and
- * cap the key's daily quota in the Google console rather than assuming this is cheap.
+ * <b>The prefix rule.</b> An exact-match cache is nearly useless while someone is typing,
+ * because "cair", "cairo", "cairo t" are three different keys and therefore three bills. So a
+ * cached response is also reused for a <em>longer</em> query, under conditions chosen to make
+ * a wrong answer unlikely rather than to maximise the hit rate:
+ * <ol>
+ * <li>The cached query must be a strict prefix of the new one, after both are normalised
+ * (lower-cased, runs of whitespace collapsed).</li>
+ * <li>Language and location bucket must match, because both are sent in the request and both
+ * change what Google returns.</li>
+ * <li>The cached response must have come back with <em>fewer</em> than {@link #MAX_RESULTS}
+ * places. At the cap the response was truncated, so a place matching the longer query may well
+ * have existed just past the cutoff and there is no way to tell from here. This is the
+ * condition that does the real work: it means broad prefixes, which are exactly the ones whose
+ * answers cannot be trusted, never serve a longer query.</li>
+ * <li>Of the entries that qualify, the longest prefix wins - it is the one that saw the most
+ * of what the user has typed.</li>
+ * <li>Every whitespace-separated token of the new query must appear somewhere in a place's
+ * name or formatted address. A token is matched as a substring so that a half-typed last word
+ * ("cairo tow") still matches "Cairo Tower".</li>
+ * <li>If that filter leaves nothing, the request is issued. An empty filter result is not
+ * evidence that Google knows nothing: the extra words may name a place that was ranked below
+ * the prefix query's cutoff, or may not be a name at all.</li>
+ * </ol>
+ * The residual risk is a longer query for which Google would rank a <em>different</em> place
+ * first while the cached response happens to contain a weaker match - "nile" then "nile city"
+ * serving one hit when Google had several. That is a slightly shorter list, not a wrong one,
+ * and it is the price of not billing for every keystroke. Filtered results are never written
+ * back to the cache, so the next keystroke still filters the original full response rather
+ * than compounding an already-narrowed one.
+ * <p>
+ * Be honest about what the rest of it buys. The debounce here sits on top of upstream's own
+ * 700 ms {@code TIMEOUT_BETWEEN_CHARS}, so a prefix still escapes to a billed request whenever
+ * typing pauses for roughly a second. Typing one name realistically costs a few requests, not
+ * one: budget for it, and cap the key's daily quota in the Google console.
  * <p>
  * The honest fix is to debounce at the text field instead of inside a search provider, and to
  * use Autocomplete - which is billed per session rather than per request - while the user is
@@ -105,6 +135,7 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 	private static final long CACHE_TTL_MS = 5 * 60 * 1000;
 	/** Cache key granularity for the bias centre - ~1 km, so small map moves still hit. */
 	private static final double CACHE_LOCATION_PRECISION = 0.01;
+	private static final Pattern WHITESPACE = Pattern.compile("\\s+");
 
 	/**
 	 * Runs before every other provider. The OSM set is gated on this one's outcome, so it
@@ -229,15 +260,22 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 		}
 
 		LatLon location = phrase.getSettings().getOriginalLocation();
-		String key = cacheKey(query, location, app.getLanguage());
-		String body = cached(key);
+		String normalised = normalise(query);
+		String scope = cacheScope(location, app.getLanguage());
+		String body = cached(cacheKey(normalised, scope));
+		if (body == null) {
+			body = cachedByPrefix(normalised, scope);
+		}
 		if (body == null) {
 			body = request(query, location);
 			if (body == null) {
 				// Transport failure or a non-200 response - fall through to OSM.
 				return true;
 			}
-			store(key, body);
+			// Only a response Google actually sent is stored. A prefix-filtered body is a
+			// subset, and caching it would let the next keystroke narrow an already-narrowed
+			// list until nothing is left of the answer.
+			store(cacheKey(normalised, scope), scope, normalised, body);
 		}
 		if (matcher.isCancelled()) {
 			return true;
@@ -526,19 +564,30 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 		return builder.toString();
 	}
 
+	/** Lower case, with runs of whitespace collapsed, so that prefix tests are meaningful. */
 	@NonNull
-	private static String cacheKey(@NonNull String query, @Nullable LatLon location,
-			@NonNull String language) {
-		// Language belongs in the key because it is sent in the request body: without it a
-		// user switching app language kept getting the previous language's names until the
-		// entry expired.
-		String base = query.toLowerCase(Locale.US) + "|" + language;
+	private static String normalise(@NonNull String query) {
+		return WHITESPACE.matcher(query.trim()).replaceAll(" ").toLowerCase(Locale.US);
+	}
+
+	/**
+	 * The part of a cache entry that has to match exactly before a prefix may be reused.
+	 * Language and the bias centre are both sent in the request body, so a response fetched
+	 * under different ones is a different answer, not a stale one.
+	 */
+	@NonNull
+	private static String cacheScope(@Nullable LatLon location, @NonNull String language) {
 		if (location == null) {
-			return base;
+			return language;
 		}
 		long lat = Math.round(location.getLatitude() / CACHE_LOCATION_PRECISION);
 		long lon = Math.round(location.getLongitude() / CACHE_LOCATION_PRECISION);
-		return base + "@" + lat + "," + lon;
+		return language + "@" + lat + "," + lon;
+	}
+
+	@NonNull
+	private static String cacheKey(@NonNull String normalisedQuery, @NonNull String scope) {
+		return normalisedQuery + "|" + scope;
 	}
 
 	@Nullable
@@ -548,7 +597,7 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 			if (cached == null) {
 				return null;
 			}
-			if (System.currentTimeMillis() - cached.storedAt > CACHE_TTL_MS) {
+			if (cached.isExpired()) {
 				CACHE.remove(key);
 				return null;
 			}
@@ -556,19 +605,118 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 		}
 	}
 
-	private static void store(@NonNull String key, @NonNull String body) {
+	/**
+	 * A response to an earlier, shorter query, narrowed to the places that still match what
+	 * has been typed since. See the class documentation for why each condition is here.
+	 *
+	 * @return a synthetic response body, or null when no cached prefix can be trusted to
+	 * answer this query - in which case the caller must issue the request.
+	 */
+	@Nullable
+	private static String cachedByPrefix(@NonNull String normalisedQuery, @NonNull String scope) {
+		CachedResponse best = null;
 		synchronized (CACHE) {
-			CACHE.put(key, new CachedResponse(body, System.currentTimeMillis()));
+			Iterator<Map.Entry<String, CachedResponse>> it = CACHE.entrySet().iterator();
+			while (it.hasNext()) {
+				CachedResponse candidate = it.next().getValue();
+				if (candidate.isExpired()) {
+					it.remove();
+					continue;
+				}
+				if (!candidate.scope.equals(scope)
+						|| candidate.placeCount >= MAX_RESULTS
+						|| candidate.query.length() >= normalisedQuery.length()
+						|| !normalisedQuery.startsWith(candidate.query)) {
+					continue;
+				}
+				if (best == null || candidate.query.length() > best.query.length()) {
+					best = candidate;
+				}
+			}
+		}
+		return best == null ? null : filter(best.body, normalisedQuery);
+	}
+
+	/**
+	 * @return a response body holding only the places matching every token of the query, or
+	 * null if none do - which means the cached prefix cannot answer and a request is owed.
+	 */
+	@Nullable
+	private static String filter(@NonNull String body, @NonNull String normalisedQuery) {
+		String[] tokens = normalisedQuery.split(" ");
+		try {
+			JSONArray places = new JSONObject(body).optJSONArray("places");
+			if (places == null) {
+				return null;
+			}
+			JSONArray kept = new JSONArray();
+			for (int i = 0; i < places.length(); i++) {
+				JSONObject place = places.optJSONObject(i);
+				if (place != null && matchesAllTokens(place, tokens)) {
+					kept.put(place);
+				}
+			}
+			if (kept.length() == 0) {
+				return null;
+			}
+			return new JSONObject().put("places", kept).toString();
+		} catch (JSONException e) {
+			LOG.error("Could not filter a cached Google Places response", e);
+			return null;
+		}
+	}
+
+	private static boolean matchesAllTokens(@NonNull JSONObject place, @NonNull String[] tokens) {
+		JSONObject displayName = place.optJSONObject("displayName");
+		String haystack = ((displayName != null ? displayName.optString("text", "") : "")
+				+ " " + place.optString("formattedAddress", "")).toLowerCase(Locale.US);
+		for (String token : tokens) {
+			// Substring rather than whole-word: the last token is usually half typed.
+			if (!token.isEmpty() && !haystack.contains(token)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private static void store(@NonNull String key, @NonNull String scope,
+			@NonNull String normalisedQuery, @NonNull String body) {
+		synchronized (CACHE) {
+			CACHE.put(key, new CachedResponse(scope, normalisedQuery, body,
+					placeCount(body), System.currentTimeMillis()));
+		}
+	}
+
+	/**
+	 * @return how many places the response carried, or {@link #MAX_RESULTS} if that cannot be
+	 * determined - which reads as "truncated" and so keeps the entry out of the prefix path.
+	 */
+	private static int placeCount(@NonNull String body) {
+		try {
+			JSONArray places = new JSONObject(body).optJSONArray("places");
+			return places == null ? 0 : places.length();
+		} catch (JSONException e) {
+			return MAX_RESULTS;
 		}
 	}
 
 	private static class CachedResponse {
+		final String scope;
+		final String query;
 		final String body;
+		final int placeCount;
 		final long storedAt;
 
-		CachedResponse(String body, long storedAt) {
+		CachedResponse(String scope, String query, String body, int placeCount, long storedAt) {
+			this.scope = scope;
+			this.query = query;
 			this.body = body;
+			this.placeCount = placeCount;
 			this.storedAt = storedAt;
+		}
+
+		boolean isExpired() {
+			return System.currentTimeMillis() - storedAt > CACHE_TTL_MS;
 		}
 	}
 }

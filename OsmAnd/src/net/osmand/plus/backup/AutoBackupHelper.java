@@ -11,6 +11,7 @@ import net.osmand.PlatformUtil;
 import net.osmand.StateChangedListener;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.backup.PrepareBackupTask.OnPrepareBackupListener;
+import net.osmand.plus.cairodrive.CairoDriveDataSaver;
 import net.osmand.plus.inapp.InAppPurchaseUtils;
 import net.osmand.plus.myplaces.favorites.FavoritesListener;
 import net.osmand.plus.settings.backend.OsmandSettings;
@@ -103,7 +104,14 @@ public class AutoBackupHelper implements OnPrepareBackupListener {
 	}
 
 	private boolean canRunBackupNow() {
-		return isAutoBackupConfigured() && !settingsHelper.isBackupSyncing() && !backupHelper.isBackupPreparing();
+		// Deferred, not cancelled: rescheduleAutoBackup keeps the hourly timer running, so the
+		// sync happens on the next tick that finds a free connection. Nothing else in the
+		// backup path asks about the connection - this runs hourly and again after every
+		// favourites save, and uploads tracks and settings, which is not what mobile data is
+		// for. A sync the user starts by hand goes straight to NetworkSettingsHelper and is
+		// unaffected.
+		return isAutoBackupConfigured() && !settingsHelper.isBackupSyncing()
+				&& !backupHelper.isBackupPreparing() && !CairoDriveDataSaver.blocksBulkTransfer(app);
 	}
 
 	private boolean isAutoBackupConfigured() {

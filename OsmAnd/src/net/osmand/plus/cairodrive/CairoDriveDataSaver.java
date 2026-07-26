@@ -1,0 +1,80 @@
+package net.osmand.plus.cairodrive;
+
+import android.content.Context;
+import android.net.ConnectivityManager;
+
+import androidx.annotation.NonNull;
+
+import net.osmand.PlatformUtil;
+import net.osmand.plus.BuildConfig;
+
+import org.apache.commons.logging.Log;
+
+/**
+ * Metered-connection policy for the CairoDrive fork.
+ *
+ * <p>Upstream assumes a user who downloads maps at home on Wi-Fi and drives with the phone in
+ * flight mode. This fork is driven on Egyptian mobile data, where a background transfer nobody
+ * asked for shows up on a bill. {@code CAIRODRIVE_UNLOCK_PRO} makes that worse rather than
+ * better: it hands the build the whole Pro tier, and the weather layers in particular fetch
+ * raster tiles from OsmAnd's servers on their own as the map moves.
+ *
+ * <p>Two things are decided here, and they are deliberately different in kind:
+ *
+ * <ul>
+ * <li>{@link #blocksBulkTransfer} is a hard stop. It refuses a transfer outright and is only
+ * used where there is no per-item preference for the user to have set - currently the weather
+ * tile fetch, which has no switch of its own at all.</li>
+ * <li>{@link #wifiOnlyByDefault} only moves a <em>default</em>. Anywhere the user already has
+ * an "only download over Wi-Fi" switch, the stored value still wins; this just decides what
+ * that switch reads before it is ever touched.</li>
+ * </ul>
+ *
+ * <p>"Metered" rather than "not Wi-Fi": {@code ConnectivityManager.isActiveNetworkMetered}
+ * counts a phone's own tethering hotspot and a Wi-Fi network the user has flagged as metered,
+ * both of which look like Wi-Fi to {@code OsmandSettings.isWifiConnected} and both of which
+ * cost exactly as much as cellular. An unknown answer is treated as metered, because the
+ * expensive mistake is the one that transfers.
+ *
+ * <p>Set {@code CAIRODRIVE_DATA_SAVER=false} to build stock behaviour. See
+ * {@code OsmAnd/cairodrive.gradle}.
+ */
+public class CairoDriveDataSaver {
+
+	private static final Log LOG = PlatformUtil.getLog(CairoDriveDataSaver.class);
+
+	private CairoDriveDataSaver() {
+	}
+
+	/** True when this build keeps bulk transfers off a metered connection. */
+	public static boolean isEnabled() {
+		return BuildConfig.CAIRODRIVE_DATA_SAVER;
+	}
+
+	/**
+	 * Whether an "only download over Wi-Fi" style preference should read as on before the user
+	 * has ever touched it. Callers must pass this as the registration default and nothing more,
+	 * so that a stored value keeps winning.
+	 */
+	public static boolean wifiOnlyByDefault() {
+		return isEnabled();
+	}
+
+	/**
+	 * Whether a transfer that the user did not explicitly ask for should be refused right now.
+	 */
+	public static boolean blocksBulkTransfer(@NonNull Context ctx) {
+		return isEnabled() && isMetered(ctx);
+	}
+
+	public static boolean isMetered(@NonNull Context ctx) {
+		try {
+			ConnectivityManager manager =
+					(ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+			return manager == null || manager.isActiveNetworkMetered();
+		} catch (Exception e) {
+			LOG.warn("Could not determine whether the active network is metered", e);
+			return true;
+		}
+	}
+}

@@ -22,6 +22,8 @@
 //   GOOGLE_PLACES_API_KEY        - key for the Google Places API (New). When set, place
 //                                  search is served by Google instead of the offline OSM
 //                                  index; when empty the build behaves like stock OsmAnd.
+//   CAIRODRIVE_DATA_SAVER        - "true"/"false", whether bulk transfers stay off a
+//                                  metered connection by default. Defaults to on.
 
 // The Pro tier without a subscription - weather, OsmAnd Cloud, 3D/terrain, Pro widgets,
 // route colouring - matching what upstream already grants any build that Version.isDeveloperBuild
@@ -39,6 +41,13 @@ def drivingView = drivingViewEnv?.trim() ? drivingViewEnv.trim() : "true"
 // See CairoDriveOffRoute.
 def offRouteEnv = System.getenv("CAIRODRIVE_OFFROUTE_HYSTERESIS")
 def offRouteHysteresis = offRouteEnv?.trim() ? offRouteEnv.trim() : "true"
+
+// Keep bulk transfers off a metered connection unless the user asks for them explicitly.
+// This fork is driven on Egyptian mobile data, where an unattended download is a bill rather
+// than an inconvenience, and CAIRODRIVE_UNLOCK_PRO hands the user features - weather most of
+// all - that fetch tiles on their own. See CairoDriveDataSaver.
+def dataSaverEnv = System.getenv("CAIRODRIVE_DATA_SAVER")
+def dataSaver = dataSaverEnv?.trim() ? dataSaverEnv.trim() : "true"
 
 def fullLogging = System.getenv("CAIRODRIVE_FULL_LOGGING")
 def debugLogging = fullLogging?.trim() ? fullLogging.trim() : "true"
@@ -79,6 +88,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_UNLOCK_PRO", proUnlocked
 			buildConfigField "boolean", "CAIRODRIVE_DRIVING_VIEW", drivingView
 			buildConfigField "boolean", "CAIRODRIVE_OFFROUTE_HYSTERESIS", offRouteHysteresis
+			buildConfigField "boolean", "CAIRODRIVE_DATA_SAVER", dataSaver
 		}
 		release {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
@@ -86,6 +96,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_UNLOCK_PRO", proUnlocked
 			buildConfigField "boolean", "CAIRODRIVE_DRIVING_VIEW", drivingView
 			buildConfigField "boolean", "CAIRODRIVE_OFFROUTE_HYSTERESIS", offRouteHysteresis
+			buildConfigField "boolean", "CAIRODRIVE_DATA_SAVER", dataSaver
 		}
 	}
 }

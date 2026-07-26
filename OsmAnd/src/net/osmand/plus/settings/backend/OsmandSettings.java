@@ -68,6 +68,7 @@ import net.osmand.plus.api.SettingsAPI.SettingsEditor;
 import net.osmand.plus.api.SettingsAPIImpl;
 import net.osmand.plus.auto.NavigationSession;
 import net.osmand.plus.avoidroads.AvoidRoadInfo;
+import net.osmand.plus.cairodrive.CairoDriveDataSaver;
 import net.osmand.plus.card.color.palette.solid.data.DefaultColors;
 import net.osmand.plus.charts.GPXDataSetAxisType;
 import net.osmand.plus.charts.GPXDataSetType;
@@ -1472,7 +1473,24 @@ public class OsmandSettings {
 	public final OsmandPreference<Integer> SEND_ANONYMOUS_DATA_REQUESTS_COUNT = new IntPreference(this, "send_anonymous_data_requests_count", 0).makeGlobal().cache();
 	public final OsmandPreference<Integer> SEND_ANONYMOUS_DATA_LAST_REQUEST_NS = new IntPreference(this, "send_anonymous_data_last_request_ns", -1).makeGlobal().cache();
 
-	public final OsmandPreference<Boolean> SEND_UNIQUE_USER_IDENTIFIER = new BooleanPreference(this, "send_unique_user_identifier", true).makeGlobal().cache();
+	// Off by default in this fork. The identifier is a random UUID, rotated every three months
+	// (OsmandApplication.getUserAndroidId), attached as "aid" to the analytics upload, the
+	// indexes.xml catalogue fetch, the daily MOTD/discount check and purchase validation. Every
+	// one of those call sites already guards on this preference and none of them need the
+	// parameter to succeed, so turning it off does not break a request - it only makes those
+	// requests unattributable.
+	//
+	// The trade-off, honestly: osmand.net plausibly uses "aid" for abuse control - rate
+	// limiting the catalogue, spotting a single device claiming many subscriptions - and a
+	// build that omits it may be treated as more suspicious rather than less. It is off here
+	// anyway because CairoDrive is not the entity those endpoints are protecting: this fork
+	// unlocks Pro locally rather than purchasing it, so the purchase-validation traffic is
+	// meaningless, and the analytics upload is opt-in and stays off. OsmAnd Cloud is
+	// unaffected - BackupHelper.getAndroidId calls getUserAndroidId directly, without
+	// consulting this preference, so signing in still registers a device.
+	//
+	// Settings -> Global -> "Send unique identifier" turns it back on.
+	public final OsmandPreference<Boolean> SEND_UNIQUE_USER_IDENTIFIER = new BooleanPreference(this, "send_unique_user_identifier", !CairoDriveDataSaver.isEnabled()).makeGlobal().cache();
 
 	public final CommonPreference<LocationSource> LOCATION_SOURCE = new EnumStringPreference<>(this, "location_source",
 			Version.isGooglePlayEnabled() ? GOOGLE_PLAY_SERVICES : ANDROID_API, LocationSource.values()).makeGlobal().makeShared();

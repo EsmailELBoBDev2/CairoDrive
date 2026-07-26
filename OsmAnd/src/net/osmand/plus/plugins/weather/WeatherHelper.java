@@ -129,7 +129,7 @@ public class WeatherHelper {
 		if (webClient != null) {
 			webClient.cleanupResources();
 		}
-		webClient = new WeatherWebClient();
+		webClient = new WeatherWebClient(app, offlineForecastHelper);
 		WeatherTileResourcesManager weatherTileResourcesManager = new WeatherTileResourcesManager(
 				new BandIndexGeoBandSettingsHash(), cacheDir.getAbsolutePath(), projResourcesPath,
 				tileSize, densityFactor, webClient.instantiateProxy(true)

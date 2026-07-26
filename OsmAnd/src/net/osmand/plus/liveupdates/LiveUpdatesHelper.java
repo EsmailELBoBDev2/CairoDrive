@@ -15,6 +15,7 @@ import androidx.annotation.StringRes;
 import net.osmand.plus.OsmAndTaskManager;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
+import net.osmand.plus.cairodrive.CairoDriveDataSaver;
 import net.osmand.plus.download.local.LocalItem;
 import net.osmand.plus.helpers.FileNameTranslationHelper;
 import net.osmand.plus.settings.backend.OsmandSettings;
@@ -70,7 +71,12 @@ public class LiveUpdatesHelper {
 	public static CommonPreference<Boolean> preferenceDownloadViaWiFi(
 			String fileName, OsmandSettings settings) {
 		String settingId = fileName + DOWNLOAD_VIA_WIFI_POSTFIX;
-		return checkPref(settings.registerBooleanPreference(settingId, false));
+		// Default only - a map the user has already switched keeps its stored value. Live
+		// updates default to hourly (preferenceUpdateFrequency below), so leaving this off
+		// means an unattended OSM diff download every hour, all day, on whatever connection
+		// happens to be up.
+		return checkPref(settings.registerBooleanPreference(settingId,
+				CairoDriveDataSaver.wifiOnlyByDefault()));
 	}
 
 	public static CommonPreference<Integer> preferenceUpdateFrequency(
