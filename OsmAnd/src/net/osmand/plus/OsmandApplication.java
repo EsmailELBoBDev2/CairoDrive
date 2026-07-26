@@ -395,6 +395,11 @@ public class OsmandApplication extends MultiDexApplication {
 			settings.RATE_US_STATE.set(RateUsState.IGNORED);
 		}
 		getNotificationHelper().removeNotifications(false);
+		// Flushes the diagnostic capture and, more importantly, kills the logcat child -
+		// which is reparented to init rather than dying with us if it is left running.
+		// Android almost never calls onTerminate on a real device, so this is the tidy
+		// path, not the reliable one; RestartActivity#exitApp covers the deliberate exit.
+		CairoDriveLogger.getInstance().stop();
 	}
 
 	public RendererRegistry getRendererRegistry() {

@@ -99,11 +99,27 @@ public class CairoDriveLogWriter {
 	 */
 	private final SimpleDateFormat legacyFileNameFormat;
 
+	/**
+	 * UTC, in the same shape as the stamps {@link CairoDriveLogger} puts on its own lines,
+	 * so a gap marker can be read against the entries either side of it directly.
+	 */
+	private final SimpleDateFormat markerFormat;
+
 	private volatile boolean running;
 	private Thread thread;
 	private BufferedWriter writer;
-	private File currentFile;
-	private long currentFileBytes;
+	/**
+	 * Written only under the monitor, but read without it by {@link #getCurrentFile()} and
+	 * {@link #getCurrentFileBytes()}, which the SYSTEM sample calls.
+	 * <p>
+	 * Volatile rather than a {@code synchronized} getter on purpose: the monitor is held for
+	 * the whole of a rotation, and {@link #prune()} inside it walks the directory and deletes
+	 * files. A diagnostic read that only wants a file name has no business blocking behind a
+	 * sweep - and the crash handler takes the same monitor in {@link #flushBlocking(long)},
+	 * where every millisecond spent waiting is a millisecond the process may not have.
+	 */
+	private volatile File currentFile;
+	private volatile long currentFileBytes;
 	/** Wall clock, matching the file name. Only ever used to decide retention. */
 	private long currentFileStartedAt;
 	/** Monotonic deadline for age rotation - immune to the clock being corrected. */
@@ -112,11 +128,24 @@ public class CairoDriveLogWriter {
 	private long nextIoAttemptAt;
 	private boolean resumeChecked;
 
+	/**
+	 * Wall clock of the first and last line dropped since the last gap marker was written,
+	 * or 0 for {@code gapStartedAtMs} when no gap is open. Both drop paths - queue
+	 * saturation on the caller's thread and storage back-off on the writer thread - feed
+	 * these, so the marker covers either cause.
+	 */
+	private volatile long gapStartedAtMs;
+	private volatile long gapLastDropAtMs;
+	/** Writer thread only: how much of {@link #droppedLines} a marker has already declared. */
+	private long reportedDroppedLines;
+
 	public CairoDriveLogWriter(@NonNull File directory) {
 		this.directory = directory;
 		this.fileNameFormat = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss.SSS'Z'", Locale.US);
 		this.fileNameFormat.setTimeZone(TimeZone.getTimeZone("UTC"));
 		this.legacyFileNameFormat = new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss.SSS", Locale.US);
+		this.markerFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS'Z'", Locale.US);
+		this.markerFormat.setTimeZone(TimeZone.getTimeZone("UTC"));
 	}
 
 	@NonNull
@@ -127,6 +156,17 @@ public class CairoDriveLogWriter {
 	@Nullable
 	public File getCurrentFile() {
 		return currentFile;
+	}
+
+	/**
+	 * Bytes written to the open file, as this class counts them.
+	 * <p>
+	 * Exposed so the SYSTEM sample does not have to {@code stat()} the file every few
+	 * seconds for a number the writer already knows. Approximate for non-ASCII payloads,
+	 * exactly as the rotation trigger is.
+	 */
+	public long getCurrentFileBytes() {
+		return currentFileBytes;
 	}
 
 	public long getDroppedLines() {
@@ -154,8 +194,9 @@ public class CairoDriveLogWriter {
 
 	/**
 	 * Enqueues a single already formatted line. Never blocks; when the queue is
-	 * saturated the oldest pending line is discarded and reported in the log header
-	 * of the next file so gaps are always visible rather than silent.
+	 * saturated the oldest pending line is discarded, counted, and marked in the file by a
+	 * synthetic gap line as soon as writing resumes, so gaps are always visible rather
+	 * than silent.
 	 */
 	public void write(@Nullable String line) {
 		if (line == null || !running) {
@@ -165,7 +206,24 @@ public class CairoDriveLogWriter {
 			if (queue.poll() == null) {
 				return;
 			}
-			droppedLines.incrementAndGet();
+			noteDrop();
+		}
+	}
+
+	/**
+	 * Records one dropped line and, if this opens a new gap, when the gap started.
+	 * <p>
+	 * The start stamp is set without a compare-and-set. Two threads dropping in the same
+	 * instant can overwrite each other, but both stamps are within a millisecond of the
+	 * truth - and a CAS loop or a lock here would put contention on the one path that only
+	 * ever runs when the logger is already saturated.
+	 */
+	private void noteDrop() {
+		long now = System.currentTimeMillis();
+		droppedLines.incrementAndGet();
+		gapLastDropAtMs = now;
+		if (gapStartedAtMs == 0) {
+			gapStartedAtMs = now;
 		}
 	}
 
@@ -280,7 +338,7 @@ public class CairoDriveLogWriter {
 				// Counted, because the whole point of droppedLines is that a gap in the log
 				// is visible rather than silent - and a full disk drops far more here than
 				// the queue ever does.
-				droppedLines.incrementAndGet();
+				noteDrop();
 				return;
 			}
 			rollFile();
@@ -289,6 +347,7 @@ public class CairoDriveLogWriter {
 			return;
 		}
 		try {
+			writeGapMarker();
 			writer.write(line);
 			writer.write('\n');
 			// Byte count is approximate for non-ASCII payloads, which is fine: it only
@@ -297,6 +356,54 @@ public class CairoDriveLogWriter {
 		} catch (IOException e) {
 			closeWriter();
 			nextIoAttemptAt = SystemClock.elapsedRealtime() + IO_RETRY_DELAY_MS;
+		}
+	}
+
+	/**
+	 * Writes one synthetic line covering everything dropped since the last marker, so that
+	 * a hole in the trace is stated in the trace itself.
+	 * <p>
+	 * Before this, the only evidence of a drop was the {@code droppedLines} counter on the
+	 * next SYSTEM sample and the running total in the next file header - both of which say
+	 * that lines were lost but not <em>where</em>, which is precisely what someone reading
+	 * a gap between two timestamps needs to know. Reading a jump in the counter also cannot
+	 * distinguish "the log paused here" from "nothing happened here", and on a
+	 * fixed-interval trace those look identical.
+	 * <p>
+	 * Emitted from the append path rather than from the back-off recovery, so it covers
+	 * queue saturation as well as storage back-off: both leave the same kind of hole, and
+	 * both are known to be over exactly when a line is next written successfully.
+	 */
+	private void writeGapMarker() throws IOException {
+		long total = droppedLines.get();
+		if (total <= reportedDroppedLines) {
+			return;
+		}
+		long from = gapStartedAtMs;
+		long to = gapLastDropAtMs;
+		String marker = "=== CairoDrive log gap: " + (total - reportedDroppedLines)
+				+ " line(s) dropped"
+				+ (from > 0 ? " from " + stamp(from) : "")
+				+ (to > 0 ? " to " + stamp(to) : "")
+				+ " (queue saturation or storage back-off), " + total + " total ===";
+		writer.write(marker);
+		writer.write('\n');
+		currentFileBytes += marker.length() + 1;
+		// Only marked as declared once the marker has actually reached the buffer. If the
+		// write above threw, the caller arms the back-off and the next successful append
+		// re-states the gap - a marker lost to the same IO failure it describes would be
+		// the worst possible time to go quiet.
+		reportedDroppedLines = total;
+		// A drop landing between the read of `total` and here loses its start stamp and the
+		// next marker falls back to its last-drop stamp alone. That is a millisecond of
+		// imprecision on a line whose subject is imprecision.
+		gapStartedAtMs = 0;
+	}
+
+	@NonNull
+	private String stamp(long timeMs) {
+		synchronized (markerFormat) {
+			return markerFormat.format(new Date(timeMs));
 		}
 	}
 

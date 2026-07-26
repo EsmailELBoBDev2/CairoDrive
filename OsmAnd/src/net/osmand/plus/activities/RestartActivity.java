@@ -18,6 +18,7 @@ import androidx.fragment.app.FragmentActivity;
 
 import net.osmand.PlatformUtil;
 import net.osmand.plus.R;
+import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.util.Algorithms;
 
 import org.apache.commons.logging.Log;
@@ -121,6 +122,10 @@ public class RestartActivity extends AppCompatActivity {
 	}
 
 	public static void exitApp() {
+		// The one exit path the app controls. Everything queued in the diagnostic writer is
+		// flushed here and the logcat child is killed, because killProcess below does not
+		// reap it - it would survive as an orphan writing into a pipe nobody drains.
+		CairoDriveLogger.getInstance().stop();
 		Process.killProcess(Process.myPid());
 	}
 }
