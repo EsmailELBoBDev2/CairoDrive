@@ -1,18 +1,42 @@
-name: Build CairoDrive (dev)
+name: Build CairoDrive
 
-# Produces the two shippable artifacts for every dev build:
-#   * an AAB  - the Google Play upload format
-#   * an APK  - sideloadable test build with the verbose on-device logger enabled
+# Produces the shippable artifacts for the CairoDrive flavor (applicationId
+# com.cairodrive.app, see OsmAnd/cairodrive.gradle) built against the prebuilt OpenGL core
+# AAR, so nothing is compiled with the NDK. It covers all four ABIs by default because a
+# bundle that omits one cannot be rolled out on Play to users who are on it; the abi input
+# narrows that for a quicker throwaway build.
 #
-# The variant is the CairoDrive flavor (applicationId com.cairodrive.app, see
-# OsmAnd/cairodrive.gradle) built against the prebuilt OpenGL core AAR, so nothing is
-# compiled with the NDK. It covers all four ABIs by default because a bundle that omits
-# one cannot be rolled out on Play to users who are on it; the abi input narrows that
-# for a quicker throwaway build.
+# Two jobs, and the split is the whole point of this file (2026-07 supply-chain review):
+#
+#   build    every push to dev, and manual runs. No signing credentials on the runner at
+#            all. Release artifacts fall back to the checked-in debug keystore, which
+#            OsmAnd/cairodrive.gradle handles on its own, so a dev push still yields an
+#            installable APK with no approval, no waiting and no key exposure.
+#
+#   release  tags matching v*, or a manual run with sign=true. Runs in the `production`
+#            GitHub Environment, which holds the keystore secrets and requires a reviewer
+#            to approve the run before its first step executes.
+#
+# Where the boundary sits, and why it is not drawn around the Places key too:
+#
+#   Gradle executes arbitrary code from every build script it loads, so any job that runs
+#   ./gradlew hands the whole environment to whatever is in the tree. The two secrets are
+#   not equally bad to lose there. The signing keystore is not rotatable: it is the app's
+#   identity on Google Play, a leak lets anyone ship a signed "CairoDrive", and losing it
+#   ends updates to the listing. The Places key ships inside every APK already - anyone
+#   with a copy of the app can pull it out - it is restricted by package name and signing
+#   certificate, and it can be rotated in a browser in two minutes. So the keystore gets
+#   the human gate and the Places key does not; putting an approval prompt in front of
+#   every dev build would only teach the owner to click through it.
+#
+# The upstream sync no longer pushes to dev or dispatches this workflow, so what builds
+# here is what a human merged. See .github/CICD.md.
 
 on:
   push:
     branches: [dev]
+    # A tag is the release trigger: `git tag -a v4.9.10-cd1 && git push origin --tags`.
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       abi:
@@ -31,6 +55,11 @@ on:
         description: 'Override versionCode (leave empty to use the value in build.gradle)'
         required: false
         default: ''
+      sign:
+        description: 'Sign with the release keystore. Runs in the production environment and waits for a reviewer.'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -48,8 +77,17 @@ env:
   CORE: ${{ inputs.core || 'opengl' }}
 
 jobs:
+  # ---------------------------------------------------------------------------------
+  # Ordinary development build. Nothing here can reach the signing keys: they live in the
+  # `production` environment, and `secrets.*` in a job without an `environment:` resolves
+  # to empty for them.
+  # ---------------------------------------------------------------------------------
   build:
-    name: Bundle + APK
+    name: Dev build - unsigned
+    # Tags go down the release path instead, and an explicit sign=true request should not
+    # also spend 20 minutes on an unsigned copy of the same thing. `inputs` is null on a
+    # push event, and null is false here.
+    if: ${{ !startsWith(github.ref, 'refs/tags/') && !inputs.sign }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -57,15 +95,6 @@ jobs:
       # `env:`/`with:`/`run:` and in a job-level `env:` like this one. Testing the secret
       # directly in the `if:` below would make the whole workflow file fail to parse with
       # "Unrecognized named-value: 'secrets'", so the presence check is hoisted here.
-      #
-      # Each credential is accepted under either name: the ANDROID_* spelling that the
-      # repository already uses, or a CAIRODRIVE_* one for symmetry with the keystore
-      # secret. `||` yields the first non-empty operand, so CAIRODRIVE_* wins when both
-      # are set and neither name is mandatory.
-      HAS_KEYSTORE: ${{ (secrets.CAIRODRIVE_KEYSTORE_BASE64 || secrets.ANDROID_KEYSTORE_BASE64) != '' }}
-      HAS_KEYSTORE_PASSWORD: ${{ (secrets.CAIRODRIVE_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD) != '' }}
-      HAS_KEY_ALIAS: ${{ (secrets.CAIRODRIVE_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS) != '' }}
-      HAS_KEY_PASSWORD: ${{ (secrets.CAIRODRIVE_KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD) != '' }}
       HAS_PLACES_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY != '' }}
 
     steps:
@@ -75,12 +104,17 @@ jobs:
         uses: actions/checkout@v7
         with:
           path: android
+          # Otherwise the job's GITHUB_TOKEN is left in android/.git/config for the whole
+          # build, where every Gradle plugin and every upstream build script can read it.
+          # Nothing here pushes; the only git command is a `rev-parse`.
+          persist-credentials: false
 
       - name: Checkout OsmAnd-resources
         uses: actions/checkout@v7
         with:
           repository: osmandapp/OsmAnd-resources
           path: resources
+          persist-credentials: false
 
       - name: Checkout OsmAnd-core-legacy
         if: env.CORE == 'legacy'
@@ -88,6 +122,7 @@ jobs:
         with:
           repository: osmandapp/OsmAnd-core-legacy
           path: core-legacy
+          persist-credentials: false
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
@@ -102,6 +137,12 @@ jobs:
 
       - name: Resolve variant names
         id: variant
+        env:
+          # Read through the environment, never interpolated into the script below. A
+          # `${{ inputs.* }}` expression is pasted into the shell before it runs, so
+          # `version_code="${{ inputs.version_code }}"` let anyone who can dispatch this
+          # workflow close the quote and run their own commands on the runner.
+          VERSION_CODE_INPUT: ${{ inputs.version_code }}
         run: |
           set -euo pipefail
           capitalize() { printf '%s%s' "$(echo "${1:0:1}" | tr '[:lower:]' '[:upper:]')" "${1:1}"; }
@@ -113,7 +154,11 @@ jobs:
           # upgrade path. Minutes elapsed since 2026-01-01 is monotonic without depending
           # on run numbering (which resets if the workflow file is renamed), stays far
           # below Play's 2100000000 ceiling, and is already well above the pinned 5399.
-          version_code="${{ inputs.version_code }}"
+          version_code="${VERSION_CODE_INPUT:-}"
+          if [ -n "${version_code}" ] && ! printf '%s' "${version_code}" | grep -Eq '^[0-9]+$'; then
+            echo "::error::version_code must be a positive integer, got '${version_code}'."
+            exit 1
+          fi
           if [ -z "${version_code}" ]; then
             version_code=$(( ( $(date -u +%s) - 1767225600 ) / 60 ))
           fi
@@ -137,25 +182,10 @@ jobs:
             echo "ANDROID_NDK=" >> "$GITHUB_ENV"
           fi
 
-      # Signing is the last task of a nine minute build, so an incomplete secret set is
-      # reported here instead of being discovered at the end. A warning, not a failure:
-      # the build still produces debug-signed artifacts that are useful for testing.
       - name: Check secrets
         run: |
           set -euo pipefail
-          if [ "${HAS_KEYSTORE}" = "true" ]; then
-            missing=""
-            [ "${HAS_KEYSTORE_PASSWORD}" = "true" ] || missing="${missing} ANDROID_KEYSTORE_PASSWORD"
-            [ "${HAS_KEY_ALIAS}" = "true" ] || missing="${missing} ANDROID_KEY_ALIAS"
-            [ "${HAS_KEY_PASSWORD}" = "true" ] || missing="${missing} ANDROID_KEY_PASSWORD"
-            if [ -n "${missing}" ]; then
-              echo "::warning::A release keystore is configured but these secrets are missing:${missing}. Falling back to the debug keystore - artifacts will NOT be uploadable to Google Play."
-            else
-              echo "Release signing fully configured."
-            fi
-          else
-            echo "::notice::No release keystore configured; artifacts will be debug-signed."
-          fi
+          echo "::notice::Dev build - no release keystore on this runner by design; artifacts are debug-signed. Push a v* tag for a Play-uploadable build."
           if [ "${HAS_PLACES_KEY}" = "true" ]; then
             echo "Google Places search enabled."
           else
@@ -175,52 +205,18 @@ jobs:
             echo "org.gradle.caching=true"
           } >> gradle.properties
 
-      # Optional. Without these secrets the release artifacts are signed with the
-      # checked-in debug keystore: fine for sideloading, rejected by Google Play.
-      - name: Decode release keystore
-        id: keystore
-        if: env.HAS_KEYSTORE == 'true'
-        env:
-          KEYSTORE_BASE64: ${{ secrets.CAIRODRIVE_KEYSTORE_BASE64 || secrets.ANDROID_KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.CAIRODRIVE_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
-        run: |
-          set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/keystore"
-          printf '%s' "${KEYSTORE_BASE64}" | base64 -d > "${RUNNER_TEMP}/keystore/release.jks"
-          echo "path=${RUNNER_TEMP}/keystore/release.jks" >> "$GITHUB_OUTPUT"
-
-          # Signing runs as the very last task of a nine minute build, so a keystore that
-          # cannot be opened is worth catching now. keytool prints the alias list, which
-          # also confirms CAIRODRIVE_KEY_ALIAS names a key that is actually in there.
-          if [ -n "${KEYSTORE_PASSWORD}" ]; then
-            # Password on stdin, not argv: an argument would be visible in
-            # /proc/<pid>/cmdline to anything else on the runner. Harmless on an ephemeral
-            # GitHub runner, a real exposure the day this moves to a self-hosted one.
-            if ! aliases=$(printf '%s\n' "${KEYSTORE_PASSWORD}" \
-                | keytool -list -keystore "${RUNNER_TEMP}/keystore/release.jks" 2>&1); then
-              echo "::error::The release keystore could not be opened with the supplied password."
-              echo "${aliases}" | grep -v -i 'password\|Warning' || true
-              exit 1
-            fi
-            echo "Keystore opened. Aliases present:"
-            echo "${aliases}" | grep -i 'PrivateKeyEntry\|trustedCertEntry' || true
-            if [ -n "${KEY_ALIAS}" ] && ! printf '%s' "${aliases}" | grep -qi "^${KEY_ALIAS},"; then
-              echo "::warning::The alias in CAIRODRIVE_KEY_ALIAS/ANDROID_KEY_ALIAS was not found in the keystore listing above."
-            fi
-          fi
-
-      - name: Build release bundle (AAB)
+      # No CAIRODRIVE_KEYSTORE_* here: cairodrive.gradle sees no keystore, repoints the
+      # `publishing` signing config at keystores/debug.keystore and says so in its log.
+      # The bundle still builds, which is what makes this a real smoke test of the release
+      # variant (R8, the shrinker rules, the bundle task) without a key on the runner.
+      - name: Build release bundle (AAB, debug-signed)
         working-directory: android
         env:
           APP_EDITION: ${{ steps.variant.outputs.app_edition }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
           APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
-          CAIRODRIVE_KEYSTORE_FILE: ${{ steps.keystore.outputs.path }}
-          CAIRODRIVE_KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
-          CAIRODRIVE_KEY_ALIAS: ${{ secrets.CAIRODRIVE_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
-          CAIRODRIVE_KEY_PASSWORD: ${{ secrets.CAIRODRIVE_KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew --no-daemon --stacktrace ${{ steps.variant.outputs.bundle_task }}
+          BUNDLE_TASK: ${{ steps.variant.outputs.bundle_task }}
+        run: ./gradlew --no-daemon --stacktrace "${BUNDLE_TASK}"
 
       # Debug build: CAIRODRIVE_FULL_LOGGING defaults to true here, so this APK writes
       # the full diagnostic trace to Android/data/com.cairodrive.app/files/cairodrive-logs.
@@ -230,42 +226,41 @@ jobs:
           APP_EDITION: ${{ steps.variant.outputs.app_edition }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
           APK_VERSION_SUFFIX: '#${{ github.run_number }}-${{ steps.variant.outputs.short_sha }}'
-        run: ./gradlew --no-daemon --stacktrace ${{ steps.variant.outputs.apk_debug_task }}
+          APK_DEBUG_TASK: ${{ steps.variant.outputs.apk_debug_task }}
+        run: ./gradlew --no-daemon --stacktrace "${APK_DEBUG_TASK}"
 
-      # Release-signed APK of the same code that goes into the bundle, for sideload
-      # testing of the exact shipping build (the AAB itself cannot be installed directly).
-      - name: Build release APK
+      # Release build type of the same code, debug-signed: sideloadable for testing the
+      # shrunk, optimised build (the AAB itself cannot be installed directly).
+      - name: Build release APK (debug-signed)
         working-directory: android
         env:
           APP_EDITION: ${{ steps.variant.outputs.app_edition }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
           APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
-          CAIRODRIVE_KEYSTORE_FILE: ${{ steps.keystore.outputs.path }}
-          CAIRODRIVE_KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
-          CAIRODRIVE_KEY_ALIAS: ${{ secrets.CAIRODRIVE_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
-          CAIRODRIVE_KEY_PASSWORD: ${{ secrets.CAIRODRIVE_KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew --no-daemon --stacktrace ${{ steps.variant.outputs.apk_release_task }}
+          APK_RELEASE_TASK: ${{ steps.variant.outputs.apk_release_task }}
+        run: ./gradlew --no-daemon --stacktrace "${APK_RELEASE_TASK}"
 
       - name: Stage artifacts
         id: stage
         working-directory: android
+        env:
+          STAMP: ${{ github.run_number }}-${{ steps.variant.outputs.short_sha }}
         run: |
           set -euo pipefail
-          stamp="${{ github.run_number }}-${{ steps.variant.outputs.short_sha }}"
           mkdir -p artifacts
           for file in $(find OsmAnd/build/outputs/bundle -name '*.aab' 2>/dev/null || true); do
-            cp "$file" "artifacts/CairoDrive-${stamp}-$(basename "$file")"
+            cp "$file" "artifacts/CairoDrive-${STAMP}-$(basename "$file")"
           done
           for file in $(find OsmAnd/build/outputs/apk -name '*.apk' 2>/dev/null || true); do
-            cp "$file" "artifacts/CairoDrive-${stamp}-$(basename "$file")"
+            cp "$file" "artifacts/CairoDrive-${STAMP}-$(basename "$file")"
           done
           for file in $(find OsmAnd/build/outputs/mapping -name 'mapping.txt' 2>/dev/null || true); do
-            cp "$file" "artifacts/CairoDrive-${stamp}-$(basename "$(dirname "$file")")-mapping.txt"
+            cp "$file" "artifacts/CairoDrive-${STAMP}-$(basename "$(dirname "$file")")-mapping.txt"
           done
           ls -lh artifacts
-          echo "stamp=${stamp}" >> "$GITHUB_OUTPUT"
+          echo "stamp=${STAMP}" >> "$GITHUB_OUTPUT"
 
-      - name: Upload Google Play bundle
+      - name: Upload bundle
         uses: actions/upload-artifact@v7
         with:
           name: cairodrive-aab-${{ steps.stage.outputs.stamp }}
@@ -291,30 +286,30 @@ jobs:
 
       - name: Summary
         if: always()
+        env:
+          # Through the environment rather than interpolated into the script - see the
+          # longer note on the release job's summary for what that would otherwise allow.
+          VARIANT: ${{ steps.variant.outputs.variant }}
+          SHORT_SHA: ${{ steps.variant.outputs.short_sha }}
+          VERSION_CODE: ${{ steps.variant.outputs.version_code }}
         run: |
           {
             echo "## CairoDrive dev build"
             echo
-            echo "- Variant: \`${{ steps.variant.outputs.variant }}\`"
+            echo "- Variant: \`${VARIANT}\`"
             echo "- Application id: \`com.cairodrive.app\`"
-            echo "- Commit: \`${{ steps.variant.outputs.short_sha }}\`"
-            echo "- versionCode: \`${{ steps.variant.outputs.version_code }}\`"
+            echo "- Commit: \`${SHORT_SHA}\`"
+            echo "- versionCode: \`${VERSION_CODE}\`"
             if [ "${ABI}" = "fat" ]; then
               echo "- ABIs: \`arm64-v8a\`, \`armeabi-v7a\`, \`x86\`, \`x86_64\`"
             else
               echo "- ABIs: :warning: \`${ABI}\` only - Play will refuse to roll this bundle out"
               echo "  to users on the ABIs it omits. Rebuild with the \`fat\` flavor to publish."
             fi
-            if [ "${HAS_KEYSTORE}" = "true" ] && [ "${HAS_KEYSTORE_PASSWORD}" = "true" ] \
-                && [ "${HAS_KEY_ALIAS}" = "true" ] && [ "${HAS_KEY_PASSWORD}" = "true" ]; then
-              echo "- Signing: release keystore from repository secrets - **uploadable to Google Play**"
-            else
-              echo "- Signing: :warning: debug keystore fallback - installable for testing, **rejected by Google Play**."
-              echo "  Needs the keystore in \`CAIRODRIVE_KEYSTORE_BASE64\` (or \`ANDROID_KEYSTORE_BASE64\`)"
-              echo "  together with all three of \`ANDROID_KEYSTORE_PASSWORD\`, \`ANDROID_KEY_ALIAS\` and"
-              echo "  \`ANDROID_KEY_PASSWORD\` (the \`CAIRODRIVE_\` spelling of each is accepted too);"
-              echo "  a keystore without its credentials is not enough."
-            fi
+            echo "- Signing: debug keystore - installable for testing, **rejected by Google Play**."
+            echo "  This is deliberate: dev builds run unattended, so the release keystore is not"
+            echo "  on this runner at all. Push a \`v*\` tag to get a Play-uploadable, release-signed"
+            echo "  build out of the \`production\` environment."
             if [ "${HAS_PLACES_KEY}" = "true" ]; then
               echo "- Search: Google Places"
             else
@@ -323,4 +318,275 @@ jobs:
             echo
             echo "The debug APK writes its full diagnostic trace to"
             echo "\`Android/data/com.cairodrive.app/files/cairodrive-logs\` on the device."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------------
+  # Release build. `environment: production` is the gate: with required reviewers set on
+  # that environment (see .github/CICD.md) the job is held before its first step, so no
+  # code from the tag - including any *.gradle file - executes until a human approves it.
+  # The keystore secrets are stored on the environment, not on the repository, so this is
+  # also the only job in the repository that can read them.
+  #
+  # The steps below duplicate the dev job rather than sharing it: GitHub has no include
+  # for steps short of a composite action, and a reusable workflow would have to be handed
+  # the secrets explicitly, which is more moving parts around a key than it is worth.
+  # ---------------------------------------------------------------------------------
+  release:
+    name: Release build - signed
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.sign }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: production
+    env:
+      # Same hoisting as above - `secrets` is not available in a step-level `if:`. Each
+      # credential is accepted under either name: the ANDROID_* spelling that the
+      # repository already uses, or a CAIRODRIVE_* one for symmetry with the keystore
+      # secret. `||` yields the first non-empty operand, so CAIRODRIVE_* wins when both
+      # are set and neither name is mandatory.
+      HAS_KEYSTORE: ${{ (secrets.CAIRODRIVE_KEYSTORE_BASE64 || secrets.ANDROID_KEYSTORE_BASE64) != '' }}
+      HAS_KEYSTORE_PASSWORD: ${{ (secrets.CAIRODRIVE_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD) != '' }}
+      HAS_KEY_ALIAS: ${{ (secrets.CAIRODRIVE_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS) != '' }}
+      HAS_KEY_PASSWORD: ${{ (secrets.CAIRODRIVE_KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD) != '' }}
+      HAS_PLACES_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY != '' }}
+
+    steps:
+      # Checked before anything is compiled: an incomplete secret set would otherwise be
+      # discovered by the signer at the very end of a twenty minute build, and unlike a dev
+      # build there is no point in a release that silently fell back to the debug keystore.
+      - name: Verify signing credentials
+        run: |
+          set -euo pipefail
+          missing=""
+          [ "${HAS_KEYSTORE}" = "true" ] || missing="${missing} CAIRODRIVE_KEYSTORE_BASE64"
+          [ "${HAS_KEYSTORE_PASSWORD}" = "true" ] || missing="${missing} CAIRODRIVE_KEYSTORE_PASSWORD"
+          [ "${HAS_KEY_ALIAS}" = "true" ] || missing="${missing} CAIRODRIVE_KEY_ALIAS"
+          [ "${HAS_KEY_PASSWORD}" = "true" ] || missing="${missing} CAIRODRIVE_KEY_PASSWORD"
+          if [ -n "${missing}" ]; then
+            echo "::error::Release build, but these secrets are missing from the production environment:${missing}. Add them under Settings > Environments > production (the ANDROID_* spelling of each is accepted too)."
+            exit 1
+          fi
+          echo "Release signing fully configured."
+
+      - name: Checkout CairoDrive
+        uses: actions/checkout@v7
+        with:
+          path: android
+          persist-credentials: false
+
+      - name: Checkout OsmAnd-resources
+        uses: actions/checkout@v7
+        with:
+          repository: osmandapp/OsmAnd-resources
+          path: resources
+          persist-credentials: false
+
+      - name: Checkout OsmAnd-core-legacy
+        if: env.CORE == 'legacy'
+        uses: actions/checkout@v7
+        with:
+          repository: osmandapp/OsmAnd-core-legacy
+          path: core-legacy
+          persist-credentials: false
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+          cache-dependency-path: |
+            android/**/*.gradle
+            android/**/*.gradle.kts
+            android/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Resolve variant names
+        id: variant
+        env:
+          # Through the environment, not interpolated - see the note in the dev job.
+          VERSION_CODE_INPUT: ${{ inputs.version_code }}
+        run: |
+          set -euo pipefail
+          capitalize() { printf '%s%s' "$(echo "${1:0:1}" | tr '[:lower:]' '[:upper:]')" "${1:1}"; }
+          variant="Cairodrive$(capitalize "${CORE}")$(capitalize "${ABI}")"
+          version_code="${VERSION_CODE_INPUT:-}"
+          if [ -n "${version_code}" ] && ! printf '%s' "${version_code}" | grep -Eq '^[0-9]+$'; then
+            echo "::error::version_code must be a positive integer, got '${version_code}'."
+            exit 1
+          fi
+          # Same monotonic default as the dev job: minutes since 2026-01-01, which Play
+          # accepts as strictly increasing against anything this fork has uploaded before.
+          if [ -z "${version_code}" ]; then
+            version_code=$(( ( $(date -u +%s) - 1767225600 ) / 60 ))
+          fi
+
+          {
+            echo "variant=${variant}"
+            echo "bundle_task=:OsmAnd:bundle${variant}Release"
+            echo "apk_release_task=:OsmAnd:assemble${variant}Release"
+            echo "short_sha=$(git -C android rev-parse --short HEAD)"
+            echo "app_edition=$(date -u +%Y-%m-%d)"
+            echo "version_code=${version_code}"
+          } >> "$GITHUB_OUTPUT"
+          echo "versionCode for this build: ${version_code}"
+
+          if [ "${CORE}" != "legacy" ]; then
+            echo "ANDROID_NDK_ROOT=" >> "$GITHUB_ENV"
+            echo "ANDROID_NDK=" >> "$GITHUB_ENV"
+          fi
+
+      - name: Configure Gradle memory
+        working-directory: android
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          {
+            echo
+            echo "org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8"
+            echo "kotlin.daemon.jvmargs=-Xmx2g"
+            echo "org.gradle.parallel=true"
+            echo "org.gradle.caching=true"
+          } >> gradle.properties
+
+      - name: Decode release keystore
+        id: keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.CAIRODRIVE_KEYSTORE_BASE64 || secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.CAIRODRIVE_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/keystore"
+          printf '%s' "${KEYSTORE_BASE64}" | base64 -d > "${RUNNER_TEMP}/keystore/release.jks"
+          echo "path=${RUNNER_TEMP}/keystore/release.jks" >> "$GITHUB_OUTPUT"
+
+          # Signing runs as the very last task of a long build, so a keystore that cannot
+          # be opened is worth catching now. keytool prints the alias list, which also
+          # confirms CAIRODRIVE_KEY_ALIAS names a key that is actually in there.
+          #
+          # Password on stdin, not argv: an argument would be visible in /proc/<pid>/cmdline
+          # to anything else on the runner. Harmless on an ephemeral GitHub runner, a real
+          # exposure the day this moves to a self-hosted one.
+          if ! aliases=$(printf '%s\n' "${KEYSTORE_PASSWORD}" \
+              | keytool -list -keystore "${RUNNER_TEMP}/keystore/release.jks" 2>&1); then
+            echo "::error::The release keystore could not be opened with the supplied password."
+            echo "${aliases}" | grep -v -i 'password\|Warning' || true
+            exit 1
+          fi
+          echo "Keystore opened. Aliases present:"
+          echo "${aliases}" | grep -i 'PrivateKeyEntry\|trustedCertEntry' || true
+          if ! printf '%s' "${aliases}" | grep -qi "^${KEY_ALIAS},"; then
+            echo "::warning::The alias in CAIRODRIVE_KEY_ALIAS/ANDROID_KEY_ALIAS was not found in the keystore listing above."
+          fi
+
+      - name: Build release bundle (AAB)
+        working-directory: android
+        env:
+          APP_EDITION: ${{ steps.variant.outputs.app_edition }}
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
+          CAIRODRIVE_KEYSTORE_FILE: ${{ steps.keystore.outputs.path }}
+          CAIRODRIVE_KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
+          CAIRODRIVE_KEY_ALIAS: ${{ secrets.CAIRODRIVE_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
+          CAIRODRIVE_KEY_PASSWORD: ${{ secrets.CAIRODRIVE_KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD }}
+          BUNDLE_TASK: ${{ steps.variant.outputs.bundle_task }}
+        run: ./gradlew --no-daemon --stacktrace "${BUNDLE_TASK}"
+
+      # Release-signed APK of the same code that goes into the bundle, for sideload
+      # testing of the exact shipping build (the AAB itself cannot be installed directly).
+      - name: Build release APK
+        working-directory: android
+        env:
+          APP_EDITION: ${{ steps.variant.outputs.app_edition }}
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
+          CAIRODRIVE_KEYSTORE_FILE: ${{ steps.keystore.outputs.path }}
+          CAIRODRIVE_KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
+          CAIRODRIVE_KEY_ALIAS: ${{ secrets.CAIRODRIVE_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
+          CAIRODRIVE_KEY_PASSWORD: ${{ secrets.CAIRODRIVE_KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD }}
+          APK_RELEASE_TASK: ${{ steps.variant.outputs.apk_release_task }}
+        run: ./gradlew --no-daemon --stacktrace "${APK_RELEASE_TASK}"
+
+      - name: Stage artifacts
+        id: stage
+        working-directory: android
+        env:
+          STAMP: ${{ github.run_number }}-${{ steps.variant.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          for file in $(find OsmAnd/build/outputs/bundle -name '*.aab' 2>/dev/null || true); do
+            cp "$file" "artifacts/CairoDrive-${STAMP}-$(basename "$file")"
+          done
+          for file in $(find OsmAnd/build/outputs/apk -name '*.apk' 2>/dev/null || true); do
+            cp "$file" "artifacts/CairoDrive-${STAMP}-$(basename "$file")"
+          done
+          for file in $(find OsmAnd/build/outputs/mapping -name 'mapping.txt' 2>/dev/null || true); do
+            cp "$file" "artifacts/CairoDrive-${STAMP}-$(basename "$(dirname "$file")")-mapping.txt"
+          done
+          ls -lh artifacts
+          echo "stamp=${STAMP}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Google Play bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: cairodrive-release-aab-${{ steps.stage.outputs.stamp }}
+          path: android/artifacts/*.aab
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: cairodrive-release-apk-${{ steps.stage.outputs.stamp }}
+          path: android/artifacts/*.apk
+          if-no-files-found: error
+          retention-days: 90
+
+      # Keep this one: without the mapping file a crash report from the shipped build is
+      # unreadable, and it cannot be regenerated once the build environment is gone.
+      - name: Upload ProGuard mapping
+        uses: actions/upload-artifact@v7
+        with:
+          name: cairodrive-release-mapping-${{ steps.stage.outputs.stamp }}
+          path: android/artifacts/*-mapping.txt
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Summary
+        if: always()
+        env:
+          # Through the environment, not interpolated. git permits `$`, backticks and
+          # parentheses in a tag name, so `${{ github.ref_name }}` pasted into this script
+          # would let a tag called `v$(...)` run commands - in the one job that has the
+          # keystore decoded on disk. The others are internally generated but follow the
+          # same rule so that nobody has to work out which is which.
+          REF_NAME: ${{ github.ref_name }}
+          VARIANT: ${{ steps.variant.outputs.variant }}
+          SHORT_SHA: ${{ steps.variant.outputs.short_sha }}
+          VERSION_CODE: ${{ steps.variant.outputs.version_code }}
+          STAMP: ${{ steps.stage.outputs.stamp }}
+        run: |
+          {
+            echo "## CairoDrive release build"
+            echo
+            echo "- Ref: \`${REF_NAME}\`"
+            echo "- Variant: \`${VARIANT}\`"
+            echo "- Application id: \`com.cairodrive.app\`"
+            echo "- Commit: \`${SHORT_SHA}\`"
+            echo "- versionCode: \`${VERSION_CODE}\`"
+            if [ "${ABI}" = "fat" ]; then
+              echo "- ABIs: \`arm64-v8a\`, \`armeabi-v7a\`, \`x86\`, \`x86_64\`"
+            else
+              echo "- ABIs: :warning: \`${ABI}\` only - Play will refuse to roll this bundle out"
+              echo "  to users on the ABIs it omits. Rebuild with the \`fat\` flavor to publish."
+            fi
+            echo "- Signing: release keystore from the \`production\` environment - **uploadable to Google Play**"
+            if [ "${HAS_PLACES_KEY}" = "true" ]; then
+              echo "- Search: Google Places"
+            else
+              echo "- Search: :warning: offline OSM index - \`GOOGLE_PLACES_API_KEY\` is not set"
+            fi
+            echo
+            echo "Keep \`cairodrive-release-mapping-${STAMP}\` for as long as"
+            echo "this build is installed anywhere: release stack traces cannot be read without it."
           } >> "$GITHUB_STEP_SUMMARY"
