@@ -144,6 +144,12 @@ public class QuickSearchHelper implements ResourceListener {
 		if (useSpatialTextSearch()) {
 			core.registerAPI(new SearchAmenityTypesAPI(app.getPoiTypes()));
 			core.registerAPI(new SpatialTextSearchAPI(app.getPoiTypes()));
+			// The spatial providers are a complete replacement for the ones below, not an
+			// addition to them, so this branch returns early - and Google has to be applied
+			// here as well. Leaving it to the common path below meant that switching on
+			// "spatial text search" silently reverted typed search to the offline index
+			// while every other entry point still answered from Google.
+			applyGooglePlacesSearch();
 			refreshCustomPoiFilters();
 			return;
 		}

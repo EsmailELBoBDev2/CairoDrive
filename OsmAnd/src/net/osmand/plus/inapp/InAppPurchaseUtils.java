@@ -72,7 +72,9 @@ public class InAppPurchaseUtils {
 	}
 
 	public static boolean isOsmAndProAvailable(@NonNull OsmandApplication app, boolean checkDevBuild) {
-		return isOsmAndProPurchased(app) || isPromoSubscribed(app) || checkDeveloperBuildIfNeeded(app, checkDevBuild);
+		return CairoDriveFeatures.isProUnlocked()
+				|| isOsmAndProPurchased(app) || isPromoSubscribed(app)
+				|| checkDeveloperBuildIfNeeded(app, checkDevBuild);
 	}
 
 	private static boolean checkDeveloperBuildIfNeeded(@NonNull OsmandApplication app, boolean shouldCheck) {
@@ -116,13 +118,11 @@ public class InAppPurchaseUtils {
 	}
 
 	public static boolean isProWidgetsAvailable(@NonNull OsmandApplication app) {
-		return CairoDriveFeatures.isClientSideProUnlocked()
-				|| isOsmAndProAvailable(app) || isBrandPromoAvailable(app);
+		return isOsmAndProAvailable(app) || isBrandPromoAvailable(app);
 	}
 
 	public static boolean is3dMapsAvailable(@NonNull OsmandApplication app) {
-		return CairoDriveFeatures.isClientSideProUnlocked()
-				|| isOsmAndProAvailable(app) || isBrandPromoAvailable(app);
+		return isOsmAndProAvailable(app) || isBrandPromoAvailable(app);
 	}
 
 	public static boolean isExportTypeAvailable(@NonNull OsmandApplication app,
@@ -139,8 +139,7 @@ public class InAppPurchaseUtils {
 	}
 
 	public static boolean isColoringTypeAvailable(@NonNull OsmandApplication app) {
-		return CairoDriveFeatures.isClientSideProUnlocked()
-				|| isOsmAndProAvailable(app) || isBrandPromoAvailable(app);
+		return isOsmAndProAvailable(app) || isBrandPromoAvailable(app);
 	}
 
 	public static boolean isBrandPromoAvailable(@NonNull OsmandApplication app) {

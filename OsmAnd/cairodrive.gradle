@@ -23,12 +23,12 @@
 //                                  search is served by Google instead of the offline OSM
 //                                  index; when empty the build behaves like stock OsmAnd.
 
-// Device-side capabilities upstream keeps behind the Pro subscription: 3D/terrain maps, the
-// Pro map widgets and the route colouring types. All three are rendering work done on the
-// phone, so unlocking them costs no one anything. See CairoDriveFeatures for what is
-// deliberately left gated. Set CAIRODRIVE_UNLOCK_CLIENT_FEATURES=false to build without them.
-def unlockClient = System.getenv("CAIRODRIVE_UNLOCK_CLIENT_FEATURES")
-def clientFeatures = unlockClient?.trim() ? unlockClient.trim() : "true"
+// The Pro tier without a subscription - weather, OsmAnd Cloud, 3D/terrain, Pro widgets,
+// route colouring - matching what upstream already grants any build that Version.isDeveloperBuild
+// accepts, which is how OsmAnd~ on F-Droid ships. See CairoDriveFeatures. Set
+// CAIRODRIVE_UNLOCK_PRO=false to build stock behaviour instead.
+def unlockPro = System.getenv("CAIRODRIVE_UNLOCK_PRO")
+def proUnlocked = unlockPro?.trim() ? unlockPro.trim() : "true"
 
 def fullLogging = System.getenv("CAIRODRIVE_FULL_LOGGING")
 def debugLogging = fullLogging?.trim() ? fullLogging.trim() : "true"
@@ -66,12 +66,12 @@ android {
 		debug {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", debugLogging
 			buildConfigField "String", "GOOGLE_PLACES_API_KEY", placesKeyLiteral
-			buildConfigField "boolean", "CAIRODRIVE_UNLOCK_CLIENT_FEATURES", clientFeatures
+			buildConfigField "boolean", "CAIRODRIVE_UNLOCK_PRO", proUnlocked
 		}
 		release {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
 			buildConfigField "String", "GOOGLE_PLACES_API_KEY", placesKeyLiteral
-			buildConfigField "boolean", "CAIRODRIVE_UNLOCK_CLIENT_FEATURES", clientFeatures
+			buildConfigField "boolean", "CAIRODRIVE_UNLOCK_PRO", proUnlocked
 		}
 	}
 }

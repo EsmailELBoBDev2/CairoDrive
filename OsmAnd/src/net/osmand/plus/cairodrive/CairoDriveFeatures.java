@@ -5,26 +5,27 @@ import net.osmand.plus.BuildConfig;
 /**
  * Feature switches for the CairoDrive fork.
  *
- * <p>Upstream gates a number of capabilities behind {@code isOsmAndProAvailable}, which covers
- * two quite different things: rendering that happens entirely on the device, and services that
- * OsmAnd hosts and pays for. CairoDrive enables the first group and leaves the second alone.
+ * <p>Upstream already ships a build with the whole Pro tier unlocked and no subscription:
+ * {@code InAppPurchaseUtils.isOsmAndProAvailable} succeeds for any build that
+ * {@code Version.isDeveloperBuild} recognises, which is any build whose displayed name
+ * contains a tilde - the OsmAnd~ package published on F-Droid by the OsmAnd project itself.
+ * CairoDrive takes the same position through an explicit switch rather than by smuggling a
+ * tilde into its product name.
  *
- * <p>Enabled here (device-side only, no network service behind them):
- * <ul>
- *     <li>3D / terrain maps - relief rendering from terrain files the app already downloads</li>
- *     <li>Pro map widgets - additional readouts drawn from data the app already has</li>
- *     <li>Route coloring types - colouring an existing track by slope, altitude and so on</li>
- * </ul>
+ * <p>This unlocks the weather forecast, OsmAnd Cloud, 3D and terrain maps, the Pro map
+ * widgets and the route colouring types. The older OsmAnd+ tier - contour lines, depth
+ * contours, astronomy, unlimited downloads - needs nothing here: {@code Version.isFreeVersion}
+ * only recognises the two net.osmand package names, so the CairoDrive application id already
+ * reads as a paid version.
  *
- * <p>Deliberately NOT enabled, because they consume OsmAnd's own paid infrastructure rather
- * than unlocking local code: the weather forecast (forecast files served from OsmAnd's
- * servers) and OsmAnd Cloud backup (storage on OsmAnd's servers). Those are metered services,
- * not feature flags, and a fork switching them on would be drawing on someone else's hosting.
- * CairoDrive's own weather support is meant to come from an independent provider instead.
+ * <p>Two things this does not do. OsmAnd Cloud still needs an OsmAnd account to sign in to,
+ * so unlocking the gate removes the paywall screen but does not conjure storage. And the
+ * weather forecast still downloads its data from OsmAnd's servers, which is worth remembering
+ * when deciding how widely to distribute a build with this enabled.
  *
- * <p>The value is a build config field so the behaviour is visible in the build rather than
- * buried in a conditional, and so a build can turn it off without touching source.
- * See {@code OsmAnd/cairodrive.gradle}.
+ * <p>The value is a build config field so what a build enables is visible in the build rather
+ * than buried in a conditional, and so {@code CAIRODRIVE_UNLOCK_PRO=false} produces stock
+ * behaviour without editing source. See {@code OsmAnd/cairodrive.gradle}.
  */
 public class CairoDriveFeatures {
 
@@ -32,9 +33,10 @@ public class CairoDriveFeatures {
 	}
 
 	/**
-	 * True when the device-side capabilities listed above are unlocked without a subscription.
+	 * True when the Pro tier is available without a subscription, as in upstream's own
+	 * OsmAnd~ build.
 	 */
-	public static boolean isClientSideProUnlocked() {
-		return BuildConfig.CAIRODRIVE_UNLOCK_CLIENT_FEATURES;
+	public static boolean isProUnlocked() {
+		return BuildConfig.CAIRODRIVE_UNLOCK_PRO;
 	}
 }
