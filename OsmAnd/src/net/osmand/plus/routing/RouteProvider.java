@@ -29,6 +29,7 @@ import net.osmand.plus.onlinerouting.OnlineRoutingHelper;
 import net.osmand.plus.onlinerouting.engine.OnlineRoutingEngine;
 import net.osmand.plus.onlinerouting.engine.OnlineRoutingEngine.OnlineRoutingResponse;
 import net.osmand.plus.render.NativeOsmandLibrary;
+import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.resources.ResourceManager;
 import net.osmand.plus.routing.GPXRouteParams.GPXRouteParamsBuilder;
 import net.osmand.plus.settings.backend.ApplicationMode;
@@ -941,8 +942,11 @@ public class RouteProvider {
 
 	/**
 	 * One greppable line per offline route calculation, written through the ordinary commons-logging Log.
-	 * CairoDriveLogger pumps this process' logcat into the rotating on-device files, so nothing extra is
-	 * needed to get these lines off the phone - {@code grep CD_ROUTE_TIMING} over a pulled log is enough.
+	 * Written twice on purpose: once to logcat, and once directly into CairoDriveLogger's rotating
+	 * files. The logger does pump this process' logcat into those files, but that route cannot be
+	 * relied on - some vendor ROMs drop third-party tags out of the buffer before anything can read
+	 * them, and a timing line nobody can retrieve after a drive is worth nothing. The direct write
+	 * is a no-op when file logging is off.
 	 * <p>
 	 * The point of the split is to say <em>where</em> a slow reroute went:
 	 * <ul>
@@ -1000,7 +1004,14 @@ public class RouteProvider {
 					sb.append(" hh[").append(stats.toLogString()).append(']');
 				}
 			}
-			log.info(sb.toString());
+			String line = sb.toString();
+			log.info(line);
+			// Also straight into the on-device files. Some vendor ROMs - MIUI among them - drop
+			// third-party tags out of the logcat buffer entirely, so `adb logcat` on such a
+			// phone shows the framework classes injected into this process and nothing this app
+			// wrote. The whole point of this line is to be readable after a drive, so it must
+			// not depend on logcat surviving.
+			CairoDriveLogger.getInstance().log(TIMING_TAG, line.substring(TIMING_TAG.length() + 1));
 		} catch (RuntimeException e) {
 			// Diagnostics must never be able to break a navigation calculation.
 			log.error(TIMING_TAG + " failed to log timing", e);

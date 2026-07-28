@@ -15,6 +15,7 @@ import net.osmand.osm.MapPoiTypes;
 import net.osmand.osm.PoiCategory;
 import net.osmand.osm.PoiType;
 import net.osmand.plus.BuildConfig;
+import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.search.SearchUICore.SearchResultMatcher;
 import net.osmand.search.core.ObjectType;
@@ -281,7 +282,7 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 			if (body == null) {
 				// Transport failure or a non-200 response - fall through to OSM. The
 				// request() call above has already logged why.
-				LOG.info(TRACE_TAG + " query='" + query + "' source=network result=failed"
+				trace("query='" + query + "' source=network result=failed"
 						+ " (falling back to the offline index)");
 				return true;
 			}
@@ -302,7 +303,7 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 		// says whether this cost a billed request: network did, cache and prefix did not.
 		// published=0 means Google answered and knew nothing, which is not a failure - the
 		// offline index gets its turn rather than the user being shown an empty list.
-		LOG.info(TRACE_TAG + " query='" + query + "' source=" + source
+		trace("query='" + query + "' source=" + source
 				+ " published=" + published + " osmSuppressed=" + (published > 0));
 		return true;
 	}
@@ -724,6 +725,22 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 		} catch (JSONException e) {
 			return MAX_RESULTS;
 		}
+	}
+
+	/**
+	 * Writes one diagnostic line to logcat <em>and</em>, when the on-device file logger is
+	 * running, straight into its rotating files.
+	 * <p>
+	 * The second half is not redundancy for its own sake. Some vendor ROMs - MIUI among them -
+	 * drop third-party tags out of the logcat buffer entirely, so on those devices
+	 * {@code adb logcat} shows only the framework classes injected into the app's own process
+	 * and nothing the app itself wrote. Writing through {@link CairoDriveLogger} bypasses
+	 * logcat and lands in a file that can be pulled off the device, which is the only way this
+	 * trace is worth anything on a phone that filters it.
+	 */
+	private static void trace(@NonNull String message) {
+		LOG.info(TRACE_TAG + " " + message);
+		CairoDriveLogger.getInstance().log(TRACE_TAG, message);
 	}
 
 	private static class CachedResponse {
