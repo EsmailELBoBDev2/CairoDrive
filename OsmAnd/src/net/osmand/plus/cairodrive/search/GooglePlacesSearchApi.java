@@ -23,6 +23,7 @@ import net.osmand.search.core.SearchCoreFactory;
 import net.osmand.search.core.SearchCoreFactory.SearchBaseAPI;
 import net.osmand.search.core.SearchPhrase;
 import net.osmand.search.core.SearchResult;
+import net.osmand.search.core.SearchSettings.SortType;
 import net.osmand.util.Algorithms;
 import net.osmand.util.TransliterationHelper;
 
@@ -502,17 +503,28 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 		result.objectType = ObjectType.POI;
 		result.location = new LatLon(lat, lon);
 		result.preferredZoom = SearchCoreFactory.PREFERRED_POI_ZOOM;
-		// Carries Google's own ranking into OsmAnd's sort. priorityDistance is left at 0, so
-		// getSearchDistance reduces to `priority - 1` and the physical distance has no effect
-		// at all - which is intended: Google already weighed proximity against relevance, and
-		// re-sorting its answer by distance would throw that away.
+		// Carries Google's own ranking into OsmAnd's sort - but only when the user has not
+		// asked for something else.
 		//
-		// It is not the whole story. SearchResultComparator only reaches priority at its
-		// fourth step; ahead of it sit found-word-count and phrase-match weight, so a place
-		// whose name matches more of what was typed is lifted above Google's order. That is
-		// left alone deliberately - for someone half way through typing a name it is usually
-		// the better answer, and it only ever reorders within Google's own result set.
-		result.priority = RESULT_PRIORITY + index;
+		// getSearchDistance is `priority - 1 / (1 + priorityDistance * metres)`, and that
+		// second term can never span more than 1.0. Staggering priority by a whole unit per
+		// result therefore drowns it completely: with ONLY_BY_DISTANCE selected the comparator
+		// calls getSearchDistance(loc, 1) and nothing but priority decides, so picking
+		// "Nearest" left the list in Google's order and looked broken. It was.
+		//
+		// So the stagger is applied only in the relevance sort. Under ONLY_BY_DISTANCE every
+		// result carries the same priority, the distance term is the only thing left to
+		// separate them, and nearest-first works as the user asked. priorityDistance stays 0
+		// either way, so the default sort is Google's ranking and not a re-sort by proximity -
+		// Google already weighed proximity against relevance, and redoing that badly is what
+		// this provider exists to avoid.
+		//
+		// SearchResultComparator only reaches priority at its fourth step; found-word-count and
+		// phrase-match weight come first, so a place whose name matches more of what was typed
+		// still lifts above Google's order in the relevance sort. Left alone deliberately: half
+		// way through typing a name that is usually the better answer.
+		boolean sortByDistance = phrase.getSettings().getSortType() == SortType.ONLY_BY_DISTANCE;
+		result.priority = RESULT_PRIORITY + (sortByDistance ? 0 : index);
 		return result;
 	}
 
