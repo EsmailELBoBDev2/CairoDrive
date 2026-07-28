@@ -32,6 +32,7 @@ import net.osmand.data.RotatedTileBox;
 import net.osmand.plus.AppInitializeListener;
 import net.osmand.plus.AppInitializer;
 import net.osmand.plus.OsmAndConstants;
+import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.auto.views.CarSurfaceView;
 import net.osmand.plus.helpers.MapDisplayPositionManager;
@@ -506,6 +507,10 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 			// Surface is not available, or has been destroyed, skip this frame.
 			return;
 		}
+		// This whole method runs on the main looper, so its wall time is exactly the head-unit
+		// stutter a driver feels. Logged to the on-device file (not logcat, which MIUI filters)
+		// so "did the Android Auto smoothing work" is a grep over a pulled log rather than a guess.
+		long frameStartNanos = CairoDriveLogger.isEnabled() ? System.nanoTime() : 0;
 		Canvas canvas = surface.lockCanvas(null);
 		try {
 			canvas.drawColor(Color.LTGRAY);
@@ -531,6 +536,45 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 			}
 		} finally {
 			surface.unlockCanvasAndPost(canvas);
+			if (frameStartNanos != 0) {
+				logFrameTiming((System.nanoTime() - frameStartNanos) / 1_000_000L);
+			}
+		}
+	}
+
+	/** Slow-frame threshold in ms: at the car cap of 20fps a frame has ~50ms; over this it dropped one. */
+	private static final long SLOW_FRAME_MS = 60;
+	/** How many frames a rolling summary covers - ~10s at the 20fps car cap. */
+	private static final int FRAME_SUMMARY_INTERVAL = 200;
+	private int frameCount;
+	private long frameWallSumMs;
+	private long frameWallMaxMs;
+	private int slowFrameCount;
+
+	/**
+	 * Records one car frame's main-thread cost to the diagnostic file. Slow frames are written
+	 * individually so a stutter is pinpointed; a summary every {@link #FRAME_SUMMARY_INTERVAL}
+	 * frames gives the steady state. The file writer is non-blocking, so this never adds to the
+	 * frame it is measuring, and the whole method is skipped when file logging is compiled out.
+	 */
+	private void logFrameTiming(long wallMs) {
+		frameCount++;
+		frameWallSumMs += wallMs;
+		if (wallMs > frameWallMaxMs) {
+			frameWallMaxMs = wallMs;
+		}
+		if (wallMs >= SLOW_FRAME_MS) {
+			slowFrameCount++;
+			CairoDriveLogger.getInstance().log("CD_FRAME", "slow wallMs=" + wallMs);
+		}
+		if (frameCount >= FRAME_SUMMARY_INTERVAL) {
+			CairoDriveLogger.getInstance().log("CD_FRAME", "summary frames=" + frameCount
+					+ " avgMs=" + (frameWallSumMs / frameCount)
+					+ " maxMs=" + frameWallMaxMs + " slow=" + slowFrameCount);
+			frameCount = 0;
+			frameWallSumMs = 0;
+			frameWallMaxMs = 0;
+			slowFrameCount = 0;
 		}
 	}
 
