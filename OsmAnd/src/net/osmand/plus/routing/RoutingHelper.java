@@ -13,6 +13,7 @@ import net.osmand.plus.NavigationService;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.auto.NavigationSession;
+import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.cairodrive.CairoDriveOffRoute;
 import net.osmand.plus.helpers.TargetPointsHelper;
 import net.osmand.plus.helpers.TargetPoint;
@@ -527,6 +528,14 @@ public class RoutingHelper {
 								currentRouteLocation, nextRouteLocation, previewNextTurn);
 					}
 				}
+				// One navigation-state line per fix while guiding, straight to the on-device file:
+				// the raw GPS the FIX line already carries, plus what only exists here - how far
+				// off the route this fix measured (devM), the threshold it was tested against, the
+				// app's verdict, whether a reroute fired, and where the snapped arrow ended up
+				// versus the real position. This is what lets a drive's deviations be reconstructed
+				// after the fact rather than guessed at.
+				logNavState(currentLocation, locationProjection, distOrth, allowableDeviation,
+						wrongMovementDirection, calculateRoute);
 			}
 			lastFixedLocation = currentLocation;
 			lastProjection = locationProjection;
@@ -548,6 +557,30 @@ public class RoutingHelper {
 		} else {
 			return currentLocation;
 		}
+	}
+
+	/**
+	 * Writes one CD_NAV line per guided fix to the diagnostic file. Runs at the fix rate (~1Hz),
+	 * so a single {@code String.format} per call is not a hot-path cost, and the whole thing is
+	 * skipped when file logging is compiled out. The file writer is non-blocking.
+	 *
+	 * @param projection where the snapped arrow was placed - equal to {@code fix} when the arrow
+	 *                   was not projected onto the route this tick, so {@code gapM} then reads 0.
+	 */
+	private void logNavState(@NonNull Location fix, Location projection, double devM,
+	                         double allowM, boolean wrongDirection, boolean recalc) {
+		if (!CairoDriveLogger.isEnabled()) {
+			return;
+		}
+		double gapM = projection != null ? fix.distanceTo(projection) : 0;
+		float speedKmh = fix.hasSpeed() ? fix.getSpeed() * 3.6f : 0;
+		CairoDriveLogger.getInstance().log("CD_NAV", String.format(java.util.Locale.US,
+				"rawLat=%.5f rawLon=%.5f armLat=%.5f armLon=%.5f devM=%.1f allowM=%.1f off=%b"
+						+ " recalc=%b wrongDir=%b armGapM=%.1f spdKmh=%.1f",
+				fix.getLatitude(), fix.getLongitude(),
+				projection != null ? projection.getLatitude() : fix.getLatitude(),
+				projection != null ? projection.getLongitude() : fix.getLongitude(),
+				devM, allowM, isDeviatedFromRoute, recalc, wrongDirection, gapM, speedKmh));
 	}
 
 	private boolean isLocationJumping(@NonNull Location currentLocation, boolean targetPointsChanged) {
