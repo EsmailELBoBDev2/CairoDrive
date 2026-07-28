@@ -95,7 +95,12 @@ public class RouteProvider {
 	 * Master switch for the warm routing environment. Left as a mutable static so the behaviour can be
 	 * disabled from a debugger or a test without a rebuild; there is no user facing setting for it.
 	 */
-	public static boolean USE_WARM_ROUTING_ENVIRONMENT = true;
+	// Off until a CD_ROUTE_TIMING log from a real drive says it is both safe and worth having.
+	// It reuses a RoutingContext across calculations, which is the highest-consequence change in
+	// this fork - a stale one does not crash, it returns a wrong route - and the measured benefit
+	// on a device running the C++ HH engine is the setup phase only. Unverified and load-bearing
+	// is the wrong combination to ship on by default.
+	public static boolean USE_WARM_ROUTING_ENVIRONMENT = false;
 
 	/** Grep handle for the per-calculation timing line. */
 	private static final String TIMING_TAG = "CD_ROUTE_TIMING";

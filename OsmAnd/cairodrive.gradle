@@ -34,13 +34,26 @@ def proUnlocked = unlockPro?.trim() ? unlockPro.trim() : "true"
 
 // Start navigating on the vehicle arrow, close in and tilted, instead of on a zoomed-out
 // view of the whole route. See CairoDriveNavigationView.
+// OFF by default alongside the hysteresis, for the same reason: it changes the camera at the
+// moment navigation starts, it has never been verified on a real drive, and the owner reports
+// the start of navigation as one of the places the app stutters. Stock camera behaviour until
+// there is a log that says otherwise.
 def drivingViewEnv = System.getenv("CAIRODRIVE_DRIVING_VIEW")
-def drivingView = drivingViewEnv?.trim() ? drivingViewEnv.trim() : "true"
+def drivingView = drivingViewEnv?.trim() ? drivingViewEnv.trim() : "false"
 
 // Require corroboration from several fixes before a deviation costs a route recalculation.
 // See CairoDriveOffRoute.
+// OFF by default as of the first real drive. The hysteresis was meant to stop one bad fix
+// under a flyover costing a full recomputation; what it actually did on the road was delay a
+// genuine wrong turn for kilometres. Three of its rules compound: a single fix reading
+// on-route resets the counter to zero, so a wrong turn onto a road running near the route
+// never accumulates evidence; a fix with accuracy over 100 m is dropped without counting; and
+// the 50 m / 3 s debounce is checked before the counter advances, not after. Together they can
+// suppress a reroute indefinitely, which is far worse than the spurious reroute they prevent -
+// a driver who has gone the wrong way needs to be told immediately.
+// Set CAIRODRIVE_OFFROUTE_HYSTERESIS=true to re-enable it for testing.
 def offRouteEnv = System.getenv("CAIRODRIVE_OFFROUTE_HYSTERESIS")
-def offRouteHysteresis = offRouteEnv?.trim() ? offRouteEnv.trim() : "true"
+def offRouteHysteresis = offRouteEnv?.trim() ? offRouteEnv.trim() : "false"
 
 // Keep bulk transfers off a metered connection unless the user asks for them explicitly.
 // This fork is driven on Egyptian mobile data, where an unattended download is a bill rather
