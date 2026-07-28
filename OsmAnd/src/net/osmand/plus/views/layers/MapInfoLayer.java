@@ -662,6 +662,17 @@ public class MapInfoLayer extends OsmandMapLayer implements ICoveredScreenRectPr
 	@Override
 	public void onDraw(Canvas canvas, RotatedTileBox tileBox, DrawSettings drawSettings) {
 		this.drawSettings = drawSettings;
+		// The head unit renders through this same shared map view (SurfaceRenderer calls
+		// mapView.setView(CarSurfaceView) before drawOverMap), so without this guard every
+		// projected frame ran the whole phone-UI update here - four widget-panel View trees, the
+		// toolbar, DiffUtil, and via updateMainWidgetPanels a WindowManager binder call to recolor
+		// the status bar - none of which the car surface shows (Android Auto draws its own
+		// turn/speed template). The drive log caught exactly this chain inside SurfaceRenderer
+		// frames measured at 1-2.5s on the main looper. Phone frames still run it: view.isCarView()
+		// is only true while the car surface is the active draw target.
+		if (view != null && view.isCarView()) {
+			return;
+		}
 		if (getMapActivity() != null) {
 			updateColorShadowsOfText();
 			updateWidgetsInfo(drawSettings);

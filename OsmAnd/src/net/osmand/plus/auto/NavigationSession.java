@@ -66,6 +66,7 @@ import net.osmand.plus.settings.enums.HistorySource;
 import net.osmand.plus.settings.enums.LocationSource;
 import net.osmand.plus.simulation.OsmAndLocationSimulation;
 import net.osmand.plus.track.helpers.GpxUiHelper;
+import net.osmand.plus.activities.MapActivity;
 import net.osmand.plus.views.OsmandMapTileView;
 import net.osmand.plus.views.layers.GPXLayer;
 import net.osmand.router.FastRoutingState;
@@ -441,6 +442,14 @@ public class NavigationSession extends Session implements NavigationListener, Os
 			navigationCarSurface.setCallback(navigationScreen);
 		}
 		getScreenManager().push(navigationScreen);
+		// The head unit is now driving the map. Pin the phone activity's orientation immediately
+		// (see MapActivity.applyScreenOrientation) rather than waiting for its next resume, so a
+		// phone rotation cannot relaunch it and stall the shared main looper the projected frames
+		// are posted to.
+		MapActivity mapActivity = getApp().getOsmandMap().getMapView().getMapActivity();
+		if (mapActivity != null) {
+			getApp().runInUIThread(mapActivity::applyScreenOrientation);
+		}
 		// navigation already started
 		if (routingHelper.isFollowingMode() && routingHelper.isRouteCalculated() && !carNavigationShouldBeActive) {
 			startCarNavigation();

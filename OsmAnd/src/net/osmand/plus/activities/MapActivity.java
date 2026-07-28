@@ -15,6 +15,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
 import android.net.Uri;
 import android.os.Build;
@@ -820,8 +821,19 @@ public class MapActivity extends OsmandActionBarActivity implements DownloadEven
 	}
 
 	public void applyScreenOrientation() {
-		if (settings.MAP_SCREEN_ORIENTATION.get() != getRequestedOrientation()) {
-			setRequestedOrientation(settings.MAP_SCREEN_ORIENTATION.get());
+		int desired = settings.MAP_SCREEN_ORIENTATION.get();
+		// While an Android Auto session is driving, the phone is a cradle-mounted GPS source, not
+		// a UI anyone is looking at - and letting it rotate relaunches this activity, which on the
+		// drive log ran onDestroy+onCreate+onResume as one 19.6s message on the main looper and
+		// blanked the projected map for 41s, because the car SurfaceRenderer posts its frames to
+		// that same looper. NOSENSOR locks to the current orientation without a relaunch. It
+		// reverts to the user's preference on the next resume once the head unit is gone.
+		NavigationSession carSession = app.getCarNavigationSession();
+		if (carSession != null && carSession.hasStarted()) {
+			desired = ActivityInfo.SCREEN_ORIENTATION_NOSENSOR;
+		}
+		if (desired != getRequestedOrientation()) {
+			setRequestedOrientation(desired);
 		}
 	}
 

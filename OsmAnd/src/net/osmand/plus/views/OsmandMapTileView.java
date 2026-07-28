@@ -2731,7 +2731,17 @@ public class OsmandMapTileView implements IMapDownloaderCallback {
 
 	public void applyMaximumFrameRate(@NonNull MapRendererView mapRenderer) {
 		int frameRate;
-		if (settings.BATTERY_SAVING_MODE.get()) {
+		if (isCarView()) {
+			// The Android Auto offscreen renderer is deliberately capped low in SurfaceRenderer
+			// (MAX_FRAME_RATE): its frame is rendered on the phone's main looper and copied into
+			// the projected surface as a bitmap, which a mid-range SoC cannot sustain faster. But
+			// this method is reached from every layer's onPrepareBufferImage on every frame, so
+			// without this branch the phone's 60/120 was stamped back over the car cap on the
+			// first drawn frame and never restored - tripling the native renderer's target rate,
+			// heating the phone and starving the same main looper the drive log measured at
+			// 1-2.5s per car frame. Keep the cap the car renderer asked for.
+			frameRate = LIMITED_MAX_FRAME_RATE;
+		} else if (settings.BATTERY_SAVING_MODE.get()) {
 			frameRate = LIMITED_MAX_FRAME_RATE;
 		} else {
 			frameRate = isUserMapInteractionActive() ? USER_INTERACTION_MAX_FRAME_RATE : ANIMATION_MAX_FRAME_RATE;
