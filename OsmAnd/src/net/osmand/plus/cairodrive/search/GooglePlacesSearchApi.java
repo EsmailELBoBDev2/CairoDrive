@@ -136,9 +136,24 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 	 * enough that a finished query still feels immediate.
 	 */
 	private static final long DEBOUNCE_MS = 800;
+	/** Debounce is slept in slices this long so an abandoned keystroke frees the thread promptly. */
+	private static final long DEBOUNCE_POLL_MS = 50;
 	private static final int MAX_RESULTS = 20;
-	private static final int CONNECT_TIMEOUT_MS = 10000;
-	private static final int READ_TIMEOUT_MS = 15000;
+	/**
+	 * Interactive timeouts. This runs on OsmAnd's single shared search thread, so a slow request
+	 * head-of-line-blocks the offline fallback and every queued search (including the head unit's).
+	 * The old 10s/15s meant one dead request could stall search for ~25s; a place search that has
+	 * not answered in a few seconds is not going to feel interactive anyway.
+	 */
+	private static final int CONNECT_TIMEOUT_MS = 4000;
+	private static final int READ_TIMEOUT_MS = 6000;
+	/**
+	 * After Google fails to answer (transport error, or a non-200 such as a blocked key or a rate
+	 * limit), skip it for this long and let the offline index answer immediately. Without this, a
+	 * "connected but dead" mobile link - common in Cairo - re-paid the full debounce-plus-timeout
+	 * stall on every keystroke, and a blocked key was retried forever.
+	 */
+	private static final long CIRCUIT_OPEN_MS = 8000;
 
 	private static final int CACHE_SIZE = 64;
 	private static final long CACHE_TTL_MS = 5 * 60 * 1000;
@@ -256,37 +271,50 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 		if (query.length() < MIN_QUERY_LENGTH || !isActive(app)) {
 			return true;
 		}
-		// Debounce: OsmAnd cancels the running search when the text changes, so sleeping
-		// here means an abandoned keystroke never reaches the network.
-		try {
-			Thread.sleep(DEBOUNCE_MS);
-		} catch (InterruptedException e) {
-			Thread.currentThread().interrupt();
-			return true;
-		}
-		if (matcher.isCancelled()) {
-			return true;
-		}
 
 		LatLon location = phrase.getSettings().getOriginalLocation();
 		String normalised = normalise(query);
 		String scope = cacheScope(location, app.getLanguage());
+
+		// Cache lookup BEFORE the debounce. A repeat or prefix hit spends nothing, so there is no
+		// reason to make it wait: the debounce exists only to avoid spending a billed request on an
+		// abandoned keystroke. Previously every hit paid 800ms on top of upstream's 700ms, so a
+		// re-typed name never felt fast.
 		String source = "cache";
 		String body = cached(cacheKey(normalised, scope));
 		if (body == null) {
 			body = cachedByPrefix(normalised, scope);
 			source = "prefix";
 		}
+
 		if (body == null) {
+			// Google is unreachable right now - a recent request failed. Do not sleep and do not
+			// retry; let the offline index answer this keystroke immediately. The breaker clears
+			// itself after CIRCUIT_OPEN_MS.
+			if (circuitOpen()) {
+				trace("query='" + query + "' source=network result=skipped"
+						+ " (recent failure, using offline index)");
+				return true;
+			}
+			// Debounce only the path that will actually spend a request, and do it cancellably:
+			// OsmAnd runs providers on one shared thread, so a blind sleep here blocked the OSM
+			// fallback and any queued head-unit search behind the full 800ms. A cancelled keystroke
+			// now frees the thread within one poll interval.
+			if (!debounce(matcher)) {
+				return true;
+			}
 			source = "network";
 			body = request(query, location);
 			if (body == null) {
-				// Transport failure or a non-200 response - fall through to OSM. The
-				// request() call above has already logged why.
+				// Transport failure or a non-200 (blocked key, rate limit, 5xx). Open the breaker
+				// so the next keystrokes skip Google instead of re-paying the stall; request() has
+				// already logged the reason.
+				noteTransportOutcome(false);
 				trace("query='" + query + "' source=network result=failed"
 						+ " (falling back to the offline index)");
 				return true;
 			}
+			noteTransportOutcome(true);
 			// Only a response Google actually sent is stored. A prefix-filtered body is a
 			// subset, and caching it would let the next keystroke narrow an already-narrowed
 			// list until nothing is left of the answer.
@@ -307,6 +335,45 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 		trace("query='" + query + "' source=" + source
 				+ " published=" + published + " osmSuppressed=" + (published > 0));
 		return true;
+	}
+
+	/**
+	 * Wall-clock instant until which Google is skipped, or 0 when it is available. Static because
+	 * the failure is a property of the network/key, not of one provider instance, and phone and
+	 * head-unit search share the same singleton anyway.
+	 */
+	private static volatile long circuitOpenUntil;
+
+	private static boolean circuitOpen() {
+		return System.currentTimeMillis() < circuitOpenUntil;
+	}
+
+	private static void noteTransportOutcome(boolean ok) {
+		circuitOpenUntil = ok ? 0 : System.currentTimeMillis() + CIRCUIT_OPEN_MS;
+	}
+
+	/**
+	 * Sleeps out the debounce in small slices, bailing the moment the search is cancelled.
+	 *
+	 * @return true if the full debounce elapsed and the search is still wanted; false if it was
+	 * cancelled or interrupted, in which case the caller must return without touching the network.
+	 */
+	private static boolean debounce(@NonNull SearchResultMatcher matcher) {
+		long remaining = DEBOUNCE_MS;
+		while (remaining > 0) {
+			if (matcher.isCancelled()) {
+				return false;
+			}
+			long slice = Math.min(remaining, DEBOUNCE_POLL_MS);
+			try {
+				Thread.sleep(slice);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				return false;
+			}
+			remaining -= slice;
+		}
+		return !matcher.isCancelled();
 	}
 
 	/**
