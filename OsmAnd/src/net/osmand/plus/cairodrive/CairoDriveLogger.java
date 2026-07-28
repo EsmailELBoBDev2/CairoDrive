@@ -23,6 +23,8 @@ import android.os.HandlerThread;
 import android.os.PowerManager;
 import android.os.StatFs;
 import android.os.SystemClock;
+import android.system.Os;
+import android.system.OsConstants;
 import android.view.Display;
 import android.text.TextUtils;
 
@@ -40,6 +42,7 @@ import net.osmand.util.MapUtils;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
@@ -257,6 +260,10 @@ public class CairoDriveLogger {
 	private volatile int batteryHealth = -1;
 	private volatile String batteryTech;
 	private volatile boolean batteryKnown;
+
+	/** Sampler thread only: previous CPU jiffies and the moment they were read, for app CPU%. */
+	private long lastCpuJiffies = -1;
+	private long lastCpuSampleRealtimeMs;
 
 	/**
 	 * Whether the GPS and network providers are enabled, refreshed on
@@ -776,6 +783,7 @@ public class CairoDriveLogger {
 			appendThermalState(builder, app);
 			appendNetworkState(builder, app);
 			appendDisplayState(builder, app);
+			appendProcessState(builder);
 		}
 		builder.append(' ');
 		appendBatteryState(builder);
@@ -938,6 +946,78 @@ public class CairoDriveLogger {
 				builder.append(" displayRotation=").append(display.getRotation());
 			}
 		} catch (Throwable ignored) {
+		}
+	}
+
+	/**
+	 * The app's own resource use: real memory footprint (PSS, split native/dalvik) and CPU share.
+	 * <p>
+	 * These are the two numbers that actually explain stutter from the app's own side - a native
+	 * heap or PSS that climbs across a drive is a leak, and an appCpuPct pinned near
+	 * 100/core-count is the app itself saturating a core rather than the phone being slow. Both
+	 * read only this process' own counters, so no permission is involved. PSS is a slowish call
+	 * and CPU needs a delta, so both sit on the 30s probe path.
+	 */
+	private void appendProcessState(@NonNull StringBuilder builder) {
+		try {
+			Debug.MemoryInfo mem = new Debug.MemoryInfo();
+			Debug.getMemoryInfo(mem);
+			builder.append(" pssTotalMb=").append(mem.getTotalPss() / 1024)
+					.append(" pssNativeMb=").append(mem.nativePss / 1024)
+					.append(" pssDalvikMb=").append(mem.dalvikPss / 1024);
+		} catch (Throwable ignored) {
+		}
+		appendAppCpu(builder);
+	}
+
+	/**
+	 * Percentage of one core-equivalent this process burned since the last probe, from
+	 * {@code /proc/self/stat} (own process, always readable, no permission). Normalised by core
+	 * count, so 100% means one full core; a value near 100 during navigation is the app pegging a
+	 * core. The first probe of a session only seeds the baseline and prints nothing.
+	 */
+	private void appendAppCpu(@NonNull StringBuilder builder) {
+		try {
+			String stat = readFirstLine(new File("/proc/self/stat"));
+			if (stat == null) {
+				return;
+			}
+			// The comm field (2nd) is wrapped in parens and may itself contain spaces and parens,
+			// so fields are read after the LAST ')'. After it: [0]=state ... [11]=utime [12]=stime,
+			// both in clock ticks.
+			int close = stat.lastIndexOf(')');
+			if (close < 0 || close + 2 >= stat.length()) {
+				return;
+			}
+			String[] f = stat.substring(close + 2).trim().split("\\s+");
+			if (f.length < 13) {
+				return;
+			}
+			long jiffies = Long.parseLong(f[11]) + Long.parseLong(f[12]);
+			long nowMs = SystemClock.elapsedRealtime();
+			if (lastCpuJiffies >= 0 && nowMs > lastCpuSampleRealtimeMs) {
+				long hz = Os.sysconf(OsConstants._SC_CLK_TCK);
+				int cores = Math.max(1, Runtime.getRuntime().availableProcessors());
+				double elapsedSec = (nowMs - lastCpuSampleRealtimeMs) / 1000d;
+				if (hz > 0 && elapsedSec > 0) {
+					double fraction = (jiffies - lastCpuJiffies) / (double) hz / elapsedSec / cores;
+					builder.append(" appCpuPct=");
+					appendFixed(builder, fraction * 100d, 1);
+				}
+			}
+			lastCpuJiffies = jiffies;
+			lastCpuSampleRealtimeMs = nowMs;
+		} catch (Throwable ignored) {
+		}
+	}
+
+	@Nullable
+	private static String readFirstLine(@NonNull File file) {
+		try (BufferedReader reader = new BufferedReader(
+				new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8), 512)) {
+			return reader.readLine();
+		} catch (Throwable ignored) {
+			return null;
 		}
 	}
 
