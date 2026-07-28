@@ -365,19 +365,36 @@ Debug builds ship with `BuildConfig.CAIRODRIVE_FULL_LOGGING = true`, which start
 `net.osmand.plus.cairodrive.CairoDriveLogger` from `OsmandApplication.onCreate`. It writes to:
 
 ```
-Android/data/com.cairodrive.app/files/cairodrive-logs/cairodrive-<timestamp>.log
+/data/data/com.cairodrive.app/files/cairodrive-logs/cairodrive-<timestamp>.log
 ```
 
-Pull them off the device with no root and no runtime permission:
+That is `Context.getFilesDir()` - the app's **private internal** storage, not
+`Android/data` on the shared volume. Deliberately: minSdk is 24, and on API 24-29 there is
+no scoped storage, so anything under `Android/data/<package>` is readable by any installed
+app holding `READ_EXTERNAL_STORAGE` and by any USB host. A four-day record of everywhere
+the user has driven does not belong there.
+
+The cost is that `adb pull` cannot reach it. Extract with `run-as`, which works because
+debug builds are debuggable - and these files only exist on a debug build anyway:
 
 ```bash
-adb pull /sdcard/Android/data/com.cairodrive.app/files/cairodrive-logs ./logs
+adb exec-out run-as com.cairodrive.app tar c files/cairodrive-logs > cd-logs.tar
+tar xf cd-logs.tar          # unpacks to ./files/cairodrive-logs/
 ```
+
+A release build has `CAIRODRIVE_FULL_LOGGING = false`, so the directory does not exist at
+all and `run-as` is refused regardless. If a release build needs to be traced, build it
+with `CAIRODRIVE_FULL_LOGGING=true` - and read the privacy note at the end of this section
+first.
 
 Four streams land in the same rotating file set:
 
 * **logcat** — the process' own output, drained continuously so entries reach disk before
-  the kernel ring buffer recycles them. Lines are prefixed `LOGCAT|`. The filterspec is
+  the kernel ring buffer recycles them. **Not guaranteed to arrive**: some vendor ROMs
+  (MIUI is confirmed) drop third-party tags out of the buffer entirely, so on those devices
+  this stream contains only the framework classes the ROM injects into the app's process and
+  nothing the app itself wrote. Anything that has to survive a drive - `CD_SEARCH`,
+  `CD_ROUTE_TIMING` - is therefore written *directly* to the file as well, not only logged. Lines are prefixed `LOGCAT|`. The filterspec is
   `net.osmand:V` (every OsmAnd log statement carries that one tag) plus `NavigationSession`
   and `SurfaceRenderer` at verbose for Android Auto, `AndroidRuntime:E`, `System.err:W` and
   a `*:W` floor for everything else — **not** `*:V`, which buried the app's own trace under
