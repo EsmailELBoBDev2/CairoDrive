@@ -9,14 +9,21 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.hardware.display.DisplayManager;
 import android.location.LocationManager;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Debug;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.PowerManager;
 import android.os.StatFs;
 import android.os.SystemClock;
+import android.view.Display;
 import android.text.TextUtils;
 
 import androidx.annotation.NonNull;
@@ -245,6 +252,10 @@ public class CairoDriveLogger {
 	private volatile int batteryPercent = -1;
 	private volatile int batteryStatus = -1;
 	private volatile int batteryTempTenthsC = Integer.MIN_VALUE;
+	private volatile int batteryVoltageMv = -1;
+	private volatile int batteryPlugged = -1;
+	private volatile int batteryHealth = -1;
+	private volatile String batteryTech;
 	private volatile boolean batteryKnown;
 
 	/**
@@ -503,6 +514,20 @@ public class CairoDriveLogger {
 				+ " hardware=" + Build.HARDWARE + " abis=" + TextUtils.join(",", Build.SUPPORTED_ABIS));
 		log("SESSION", "android=" + Build.VERSION.RELEASE + " sdk=" + Build.VERSION.SDK_INT
 				+ " fingerprint=" + Build.FINGERPRINT);
+		try {
+			ActivityManager am = (ActivityManager) app.getSystemService(Context.ACTIVITY_SERVICE);
+			ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
+			if (am != null) {
+				am.getMemoryInfo(mi);
+			}
+			log("SESSION", "cpuCores=" + Runtime.getRuntime().availableProcessors()
+					+ " totalRamMb=" + (mi.totalMem / (1024 * 1024))
+					+ " memClassMb=" + (am != null ? am.getMemoryClass() : -1)
+					+ " largeHeapMb=" + (am != null ? am.getLargeMemoryClass() : -1)
+					+ " lowRamDevice=" + (am != null && am.isLowRamDevice()));
+		} catch (Throwable t) {
+			log("SESSION", "hardware probe failed", t);
+		}
 		log("SESSION", "locale=" + Locale.getDefault() + " timezone=" + java.util.TimeZone.getDefault().getID());
 		log("SESSION", "logDir=" + writer.getDirectory().getAbsolutePath()
 				+ " maxFileBytes=" + CairoDriveLogWriter.MAX_FILE_BYTES
@@ -725,6 +750,9 @@ public class CairoDriveLogger {
 		builder.append("heapUsedMb=").append(usedMb)
 				.append(" heapTotalMb=").append(runtime.totalMemory() / (1024 * 1024))
 				.append(" heapMaxMb=").append(runtime.maxMemory() / (1024 * 1024))
+				// The map/render core is native, so Java heap alone hides its growth. This is a
+				// process counter, not a syscall - cheap enough for every sample.
+				.append(" nativeHeapMb=").append(Debug.getNativeHeapAllocatedSize() / (1024 * 1024))
 				.append(" uptimeMs=").append(SystemClock.elapsedRealtime());
 
 		OsmandApplication app = this.app;
@@ -745,6 +773,9 @@ public class CairoDriveLogger {
 						.append(stat.getAvailableBytes() / (1024 * 1024));
 			} catch (Throwable ignored) {
 			}
+			appendThermalState(builder, app);
+			appendNetworkState(builder, app);
+			appendDisplayState(builder, app);
 		}
 		builder.append(' ');
 		appendBatteryState(builder);
@@ -770,12 +801,143 @@ public class CairoDriveLogger {
 			return;
 		}
 		builder.append("batteryPct=").append(batteryPercent)
-				.append(" batteryStatus=").append(batteryStatus);
+				.append(" batteryStatus=").append(batteryStatusName(batteryStatus))
+				.append(" batteryPlugged=").append(batteryPluggedName(batteryPlugged))
+				.append(" batteryHealth=").append(batteryHealthName(batteryHealth));
+		if (batteryVoltageMv > 0) {
+			builder.append(" batteryV=");
+			appendFixed(builder, batteryVoltageMv / 1000d, 3);
+		}
+		if (batteryTech != null) {
+			builder.append(" batteryTech=").append(batteryTech);
+		}
 		if (batteryTempTenthsC != Integer.MIN_VALUE) {
 			// The framework reports tenths of a degree as an int, so one decimal place is
 			// the whole of the resolution there is.
 			builder.append(" batteryTempC=");
 			appendFixed(builder, batteryTempTenthsC / 10d, 1);
+		}
+	}
+
+	@NonNull
+	private static String batteryStatusName(int status) {
+		switch (status) {
+			case BatteryManager.BATTERY_STATUS_CHARGING: return "charging";
+			case BatteryManager.BATTERY_STATUS_DISCHARGING: return "discharging";
+			case BatteryManager.BATTERY_STATUS_FULL: return "full";
+			case BatteryManager.BATTERY_STATUS_NOT_CHARGING: return "not_charging";
+			default: return "unknown";
+		}
+	}
+
+	@NonNull
+	private static String batteryPluggedName(int plugged) {
+		if (plugged <= 0) {
+			return "unplugged";
+		}
+		StringBuilder sb = new StringBuilder();
+		if ((plugged & BatteryManager.BATTERY_PLUGGED_AC) != 0) sb.append("ac");
+		if ((plugged & BatteryManager.BATTERY_PLUGGED_USB) != 0) sb.append(sb.length() > 0 ? "+usb" : "usb");
+		if ((plugged & BatteryManager.BATTERY_PLUGGED_WIRELESS) != 0) sb.append(sb.length() > 0 ? "+wireless" : "wireless");
+		return sb.length() > 0 ? sb.toString() : ("plugged" + plugged);
+	}
+
+	@NonNull
+	private static String batteryHealthName(int health) {
+		switch (health) {
+			case BatteryManager.BATTERY_HEALTH_GOOD: return "good";
+			case BatteryManager.BATTERY_HEALTH_OVERHEAT: return "overheat";
+			case BatteryManager.BATTERY_HEALTH_DEAD: return "dead";
+			case BatteryManager.BATTERY_HEALTH_OVER_VOLTAGE: return "over_voltage";
+			case BatteryManager.BATTERY_HEALTH_COLD: return "cold";
+			case BatteryManager.BATTERY_HEALTH_UNSPECIFIED_FAILURE: return "failure";
+			default: return "unknown";
+		}
+	}
+
+	/**
+	 * Thermal throttling status. When the SoC is throttling, frame times balloon and reroutes
+	 * slow down, so this is one of the more useful things on the sample when the phone gets hot in
+	 * a windscreen cradle. A binder call, so it only runs on the probe path. API 29+.
+	 */
+	private void appendThermalState(@NonNull StringBuilder builder, @NonNull Context ctx) {
+		if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+			return;
+		}
+		try {
+			PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+			if (pm != null) {
+				builder.append(" thermal=").append(thermalName(pm.getCurrentThermalStatus()));
+			}
+		} catch (Throwable ignored) {
+		}
+	}
+
+	@NonNull
+	private static String thermalName(int status) {
+		switch (status) {
+			case PowerManager.THERMAL_STATUS_NONE: return "none";
+			case PowerManager.THERMAL_STATUS_LIGHT: return "light";
+			case PowerManager.THERMAL_STATUS_MODERATE: return "moderate";
+			case PowerManager.THERMAL_STATUS_SEVERE: return "severe";
+			case PowerManager.THERMAL_STATUS_CRITICAL: return "critical";
+			case PowerManager.THERMAL_STATUS_EMERGENCY: return "emergency";
+			case PowerManager.THERMAL_STATUS_SHUTDOWN: return "shutdown";
+			default: return "unknown";
+		}
+	}
+
+	/**
+	 * The active network's transport, whether it is metered (a live bill while driving), and its
+	 * signal strength. All available without any telephony permission via NetworkCapabilities;
+	 * ACCESS_NETWORK_STATE, which this reads, is a normal permission the app already holds.
+	 */
+	private void appendNetworkState(@NonNull StringBuilder builder, @NonNull Context ctx) {
+		try {
+			ConnectivityManager cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+			if (cm == null) {
+				return;
+			}
+			Network network = cm.getActiveNetwork();
+			NetworkCapabilities caps = network != null ? cm.getNetworkCapabilities(network) : null;
+			if (caps == null) {
+				builder.append(" net=none");
+				return;
+			}
+			String transport = "other";
+			if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) transport = "wifi";
+			else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) transport = "cellular";
+			else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) transport = "ethernet";
+			builder.append(" net=").append(transport)
+					.append(" netMetered=").append(cm.isActiveNetworkMetered())
+					.append(" netVpn=").append(caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN));
+			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+				int signal = caps.getSignalStrength();
+				if (signal != NetworkCapabilities.SIGNAL_STRENGTH_UNSPECIFIED) {
+					builder.append(" netSignalDbm=").append(signal);
+				}
+				builder.append(" netDownKbps=").append(caps.getLinkDownstreamBandwidthKbps())
+						.append(" netUpKbps=").append(caps.getLinkUpstreamBandwidthKbps());
+			}
+		} catch (Throwable ignored) {
+		}
+	}
+
+	/**
+	 * Display refresh rate and rotation. The refresh rate is what the frame pacing has to hit, so
+	 * a 60 vs 120 Hz panel changes what a "good" CD_FRAME time is; rotation catches the sensor
+	 * relaunches that blank the head unit.
+	 */
+	private void appendDisplayState(@NonNull StringBuilder builder, @NonNull Context ctx) {
+		try {
+			DisplayManager dm = (DisplayManager) ctx.getSystemService(Context.DISPLAY_SERVICE);
+			Display display = dm != null ? dm.getDisplay(Display.DEFAULT_DISPLAY) : null;
+			if (display != null) {
+				builder.append(" displayHz=");
+				appendFixed(builder, display.getRefreshRate(), 1);
+				builder.append(" displayRotation=").append(display.getRotation());
+			}
+		} catch (Throwable ignored) {
 		}
 	}
 
@@ -790,6 +952,10 @@ public class CairoDriveLogger {
 			batteryStatus = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
 			batteryTempTenthsC = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE,
 					Integer.MIN_VALUE);
+			batteryVoltageMv = intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1);
+			batteryPlugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1);
+			batteryHealth = intent.getIntExtra(BatteryManager.EXTRA_HEALTH, -1);
+			batteryTech = intent.getStringExtra(BatteryManager.EXTRA_TECHNOLOGY);
 			batteryKnown = true;
 		} catch (Throwable ignored) {
 			// A malformed sticky intent is not worth a line, let alone a crash.
