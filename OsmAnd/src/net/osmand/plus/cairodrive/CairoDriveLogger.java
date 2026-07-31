@@ -66,11 +66,13 @@ import java.util.concurrent.atomic.AtomicLong;
  *     <li><b>crashes</b> - uncaught exceptions on any thread, flushed before the process dies.</li>
  * </ol>
  * Files live under {@code Android/data/<applicationId>/files/cairodrive-logs} on the
- * shared storage, so they can be pulled off the device over USB without root and
- * without any runtime permission.
+ * shared storage, so they can be pulled off the device over USB or through the phone's file
+ * manager without root, without {@code adb run-as}, and without any runtime permission - which
+ * matters because the release build that Android Auto requires is not debuggable.
  * <p>
- * Enabled by {@code BuildConfig.CAIRODRIVE_FULL_LOGGING} - on for debug builds, off for
- * release builds unless {@code CAIRODRIVE_FULL_LOGGING=true} was set at build time
+ * Enabled by {@code BuildConfig.CAIRODRIVE_FULL_LOGGING} - on by default for both debug and
+ * release builds (this fork's release track is internal testing), and to be turned off with
+ * {@code CAIRODRIVE_FULL_LOGGING=false} for any public production release
  * (see {@code OsmAnd/cairodrive.gradle}).
  */
 public class CairoDriveLogger {
@@ -481,24 +483,31 @@ public class CairoDriveLogger {
 	}
 
 	/**
-	 * The logs live in the app's private data directory, not on shared storage.
+	 * App-scoped external storage ({@code Android/data/<package>/files}), falling back to private
+	 * internal storage only if there is no external volume.
 	 * <p>
-	 * These files are a continuous record of where the user has been - four days of
-	 * timestamped GPS fixes, plus every place they searched for. Trimming the coordinates to
-	 * {@link #COORD_DECIMALS} decimals blunts that a little, but metre-accurate is still
-	 * house-accurate and the file still has to be kept somewhere private. minSdk is
-	 * 24, and on API 24-29 there is no scoped storage: anything under
-	 * {@code Android/data/<package>} is readable by any installed app holding
-	 * READ_EXTERNAL_STORAGE, and by any USB host. A movement history is not something to
-	 * leave where a flashlight app can read it.
+	 * These files are a continuous record of where the user has been - timestamped GPS fixes,
+	 * every place searched for - so private internal storage ({@code getFilesDir()}, 0700) would
+	 * be the safer default. But it is unreachable without {@code adb run-as}, which only works on
+	 * a debuggable build. The build that matters here is the release one: Android Auto requires
+	 * the app to be installed through Play, that build is not debuggable, and MIUI blocks
+	 * {@code adb pull} of internal storage - so on the one configuration that needs diagnosing,
+	 * internal-storage logs cannot be retrieved at all. External app-scoped storage is reachable
+	 * from a non-debuggable build through the phone's file manager and MTP, needs no permission,
+	 * and is deleted with the app on uninstall.
 	 * <p>
-	 * {@code getFilesDir()} is 0700 and unreadable without root or {@code adb run-as}, which
-	 * is the right default for this. The cost is that pulling logs off a device now needs
-	 * {@code adb run-as} or an in-app share, rather than a file manager.
+	 * The privacy cost is real and deliberately accepted for an internal-testing build: on API
+	 * 24-29 anything under {@code Android/data} is readable by an app holding
+	 * READ_EXTERNAL_STORAGE and by a USB host; on API 30+ scoped storage keeps it to this app.
+	 * That is why {@code CAIRODRIVE_FULL_LOGGING} must be turned off for any public production
+	 * release - see {@code OsmAnd/cairodrive.gradle}.
 	 */
 	@Nullable
 	private File resolveLogDirectory(@NonNull Context context) {
-		File base = context.getFilesDir();
+		File base = context.getExternalFilesDir(null);
+		if (base == null) {
+			base = context.getFilesDir();
+		}
 		if (base == null) {
 			return null;
 		}

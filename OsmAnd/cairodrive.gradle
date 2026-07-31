@@ -62,9 +62,16 @@ def offRouteHysteresis = offRouteEnv?.trim() ? offRouteEnv.trim() : "false"
 def dataSaverEnv = System.getenv("CAIRODRIVE_DATA_SAVER")
 def dataSaver = dataSaverEnv?.trim() ? dataSaverEnv.trim() : "true"
 
+// On by default for BOTH build types now. The release build is what gets installed from
+// Play, which Android Auto requires, and this fork's release track is internal testing with
+// one user - so the signed build has to log too, or a head-unit drive produces nothing.
+// Set CAIRODRIVE_FULL_LOGGING=false at build time before any *public* production release: a
+// build that continuously records GPS to storage needs a privacy disclosure on a public
+// listing. The logs live in app-scoped external storage (Android/data), auto-deleted on
+// uninstall - see CairoDriveLogger.resolveLogDirectory.
 def fullLogging = System.getenv("CAIRODRIVE_FULL_LOGGING")
 def debugLogging = fullLogging?.trim() ? fullLogging.trim() : "true"
-def releaseLogging = fullLogging?.trim() ? fullLogging.trim() : "false"
+def releaseLogging = fullLogging?.trim() ? fullLogging.trim() : "true"
 
 // Escaped and quoted because buildConfigField takes a Java literal, not a bare string.
 def placesKey = System.getenv("GOOGLE_PLACES_API_KEY")?.trim() ?: ""
