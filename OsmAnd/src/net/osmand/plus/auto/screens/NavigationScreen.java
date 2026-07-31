@@ -438,7 +438,18 @@ public final class NavigationScreen extends BaseAndroidAutoScreen implements Sur
 		}
 		map.refreshMap();
 		if (newRoute && rh.isRoutePlanningMode() && map.getMapView().isCarView()) {
-			app.runInUIThread(() -> getApp().getOsmandMap().fitCurrentRouteToMap(false, 0), 300);
+			// Re-check route-planning mode INSIDE the delayed runnable. The guard above is
+			// evaluated now, but the fit runs 300ms later - and if the driver pressed Go in that
+			// window, navigation has started and fitting the whole route to the screen zooms the
+			// head unit out off the arrow at the exact moment guidance begins. That is the
+			// zoom-out-at-start seen on the road. Skipping it here leaves the camera following the
+			// location at the driving zoom, which is what a preview fit was never meant to override.
+			// Same guard df77ae2 added to the phone path; the Android Auto screen was missed.
+			app.runInUIThread(() -> {
+				if (rh.isRoutePlanningMode()) {
+					getApp().getOsmandMap().fitCurrentRouteToMap(false, 0);
+				}
+			}, 300);
 		}
 	}
 
