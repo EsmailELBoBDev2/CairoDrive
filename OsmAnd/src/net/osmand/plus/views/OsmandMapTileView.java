@@ -1308,6 +1308,13 @@ public class OsmandMapTileView implements IMapDownloaderCallback {
 		}
 
 		List<OsmandMapLayer> layers = getLayers();
+		// Hoisted out of the per-layer loop below. It reads nothing from the layer - only the
+		// tile box and the car surface's visible area, both fixed for the whole frame - so
+		// calling it once per layer was recomputing the same value ~23 times a frame, each time
+		// allocating a QuadPoint and cloning a full RotatedTileBox. That is thousands of
+		// throwaway objects a second on the main looper during navigation, and the GC pauses it
+		// causes are felt as exactly the arrow jitter this is meant to avoid.
+		updateAACanvasOffset();
 		for (int i = 0; i < layers.size(); i++) {
 			final int saveCount = canvas.getSaveCount();
 			canvas.save();
@@ -1320,7 +1327,6 @@ public class OsmandMapTileView implements IMapDownloaderCallback {
 				if (mapRenderer != null) {
 					layer.onPrepareBufferImage(canvas, tileBox, drawSettings);
 				}
-				updateAACanvasOffset();
 				layer.onDraw(canvas, tileBox, drawSettings);
 			} catch (IndexOutOfBoundsException e) {
 				// skip it

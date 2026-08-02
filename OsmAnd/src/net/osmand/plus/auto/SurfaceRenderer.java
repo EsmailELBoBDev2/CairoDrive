@@ -81,6 +81,17 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 	private Rect cachedVisibleArea;
 
 	private boolean darkMode;
+	/**
+	 * Whether the offscreen renderer has produced at least one real frame since it was set up.
+	 * <p>
+	 * getBitmap() starts returning a non-null but EMPTY bitmap as soon as the renderer object
+	 * exists, well before the GL core has drawn anything into it - so blitting it paints a
+	 * blank white screen that then fills in with streets as tiles arrive. That is the
+	 * "map does not load for a bit" at start and after every head-unit reconnect. Waiting for
+	 * onFrameReady means the first thing shown is the map's own background colour instead of
+	 * white, and the map appears when it is actually a map.
+	 */
+	private volatile boolean firstFrameReady;
 
 	private SurfaceRendererCallback callback;
 
@@ -289,6 +300,8 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 	 */
 	@Override
 	public void onFrameReady(MapRendererView mapRendererView) {
+		// First real frame from the GL core - everything drawn before this was an empty bitmap.
+		firstFrameReady = true;
 		//renderFrame();
 		sendRenderFrameMsg();
 	}
@@ -394,6 +407,7 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 					MapRendererContext mapRendererContext = NativeCoreContext.getMapRendererContext();
 					if (mapRendererContext != null && mapRendererContext.getMapRendererView() != offscreenMapRendererView) {
 						offscreenMapRendererView = null;
+						firstFrameReady = false;
 					}
 				}
 				if (offscreenMapRendererView == null) {
@@ -414,6 +428,7 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 								setupSurfaceView(surfaceContainer);
 							}
 
+							firstFrameReady = false;
 							offscreenMapRendererView = new AtlasMapRendererView(carContext);
 
 							boolean enableMSAA = getApp().getSettings().ENABLE_MSAA.get();
@@ -520,7 +535,7 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 			boolean updateVectorRendering = drawSettings.isUpdateVectorRendering() || darkMode != newDarkMode;
 			darkMode = newDarkMode;
 			drawSettings = new DrawSettings(newDarkMode, updateVectorRendering);
-			Bitmap mapBitmap = offscreenMapRendererView != null
+			Bitmap mapBitmap = offscreenMapRendererView != null && firstFrameReady
 					? offscreenMapRendererView.getBitmap() : null;
 			if (mapBitmap != null) {
 				// No drawColor() first: the map bitmap is opaque and covers the whole surface,

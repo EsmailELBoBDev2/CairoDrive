@@ -116,6 +116,16 @@ jobs:
           path: resources
           persist-credentials: false
 
+      # Adds the car profile's "deprioritise narrow streets" option. routing.xml is not in
+      # this repo - Gradle Syncs it from the checkout above, and Sync deletes the
+      # destination, so a vendored copy would be wiped every build. Patching the checkout
+      # here is the only place the change survives. The script exits non-zero if upstream
+      # has restructured, so this fails the build rather than silently shipping without it.
+      - name: Apply CairoDrive routing profile patches
+        run: |
+          set -euo pipefail
+          python3 android/patches/cairodrive_narrow_streets.py resources/routing/routing.xml
+
       # Checked out for EVERY core flavor, not just legacy. The OpenGL flavor takes its
       # *rendering* core from a prebuilt AAR, but the native *routing* library
       # (libosmand.so) is only ever produced by this tree's ndk-build, and without it
@@ -409,6 +419,16 @@ jobs:
           repository: osmandapp/OsmAnd-resources
           path: resources
           persist-credentials: false
+
+      # Adds the car profile's "deprioritise narrow streets" option. routing.xml is not in
+      # this repo - Gradle Syncs it from the checkout above, and Sync deletes the
+      # destination, so a vendored copy would be wiped every build. Patching the checkout
+      # here is the only place the change survives. The script exits non-zero if upstream
+      # has restructured, so this fails the build rather than silently shipping without it.
+      - name: Apply CairoDrive routing profile patches
+        run: |
+          set -euo pipefail
+          python3 android/patches/cairodrive_narrow_streets.py resources/routing/routing.xml
 
       # Checked out for EVERY core flavor, not just legacy. The OpenGL flavor takes its
       # *rendering* core from a prebuilt AAR, but the native *routing* library
