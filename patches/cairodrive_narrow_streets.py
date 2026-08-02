@@ -38,6 +38,16 @@ WHY THESE RULES AND NOT MORE AGGRESSIVE ONES
     rendering_types.xml, and narrow is not among them. Upstream's own routing.xml carries
     maxwidth:physical rules that can never fire for the same reason.
 
+VERIFIED AGAINST rendering_types.xml
+    Every tag used below was checked to be genuinely visible to the router, because a rule
+    on an invisible tag is silent dead weight that looks like it works:
+        width, maxwidth  - <routing_type ... base="true" type="length"/>, so the numeric
+                           comparisons below parse units correctly
+        lanes, service, surface, smoothness, tracktype, highway - <routing_type ... amend/>
+    Deliberately absent: est_width (not a routing_type at all) and surface=earth / soil,
+    which rendering_types.xml rewrites to surface=ground before the map is built - a rule
+    keyed on them would never fire even though the tag is common in OSM.
+
 USAGE
     python3 patches/cairodrive_narrow_streets.py <path-to-routing.xml>
 """
@@ -94,13 +104,23 @@ RULES = """
 
 				<!-- Tier 3: surface. Strong correlate in Cairo's informal areas, where the
 				     unpaved lanes and the narrow lanes are largely the same streets. Fires
-				     only where the surface was positively surveyed. -->
+				     only where the surface was positively surveyed.
+				     NOTE: surface=earth and surface=soil are NOT listed here on purpose -
+				     rendering_types.xml rewrites both to surface=ground before the map is
+				     built, so a rule keyed on them could never fire. ground covers them. -->
 				<select value="0.25" t="surface" v="ground"/>
 				<select value="0.25" t="surface" v="dirt"/>
-				<select value="0.25" t="surface" v="earth"/>
 				<select value="0.25" t="surface" v="mud"/>
 				<select value="0.25" t="surface" v="sand"/>
+				<select value="0.30" t="surface" v="grass"/>
 				<select value="0.40" t="surface" v="unpaved"/>
+
+				<!-- Tier 3b: track grade. grade1 is a solid surfaced track and is left alone;
+				     the rest get worse and narrower as the number rises. Upstream already
+				     penalises grade5 at 0.2 unconditionally, so these only tighten grades 3-4
+				     and only when this option is on. -->
+				<select value="0.30" t="tracktype" v="grade4"/>
+				<select value="0.45" t="tracktype" v="grade3"/>
 
 				<!-- Tier 4: one lane shared in both directions - two cars cannot pass. Weaker
 				     than the above because lanes=1 is sometimes tagged on wide one-way roads,
@@ -109,6 +129,12 @@ RULES = """
 					<ifnot t="oneway" v="yes"/>
 					<ifnot t="oneway" v="-1"/>
 				</select>
+
+				<!-- Tier 5: living streets are shared pedestrian/vehicle space and are usually
+				     narrow, but they are also legitimate residential through-roads, so this is
+				     the mildest penalty here - a nudge to prefer a normal street when one
+				     exists, not an avoidance. -->
+				<select value="0.60" t="highway" v="living_street"/>
 			</if>
 """ % PARAM_ID
 
