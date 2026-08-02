@@ -109,6 +109,12 @@ public class CairoDriveLogger {
 	/** Compass updates arrive at sensor rate; log at most one per this interval. */
 	private static final long COMPASS_LOG_INTERVAL_MS = 500;
 	private static final long LOGCAT_RESTART_DELAY_MS = 2000;
+	/** A child that lived less than this was killed, not finished - it counts toward backoff. */
+	private static final long LOGCAT_RAPID_DEATH_MS = 15000;
+	/** After this many consecutive quick deaths the pump stops; the platform clearly refuses it. */
+	private static final int LOGCAT_MAX_RAPID_DEATHS = 8;
+	/** Caps the exponential backoff at LOGCAT_RESTART_DELAY_MS << this (2s -> ~64s). */
+	private static final int LOGCAT_MAX_BACKOFF_SHIFT = 5;
 	/** A logcat command that ran at least this long counts as accepted by the platform. */
 	private static final long LOGCAT_ACCEPTED_AFTER_MS = 30000;
 	/** How long {@link #stop()} waits for each background thread to unwind. */
@@ -202,6 +208,8 @@ public class CairoDriveLogger {
 	 * nobody drains until the pipe fills and it blocks there forever.
 	 */
 	private volatile Process logcatProcess;
+	/** Logcat pump thread only: consecutive children that died before LOGCAT_RAPID_DEATH_MS. */
+	private int rapidDeaths;
 	private volatile boolean started;
 	private volatile boolean attached;
 
@@ -1109,7 +1117,8 @@ public class CairoDriveLogger {
 				// produced output, or that lived a while, was accepted by this platform -
 				// its later death is logd restarting or the process being killed, and
 				// degrading the format for that would lose the UTC stamps for good.
-				if (produced || SystemClock.elapsedRealtime() - runStartedAt >= LOGCAT_ACCEPTED_AFTER_MS) {
+				long ranForMs = SystemClock.elapsedRealtime() - runStartedAt;
+				if (produced || ranForMs >= LOGCAT_ACCEPTED_AFTER_MS) {
 					attempt = 0;
 				} else {
 					attempt++;
@@ -1117,8 +1126,28 @@ public class CairoDriveLogger {
 				if (!started) {
 					break;
 				}
+				// Restart rate limiting, tracked separately from the format rung above.
+				// On a real drive this loop spawned 12758 logcat children in 10.5 hours: the
+				// platform was killing each one within seconds, and because they had produced
+				// output first, the rung reset and the pump respawned after a flat 2s forever.
+				// That is a process spawn every ~3 seconds for the whole drive - wasted CPU
+				// and battery on the device being measured, which corrupts the measurement.
+				// A child that dies quickly now backs the pump off exponentially, and after
+				// enough consecutive quick deaths the pump gives up rather than churning.
+				if (ranForMs < LOGCAT_RAPID_DEATH_MS) {
+					rapidDeaths++;
+				} else {
+					rapidDeaths = 0;
+				}
+				if (rapidDeaths >= LOGCAT_MAX_RAPID_DEATHS) {
+					log("LOGCAT", "pump giving up after " + rapidDeaths
+							+ " consecutive short-lived children - this platform keeps killing it."
+							+ " File logging is unaffected; only the logcat mirror stops.");
+					break;
+				}
+				long delay = LOGCAT_RESTART_DELAY_MS << Math.min(rapidDeaths, LOGCAT_MAX_BACKOFF_SHIFT);
 				try {
-					Thread.sleep(LOGCAT_RESTART_DELAY_MS);
+					Thread.sleep(delay);
 				} catch (InterruptedException e) {
 					Thread.currentThread().interrupt();
 					break;

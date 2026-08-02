@@ -3,8 +3,8 @@ package net.osmand.plus.auto;
 import static net.osmand.plus.views.OsmandMapTileView.DEFAULT_ELEVATION_ANGLE;
 import static net.osmand.plus.views.MapViewWithLayers.SYMBOLS_UPDATE_INTERVAL;
 
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
-import android.graphics.Color;
 import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Message;
@@ -53,6 +53,9 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 	private static final double VISIBLE_AREA_Y_MIN_DETECTION_SIZE = 1.025;
 	private static final int MAP_RENDER_MESSAGE = OsmAndConstants.UI_HANDLER_MAP_VIEW + 7;
 	private static final int MAX_FRAME_RATE = 20;
+	/** Fill shown while the offscreen renderer is not ready - matches OsmAnd's map background. */
+	private static final int EMPTY_FRAME_DAY_COLOR = 0xFFF1EEE8;
+	private static final int EMPTY_FRAME_NIGHT_COLOR = 0xFF1B1B1B;
 	public static final int PINCH_TO_ZOOM_ITERATION_DELAY = 200;
 
 	private final CarContext carContext;
@@ -513,17 +516,28 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 		long frameStartNanos = CairoDriveLogger.isEnabled() ? System.nanoTime() : 0;
 		Canvas canvas = surface.lockCanvas(null);
 		try {
-			canvas.drawColor(Color.LTGRAY);
 			boolean newDarkMode = carContext.isDarkMode();
 			boolean updateVectorRendering = drawSettings.isUpdateVectorRendering() || darkMode != newDarkMode;
 			darkMode = newDarkMode;
 			drawSettings = new DrawSettings(newDarkMode, updateVectorRendering);
-			if (offscreenMapRendererView != null) {
+			Bitmap mapBitmap = offscreenMapRendererView != null
+					? offscreenMapRendererView.getBitmap() : null;
+			if (mapBitmap != null) {
+				// No drawColor() first: the map bitmap is opaque and covers the whole surface,
+				// so clearing underneath it was a full-screen fill discarded on the very next
+				// call - once per frame, on the main looper, for nothing.
 				float leftOffset = 0.0f;
 				if (surfaceAdditionalWidth != 0) {
 					leftOffset = -surfaceAdditionalWidth * ((maxRatio - cachedRatioX) / (maxRatio - minRatio));
 				}
-				canvas.drawBitmap(offscreenMapRendererView.getBitmap(), leftOffset, 0, null);
+				canvas.drawBitmap(mapBitmap, leftOffset, 0, null);
+			} else {
+				// Nothing to show yet - the offscreen renderer is still being set up, which is
+				// what the driver sees as "the map is blank for a bit" at start and after the
+				// head unit reconnects. Light grey is the worst possible colour for that at
+				// night; match the map's own background so the gap reads as a map still loading
+				// rather than a broken screen.
+				canvas.drawColor(newDarkMode ? EMPTY_FRAME_NIGHT_COLOR : EMPTY_FRAME_DAY_COLOR);
 			}
 			mapView.drawOverMap(canvas, tileBox, drawSettings);
 			SurfaceRendererCallback callback = this.callback;

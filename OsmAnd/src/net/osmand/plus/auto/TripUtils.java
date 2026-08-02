@@ -183,7 +183,19 @@ public class TripUtils {
 		String description = getTurnDescription(app, info);
 		String turnName = type != null ? nextTurnsToString(app, type, nextTurnType) : "";
 
-		if (type != null && type.isRoundAbout() && !Algorithms.isEmpty(description)) {
+		// Lead with the manoeuvre, then the street - for every turn type, not just roundabouts.
+		//
+		// This used to return the street name alone whenever one was known, so the cue on the
+		// head unit read "Al-Nozha Street" with the direction carried only by a small arrow
+		// glyph, and the same street name was already being shown by Step.setRoad underneath.
+		// At a junction where the arrow is ambiguous - a fork, a slip road, "keep right" - that
+		// left nothing saying which way to go, which is exactly the "some crossroads I had to
+		// use my hunch" the owner reported. The roundabout branch below already combined them;
+		// this just applies the same shape everywhere.
+		//
+		// The single caller is TripHelper's Step cue, so this changes the Android Auto card
+		// only - the phone UI and the voice prompts build their strings elsewhere.
+		if (!Algorithms.isEmpty(description) && !Algorithms.isEmpty(turnName)) {
 			return app.getString(R.string.ltr_or_rtl_combine_via_comma, turnName, description);
 		}
 		return !Algorithms.isEmpty(description) ? description : turnName;
