@@ -357,7 +357,14 @@ public class RouteGeometryWay extends
 					int y = MapUtils.get31TileNumberY(point.location.getLatitude());
 					points.add(new PointI(x, y));
 				}
-				float vectorLineScale = GeometryWayDrawer.getVectorLineScale(getContext().getApp()) / 2.0f;
+				// The turn arrow was drawn at exactly half the route line's width (the route line
+				// itself uses this same helper with no divisor), which is why the arrow that says
+				// WHICH WAY TO GO read fainter than the line it sits on. The core sizes the ARROW
+				// end cap proportionally to line width, so widening the line widens the arrowhead
+				// too. 1.25 puts the arrow at 80% of route width - clearly bolder, while staying
+				// under 100% so it still reads as an arrow drawn ON the route rather than
+				// replacing it. Pure constant: no extra geometry, no extra draw calls, no frames.
+				float vectorLineScale = GeometryWayDrawer.getVectorLineScale(getContext().getApp()) / 1.25f;
 				if (lineIdx < initialLinesCount) {
 					VectorLine vectorLine = lines.get(lineIdx);
 					vectorLine.setPoints(points);

@@ -36,7 +36,16 @@ import java.util.TimeZone;
 
 public class TripHelper {
 
-	public static final float TURN_IMAGE_SIZE_DP = 128f;
+	/**
+	 * 64, not 128, because 64x64 dp is the maximum the Android Auto host accepts for a
+	 * manoeuvre icon - anything larger it scales down to fit, preserving aspect ratio.
+	 * Rendering at 128 meant the host threw away half of every turn bitmap, and the arrow's
+	 * outline stroke (a fixed 2.5px in TurnDrawable, never rescaled with the bounds) was
+	 * halved along with it. That is a large part of why the turn arrow reads faint on the head
+	 * unit. Drawing at the size the host actually uses roughly doubles the arrow's effective
+	 * stroke and shaft, and cuts this bitmap's allocation to a quarter at the same time.
+	 */
+	public static final float TURN_IMAGE_SIZE_DP = 64f;
 	public static final float NEXT_TURN_IMAGE_SIZE_DP = 48f;
 	public static final float TURN_LANE_IMAGE_SIZE = 64f;
 	public static final float TURN_LANE_IMAGE_MIN_DELTA = 36f;
@@ -259,7 +268,11 @@ public class TripHelper {
 		lanesDrawable.lanes = lanes;
 		lanesDrawable.imminent = imminent == 0;
 		lanesDrawable.isNightMode = app.getDaynightHelper().isNightMode(ThemeUsageContext.MAP);
-		lanesDrawable.updateBounds(); // prefer 500 x 74 dp
+		// The host caps the lanes image at 294 x 44 dp and scales anything larger down, so the
+		// old "prefer 500 x 74 dp" target was being shrunk on arrival - the same downscale that
+		// was thinning the manoeuvre arrow. Sizing to what the host actually displays keeps the
+		// lane arrows at full stroke instead of a scaled-down blur.
+		lanesDrawable.updateBounds(); // host maximum is 294 x 44 dp
 		return drawableToBitmap(lanesDrawable, lanesDrawable.getIntrinsicWidth(), lanesDrawable.getIntrinsicHeight());
 	}
 

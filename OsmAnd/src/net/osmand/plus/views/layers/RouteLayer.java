@@ -635,9 +635,16 @@ public class RouteLayer extends BaseRouteLayer implements IContextMenuProvider {
 
 		int currentRoute = helper.getRoute().getCurrentRoute();
 
-		double DISTANCE_ACTION = 35;
+		// How many metres of route the turn arrow covers. At driving zoom this was 15 m - about
+		// one second of road at 50 km/h - so the arrow appeared and was gone before it had
+		// committed to a side, which is what makes a junction read as a hint instead of an
+		// instruction. Android Auto sits at zoom 16-17, so the 15 was the value in force for
+		// almost the whole drive. 40 m at driving zoom and 60 m otherwise gives roughly three
+		// seconds of visible commitment before the junction. Still just a length: the same one
+		// arrow, drawn over more points, with no extra layer and no per-frame work.
+		double DISTANCE_ACTION = 60;
 		if (zoom >= 17) {
-			DISTANCE_ACTION = 15;
+			DISTANCE_ACTION = 40;
 		} else if (zoom == 15) {
 			DISTANCE_ACTION = 70;
 		} else if (zoom < 15) {

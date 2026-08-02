@@ -403,7 +403,15 @@ public final class NavigationScreen extends BaseAndroidAutoScreen implements Sur
 	private void updateUse3DButton() {
 		if (getApp().useOpenGlRenderer()) {
 			OsmandMapTileView mapView = getMapView();
-			use3DButton = mapView != null && mapView.getElevationAngle() == OsmandMapTileView.DEFAULT_ELEVATION_ANGLE;
+			// A null map view means the offscreen renderer has not been built yet - which is the
+			// case when this first runs from the constructor. It does NOT mean the map is tilted.
+			// Collapsing that to false published a "2D" icon over a flat map, and because nothing
+			// tilts the camera afterwards no elevation change ever fired to correct it, so the
+			// button could advertise the wrong mode for an entire drive. Keep the last known
+			// state until the map can actually be asked.
+			if (mapView != null) {
+				use3DButton = mapView.getElevationAngle() == OsmandMapTileView.DEFAULT_ELEVATION_ANGLE;
+			}
 		} else {
 			use3DButton = false;
 		}

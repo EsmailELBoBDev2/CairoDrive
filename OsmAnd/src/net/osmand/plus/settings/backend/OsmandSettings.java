@@ -1620,6 +1620,14 @@ public class OsmandSettings {
 
 	public final CommonPreference<Integer> AUTO_ZOOM_3D_ANGLE = new IntPreference(this, "auto_zoom_3d_angle", 25).makeProfile().cache();
 
+	{
+		// Once the camera is tilted, this is the angle the driving path keeps re-applying while
+		// moving, so it - not the stored elevation - is what a driver actually looks at for the
+		// whole trip. Matched to the 40 the car profile now starts at, so the view does not
+		// settle back to a shallower tilt a few seconds into the drive.
+		AUTO_ZOOM_3D_ANGLE.setModeDefaultValue(ApplicationMode.CAR, 40);
+	}
+
 	public final CommonPreference<Integer> DELAY_TO_START_NAVIGATION = new IntPreference(this, "delay_to_start_navigation", -1) {
 
 		public Integer getDefaultValue() {
@@ -2642,6 +2650,21 @@ public class OsmandSettings {
 	private final CommonPreference<Float> LAST_KNOWN_MANUALLY_MAP_ROTATION = new FloatPreference(this, "last_known_manually_map_rotation", 0).makeProfile();
 	private final CommonPreference<Float> LAST_KNOWN_MAP_ELEVATION = new FloatPreference(this, "last_known_map_elevation", 90).makeProfile();
 	private final CommonPreference<Float> LAST_KNOWN_AA_MAP_ELEVATION = new FloatPreference(this, "last_known_aa_map_elevation", 90).makeProfile();
+
+	{
+		// 90 degrees is looking straight down - a flat 2D map - and it is the reason navigation
+		// always began in 2D no matter what the driver preferred. These are the stored camera
+		// tilt, restored on every navigation start, so the fix for "start in 3D" is a different
+		// DEFAULT rather than any new code or a forced angle.
+		//
+		// A default, deliberately, not a force: the moment the driver touches the 2D/3D control
+		// a real value is written and this default never applies again. That is the 2D/3D choice
+		// working as designed, with 3D simply being where a car profile starts.
+		//
+		// Car only. Cycling and walking are normally read as a flat overview map.
+		LAST_KNOWN_MAP_ELEVATION.setModeDefaultValue(ApplicationMode.CAR, 40f);
+		LAST_KNOWN_AA_MAP_ELEVATION.setModeDefaultValue(ApplicationMode.CAR, 40f);
+	}
 
 	public float getLastKnownMapRotation() {
 		return getLastKnownMapRotation(getApplicationMode());
