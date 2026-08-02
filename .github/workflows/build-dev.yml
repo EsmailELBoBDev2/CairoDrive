@@ -116,8 +116,13 @@ jobs:
           path: resources
           persist-credentials: false
 
+      # Checked out for EVERY core flavor, not just legacy. The OpenGL flavor takes its
+      # *rendering* core from a prebuilt AAR, but the native *routing* library
+      # (libosmand.so) is only ever produced by this tree's ndk-build, and without it
+      # RouteProvider falls back to the Java router - measured at 6.8s average and 39s
+      # worst-case per reroute on a real drive. old-ndk-build.sh runs
+      # core-legacy/externals/configure.sh, so this checkout has to be present.
       - name: Checkout OsmAnd-core-legacy
-        if: env.CORE == 'legacy'
         uses: actions/checkout@v7
         with:
           repository: osmandapp/OsmAnd-core-legacy
@@ -174,13 +179,14 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "versionCode for this build: ${version_code}"
 
-          # The legacy core is the only variant that compiles native code. Blanking the
-          # NDK location for the OpenGL build makes old-ndk-build.sh exit early instead
-          # of building a core that the OpenGL variant takes from a prebuilt AAR anyway.
-          if [ "${CORE}" != "legacy" ]; then
-            echo "ANDROID_NDK_ROOT=" >> "$GITHUB_ENV"
-            echo "ANDROID_NDK=" >> "$GITHUB_ENV"
-          fi
+          # The NDK is deliberately LEFT SET for every flavor now. It used to be blanked for
+          # the OpenGL build so old-ndk-build.sh would exit early, on the assumption the
+          # prebuilt AAR supplied everything native. It does not: the AAR ships the rendering
+          # core (libOsmAndCoreWithJNI.so) but never libosmand.so, the C++ routing library.
+          # Without it NativeOsmandLibrary fails to load on device ("dlopen failed: library
+          # libosmand.so not found") and every reroute silently runs the Java router.
+          # old-ndk-build.sh sets BUILD_ONLY_OLD_LIB=1, so this builds only the routing lib.
+          echo "Native routing lib will be built with NDK at: ${ANDROID_NDK_ROOT:-<unset>}"
 
       - name: Check secrets
         run: |
@@ -239,6 +245,30 @@ jobs:
           APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
           APK_RELEASE_TASK: ${{ steps.variant.outputs.apk_release_task }}
         run: ./gradlew --no-daemon --stacktrace "${APK_RELEASE_TASK}"
+
+      # Fails the build if the native routing library did not make it into the artifacts.
+      # This is the guard that was missing: the app degrades SILENTLY without libosmand.so -
+      # it starts, renders and navigates, and only the reroute timings (6.8s average instead
+      # of sub-second) reveal that the C++ router never loaded. A drive log was needed to
+      # catch it last time. Now the build catches it.
+      - name: Verify native routing library is bundled
+        working-directory: android
+        run: |
+          set -euo pipefail
+          missing=0
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            if [ -f "OsmAnd/libs/${abi}/libosmand.so" ]; then
+              echo "ok  ${abi}: $(stat -c%s "OsmAnd/libs/${abi}/libosmand.so") bytes"
+            else
+              echo "::error::libosmand.so missing for ${abi} - the C++ router will not load and every reroute will fall back to the slow Java engine."
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            echo "Contents of OsmAnd/libs (for diagnosis):"
+            ls -laR OsmAnd/libs 2>/dev/null || echo "OsmAnd/libs does not exist - ndk-build did not run"
+            exit 1
+          fi
 
       - name: Stage artifacts
         id: stage
@@ -380,8 +410,13 @@ jobs:
           path: resources
           persist-credentials: false
 
+      # Checked out for EVERY core flavor, not just legacy. The OpenGL flavor takes its
+      # *rendering* core from a prebuilt AAR, but the native *routing* library
+      # (libosmand.so) is only ever produced by this tree's ndk-build, and without it
+      # RouteProvider falls back to the Java router - measured at 6.8s average and 39s
+      # worst-case per reroute on a real drive. old-ndk-build.sh runs
+      # core-legacy/externals/configure.sh, so this checkout has to be present.
       - name: Checkout OsmAnd-core-legacy
-        if: env.CORE == 'legacy'
         uses: actions/checkout@v7
         with:
           repository: osmandapp/OsmAnd-core-legacy
@@ -429,10 +464,14 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "versionCode for this build: ${version_code}"
 
-          if [ "${CORE}" != "legacy" ]; then
-            echo "ANDROID_NDK_ROOT=" >> "$GITHUB_ENV"
-            echo "ANDROID_NDK=" >> "$GITHUB_ENV"
-          fi
+          # The NDK is deliberately LEFT SET for every flavor now. It used to be blanked for
+          # the OpenGL build so old-ndk-build.sh would exit early, on the assumption the
+          # prebuilt AAR supplied everything native. It does not: the AAR ships the rendering
+          # core (libOsmAndCoreWithJNI.so) but never libosmand.so, the C++ routing library.
+          # Without it NativeOsmandLibrary fails to load on device ("dlopen failed: library
+          # libosmand.so not found") and every reroute silently runs the Java router.
+          # old-ndk-build.sh sets BUILD_ONLY_OLD_LIB=1, so this builds only the routing lib.
+          echo "Native routing lib will be built with NDK at: ${ANDROID_NDK_ROOT:-<unset>}"
 
       - name: Configure Gradle memory
         working-directory: android
@@ -505,6 +544,30 @@ jobs:
           CAIRODRIVE_KEY_PASSWORD: ${{ secrets.CAIRODRIVE_KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD }}
           APK_RELEASE_TASK: ${{ steps.variant.outputs.apk_release_task }}
         run: ./gradlew --no-daemon --stacktrace "${APK_RELEASE_TASK}"
+
+      # Fails the build if the native routing library did not make it into the artifacts.
+      # This is the guard that was missing: the app degrades SILENTLY without libosmand.so -
+      # it starts, renders and navigates, and only the reroute timings (6.8s average instead
+      # of sub-second) reveal that the C++ router never loaded. A drive log was needed to
+      # catch it last time. Now the build catches it.
+      - name: Verify native routing library is bundled
+        working-directory: android
+        run: |
+          set -euo pipefail
+          missing=0
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            if [ -f "OsmAnd/libs/${abi}/libosmand.so" ]; then
+              echo "ok  ${abi}: $(stat -c%s "OsmAnd/libs/${abi}/libosmand.so") bytes"
+            else
+              echo "::error::libosmand.so missing for ${abi} - the C++ router will not load and every reroute will fall back to the slow Java engine."
+              missing=1
+            fi
+          done
+          if [ "${missing}" -ne 0 ]; then
+            echo "Contents of OsmAnd/libs (for diagnosis):"
+            ls -laR OsmAnd/libs 2>/dev/null || echo "OsmAnd/libs does not exist - ndk-build did not run"
+            exit 1
+          fi
 
       - name: Stage artifacts
         id: stage
