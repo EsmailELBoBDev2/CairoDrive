@@ -150,6 +150,15 @@ jobs:
         run: |
           set -euo pipefail
           python3 android/patches/cairodrive_narrow_streets.py resources/routing/routing.xml
+          # Drops proj.db and the CJK / South Asian / South-East Asian / Tibetan fonts - 17 MB
+          # of assets no Egyptian map uses - AND the matching bundled_assets.json entries, in
+          # one atomic step. It has to be one step: CheckAssetsTask.unpackBundledAssets has no
+          # per-entry catch, so an asset listed in the manifest but absent from the APK aborts
+          # the whole unpack and the app silently comes up with no fonts, no voice prompts and
+          # no basemap. The script refuses to half-apply, and asserts the Arabic Nastaliq font
+          # survives - it is the only font in the manifest covering Arabic script, so losing it
+          # would turn every Cairo street label into empty boxes.
+          python3 android/patches/cairodrive_trim_assets.py resources
 
       # Checked out for EVERY core flavor, not just legacy. The OpenGL flavor takes its
       # *rendering* core from a prebuilt AAR, but the native *routing* library
@@ -481,6 +490,15 @@ jobs:
         run: |
           set -euo pipefail
           python3 android/patches/cairodrive_narrow_streets.py resources/routing/routing.xml
+          # Drops proj.db and the CJK / South Asian / South-East Asian / Tibetan fonts - 17 MB
+          # of assets no Egyptian map uses - AND the matching bundled_assets.json entries, in
+          # one atomic step. It has to be one step: CheckAssetsTask.unpackBundledAssets has no
+          # per-entry catch, so an asset listed in the manifest but absent from the APK aborts
+          # the whole unpack and the app silently comes up with no fonts, no voice prompts and
+          # no basemap. The script refuses to half-apply, and asserts the Arabic Nastaliq font
+          # survives - it is the only font in the manifest covering Arabic script, so losing it
+          # would turn every Cairo street label into empty boxes.
+          python3 android/patches/cairodrive_trim_assets.py resources
 
       # Checked out for EVERY core flavor, not just legacy. The OpenGL flavor takes its
       # *rendering* core from a prebuilt AAR, but the native *routing* library
