@@ -518,6 +518,9 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 			// Surface is not available, or has been destroyed, skip this frame.
 			return;
 		}
+		// Dark mode is read once here and the DrawSettings built from it is the one actually
+		// used - renderFrame used to discard this instance and allocate a second one from a
+		// second isDarkMode() call, every frame.
 		DrawSettings drawSettings = new DrawSettings(carContext.isDarkMode(), false);
 		RotatedTileBox tileBox = mapView.getRotatedTileBox();
 		try {
@@ -573,6 +576,16 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 				// No drawColor() first: the map bitmap is opaque and covers the whole surface,
 				// so clearing underneath it was a full-screen fill discarded on the very next
 				// call - once per frame, on the main looper, for nothing.
+				//
+				// Except when it does NOT cover it. onSurfaceAvailable installs a larger
+				// SurfaceContainer and renders immediately, before the offscreen renderer has
+				// been rebuilt at the new size, so for a few frames after a head-unit reconnect
+				// or a panel resize an older, smaller bitmap is blitted at (0,0) onto a bigger
+				// canvas. lockCanvas returns an uncleared swap-chain buffer, so the uncovered
+				// strip would show a stale frame rather than background.
+				if (mapBitmap.getWidth() < canvas.getWidth() || mapBitmap.getHeight() < canvas.getHeight()) {
+					canvas.drawColor(newDarkMode ? EMPTY_FRAME_NIGHT_COLOR : EMPTY_FRAME_DAY_COLOR);
+				}
 				float leftOffset = 0.0f;
 				if (surfaceAdditionalWidth != 0) {
 					leftOffset = -surfaceAdditionalWidth * ((maxRatio - cachedRatioX) / (maxRatio - minRatio));
@@ -641,8 +654,16 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 	private long widgetSumMs;
 	private long postSumMs;
 
-	private void logFrameTiming(long wallMs, long lockMs, long readMs, long blitMs,
-	                            long overMs, long widgetMs, long postMs) {
+	/**
+	 * Synchronized because renderFrame is reached from two threads: OsmandMapTileView calls it
+	 * holding this object's monitor, while the MAP_RENDER_MESSAGE handler calls the no-arg
+	 * overload without it. These counters are plain int/long, so unsynchronized read-modify-write
+	 * would quietly under-count - and the whole point of them is to be trusted after a drive.
+	 * The lock is on the same monitor the map-view path already holds, so that path re-enters it
+	 * rather than contending, and this is a leaf method with nothing to deadlock against.
+	 */
+	private synchronized void logFrameTiming(long wallMs, long lockMs, long readMs, long blitMs,
+	                                         long overMs, long widgetMs, long postMs) {
 		frameCount++;
 		frameWallSumMs += wallMs;
 		lockSumMs += lockMs;

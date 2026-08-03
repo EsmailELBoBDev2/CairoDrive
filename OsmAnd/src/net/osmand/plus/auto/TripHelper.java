@@ -118,12 +118,17 @@ public class TripHelper {
 		int nextTurnDistance = 0;
 		NextDirectionInfo nextDirInfo = null;
 		NextDirectionInfo nextNextDirInfo = null;
+		// Two holders, not one. getNextRouteDirectionInfo writes into the object it is given and
+		// returns it, so the toSpeak=true result below would be destroyed by the toSpeak=false
+		// call that follows - which is what made the cue and the lanes disagree, and what forced
+		// defineStreetName to re-run the same query a third time.
+		NextDirectionInfo speakCalc = new NextDirectionInfo();
 		NextDirectionInfo calc = new NextDirectionInfo();
 		if (deviatedFromRoute) {
 			turnType = TurnType.valueOf(TurnType.OFFR, leftSide);
 			nextTurnDistance = (int) routingHelper.getRouteDeviation();
 		} else {
-			nextDirInfo = routingHelper.getNextRouteDirectionInfo(calc, true);
+			nextDirInfo = routingHelper.getNextRouteDirectionInfo(speakCalc, true);
 			if (nextDirInfo != null && nextDirInfo.distanceTo >= 0 && nextDirInfo.directionInfo != null) {
 				turnType = nextDirInfo.directionInfo.getTurnType();
 				nextTurnDistance = nextDirInfo.distanceTo;
@@ -162,6 +167,7 @@ public class TripHelper {
 		// this check the cue could pair the manoeuvre of a turn 3 km away with the lanes of a
 		// muted fork 400 m away and read "Turn left, get on the right side now".
 		RouteDirectionInfo cueDirection = nextDirInfo != null ? nextDirInfo.directionInfo : null;
+		NextDirectionInfo speakDirInfo = nextDirInfo;
 
 		nextDirInfo = routingHelper.getNextRouteDirectionInfo(calc, false);
 		if (nextDirInfo != null && nextDirInfo.directionInfo != null && nextDirInfo.directionInfo.getTurnType() != null) {
@@ -210,7 +216,7 @@ public class TripHelper {
 		if (deviatedFromRoute) {
 			lastCurrentRoad = null;
 		} else {
-			String streetName = defineStreetName();
+			String streetName = defineStreetName(speakDirInfo);
 			if (!Algorithms.isEmpty(streetName)) {
 				stepBuilder.setRoad(streetName);
 				tripBuilder.setCurrentRoad(streetName);
@@ -377,8 +383,16 @@ public class TripHelper {
 	}
 
 	@Nullable
-	private String defineStreetName() {
-		NextDirectionInfo directionInfo = routingHelper.getNextRouteDirectionInfo(new NextDirectionInfo(), true);
+	/**
+	 * Takes the direction the caller already looked up instead of asking again.
+	 * <p>
+	 * This used to run its own getNextRouteDirectionInfo(new NextDirectionInfo(), true) - the
+	 * identical query setupTrip had already answered - which meant a third acquisition of
+	 * RoutingHelper's monitor per location fix, on the main looper, plus a throwaway
+	 * NextDirectionInfo. The location thread holds that same monitor for the whole body of
+	 * setCurrentLocation, so every avoidable acquisition here is a chance to stall the frame loop.
+	 */
+	private String defineStreetName(@Nullable NextDirectionInfo directionInfo) {
 		return TripUtils.defineStreetName(app, directionInfo);
 	}
 }
