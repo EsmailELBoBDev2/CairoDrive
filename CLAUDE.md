@@ -46,6 +46,16 @@ back.
 
 ### 2. `CD_ROUTE_TIMING` — check this first, it is a regression detector
 
+**Route calculation speed is SETTLED — do not re-investigate it.** An 8 km Cairo route takes
+4-8 s on the POCO C85 and `fast=SUCCESS`, meaning the Highway-Hierarchy fast path with the
+`.obf`'s precomputed shortcuts is working. That is simply the cost on this hardware. Six
+hypotheses were measured on-device and all six were wrong: cold start, warming the routing
+context, the native memory cap (256 vs 1024 - no difference), this fork's 31 priority rules
+(gated by `avoid_narrow_streets`, and disabling them made it *slower*), a stale map (it was
+current), and a silent A* fallback (there is none). `routingTime` is only ~15-20% of `search`;
+the rest is inside the native engine and is not attributable from the app side.
+
+
 If `engine=` contains **`java`**, `libosmand.so` did not load and every reroute is back to the
 Java router: **6.8 s average, 39 s worst**, measured. Say so immediately and loudly. C++ search
 times are ~200–400 ms.
@@ -70,8 +80,11 @@ masquerading as a Play build has wasted a drive before.
 - **Debug-signed vs signed.** The `build` job is debug-signed; Play rejects it with "signed with
   the wrong key". Only the `release` job (tag `v*`, or dispatch with `sign=true`, behind the
   `production` reviewer gate) produces `cairodrive-release-aab-*`. That is the only Play upload.
-- **Compile-check before spending an approval.** Let the free unsigned build go green first. A
-  missing import once cost a 15-minute gated build.
+- **No free compile check any more.** Pushes to `dev` no longer build - owner's call, only
+  signed artifacts are wanted. So a compile error now surfaces inside the SIGNED build, after
+  the approval and the keystore decode. Review the diff before dispatching: check every symbol
+  a change introduces resolves to an import, the same package, or an existing wildcard. A
+  missing `net.osmand.Location` import cost 15 minutes this way once.
 - **Verify against the tree, never against a commit message.** A re-audit found a "fixed" token
   redaction that closed one of three leak vectors, and three regressions introduced the same day.
 - **The asset extractor aborts on the first missing file.** `CheckAssetsTask.unpackBundledAssets`

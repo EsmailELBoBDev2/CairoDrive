@@ -34,7 +34,16 @@ name: Build CairoDrive
 
 on:
   push:
-    branches: [dev]
+    # Pushes to dev no longer build. Only signed artifacts are wanted, and an unsigned
+    # compile check on every commit was spending ~20 minutes of runner time to produce
+    # something nobody installs - Play rejects a debug-signed bundle, so the dev job's
+    # output was only ever a compile check.
+    #
+    # The trade, stated once: a compile error is now found by the SIGNED build, after the
+    # approval has been given and the keystore decoded. That cost 15 minutes once already
+    # (a missing import). Accepted deliberately - the diff is reviewed before dispatch
+    # instead. Put `branches: [dev]` back here to restore the free check.
+    #
     # A tag is the release trigger: `git tag -a v4.9.10-cd1 && git push origin --tags`.
     tags: ['v*']
   workflow_dispatch:
