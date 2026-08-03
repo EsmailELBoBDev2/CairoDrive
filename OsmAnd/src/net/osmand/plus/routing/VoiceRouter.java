@@ -510,7 +510,7 @@ public class VoiceRouter {
 			nextStatusAfter(STATUS_TURN_IN);
 
 		// STATUS_PREPARE = "Turn after ..."
-		} else if ((repeat || statusNotPassed(STATUS_PREPARE)) && atd.isTurnStateActive(0, dist, STATE_PREPARE_TURN)) {
+		} else if ((repeat || statusNotPassed(STATUS_PREPARE)) && isPrepareDue(speed, dist, next)) {
 			if (repeat || atd.isTurnStateNotPassed(0, dist, STATE_PREPARE_TURN)) {
 				if (!repeat && (next.getTurnType().keepLeft() || next.getTurnType().keepRight())) {
 					// Do not play prepare for keep left/right
@@ -822,13 +822,35 @@ public class VoiceRouter {
 	 * lane data.
 	 */
 	private boolean isTurnInDue(float speed, int dist, @Nullable RouteDirectionInfo next) {
-		if (next != null && next.getTurnType() != null && settings.ANNOUNCE_LANE_GUIDANCE.get()) {
-			int crossings = LaneHint.getLaneCrossings(next.getTurnType().getLanes());
-			if (crossings > 0) {
-				return atd.isLaneChangeDue(speed, dist, crossings);
-			}
+		int crossings = getLaneCrossings(next);
+		return crossings > 0
+				? atd.isLaneChangeDue(speed, dist, crossings)
+				: atd.isTurnStateActive(speed, dist, STATE_TURN_IN);
+	}
+
+	/**
+	 * When to play the early "in 1.4 km, turn right" prompt - the one carrying the calm lane
+	 * heads-up. Upstream's distance is fixed for cars, which gives progressively less warning the
+	 * faster the driver goes; see AnnounceTimeDistances#isLaneAwarePrepareDue for why that is a
+	 * problem for lane changes specifically and not for turns.
+	 */
+	private boolean isPrepareDue(float speed, int dist, @Nullable RouteDirectionInfo next) {
+		int crossings = getLaneCrossings(next);
+		return crossings > 0
+				? atd.isLaneAwarePrepareDue(speed, dist, crossings)
+				: atd.isTurnStateActive(0, dist, STATE_PREPARE_TURN);
+	}
+
+	/**
+	 * Worst-case lanes to cross for the upcoming turn, or 0 when lane guidance has nothing to say
+	 * about it - no lane data, every lane usable, or the feature switched off. 0 means "time this
+	 * turn exactly as upstream would".
+	 */
+	private int getLaneCrossings(@Nullable RouteDirectionInfo next) {
+		if (next == null || next.getTurnType() == null || !settings.ANNOUNCE_LANE_GUIDANCE.get()) {
+			return 0;
 		}
-		return atd.isTurnStateActive(speed, dist, STATE_TURN_IN);
+		return LaneHint.getLaneCrossings(next.getTurnType().getLanes());
 	}
 
 	/**

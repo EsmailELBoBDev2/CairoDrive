@@ -199,6 +199,36 @@ public class AnnounceTimeDistances {
 	 * @param laneCrossings worst-case number of lanes between the driver and a usable lane - that
 	 *                      is, assuming they are currently on the far side of the road.
 	 */
+	/**
+	 * Whether the early "prepare" prompt - the one carrying the calm "stay on the right side" - is
+	 * due, given how many lanes may still have to be crossed.
+	 *
+	 * <p>Upstream fires that prompt at a FIXED distance for cars: it passes currentSpeed 0 on
+	 * purpose, so no speed scaling is applied and a car always gets it at PREPARE_DISTANCE, about
+	 * 1437 m. That means the faster the driver is going, the FEWER seconds of warning they get -
+	 * 86 s at 60 km/h but only 43 s at 120 km/h. Fine for a turn, since a turn takes no
+	 * preparation. Not fine for lane changes, which cost a fixed number of seconds each no matter
+	 * how fast the road is: 1437 m at 120 km/h does not buy four of them.
+	 *
+	 * <p>So for turns whose lane data says a side of the road is required, the prompt is allowed to
+	 * come earlier - by exactly the time the lane changes need, measured against real speed. It
+	 * can only ever move earlier, never later, and only on turns with lane data; the fixed
+	 * upstream distance still applies to everything else.
+	 *
+	 * <p>In practice this changes nothing below about 100 km/h. It takes 5 lanes to cross at
+	 * 100 km/h, or 4 at 120, before the fixed distance falls short - which is to say it stays out
+	 * of the way until a wide carriageway at motorway speed, and then it does the obvious thing.
+	 */
+	public boolean isLaneAwarePrepareDue(float currentSpeed, double dist, int laneCrossings) {
+		if (isTurnStateActive(0, dist, STATE_PREPARE_TURN)) {
+			return true;
+		}
+		double needed = laneCrossings * SECONDS_PER_LANE_CHANGE * currentSpeed;
+		// Bounded by the long-prepare distance so this can never run away on a road with absurd
+		// lane tagging, and never reaches back further than upstream's own outermost prompt.
+		return dist <= Math.min(needed, PREPARE_LONG_DISTANCE) + currentSpeed * voicePromptDelayTimeSec;
+	}
+
 	public boolean isLaneChangeDue(float currentSpeed, double dist, int laneCrossings) {
 		// Floor: never later than the ordinary turn-in prompt, so no turn is ever announced later
 		// than it would have been without any of this.
