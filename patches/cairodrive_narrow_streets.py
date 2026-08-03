@@ -33,6 +33,18 @@ WHY THESE RULES AND NOT MORE AGGRESSIVE ONES
     Tiers are ordered by precision, and the routing engine takes the FIRST match, so the
     surveyed-width rules must come before the inferred ones.
 
+    THE BALANCE, stated explicitly, because it is easy to get backwards:
+    upstream's own car defaults are residential 0.7 and unclassified 0.7 - and its comment
+    calls unclassified "usually 90% of urban roads". Those two are NEVER touched here, and
+    that is what stops this option from penalising most of Cairo. Everything penalised
+    below is either measured (width), definitional (alley, driveway, parking_aisle, track)
+    or positively surveyed as poor (surface, tracktype).
+
+    Because these rules sit at the TOP of the priority block and the first match wins, every
+    value must be BELOW the upstream default it shadows, or the rule silently makes that road
+    class more attractive instead of less. Upstream rates track, service and living_street at
+    0.5, so anything here keyed on those must be under 0.5.
+
     Also worth recording: `narrow=yes` - the tag that sounds perfect for this - is NOT
     usable. The router only sees tags the map builder encoded into the .obf via
     rendering_types.xml, and narrow is not among them. Upstream's own routing.xml carries
@@ -97,10 +109,19 @@ RULES = """
 					<lt value1="$maxwidth" value2="2.8" type="length"/>
 				</select>
 
-				<!-- Tier 2: definitional. An alley IS a narrow back passage; that is what the
-				     tag means. Highest-precision signal available without a width survey. -->
+				<!-- Tier 2: definitional. These tags do not correlate with "not a through
+				     road" - they mean it. Highest-precision signal available without a survey.
+				     Tracktype comes first so a graded track keeps its specific value instead of
+				     being swallowed by the generic highway=track rule below it. -->
+				<select value="0.30" t="tracktype" v="grade4"/>
+				<select value="0.45" t="tracktype" v="grade3"/>
 				<select value="0.15" t="service" v="alley"/>
 				<select value="0.20" t="highway" v="track"/>
+				<!-- A driveway or a parking aisle is somebody's access, not a route. Upstream
+				     already rates highway=service 0.5; these subtypes deserve worse because
+				     they are never a legitimate through-road. -->
+				<select value="0.20" t="service" v="driveway"/>
+				<select value="0.20" t="service" v="parking_aisle"/>
 
 				<!-- Tier 3: surface. Strong correlate in Cairo's informal areas, where the
 				     unpaved lanes and the narrow lanes are largely the same streets. Fires
@@ -115,13 +136,6 @@ RULES = """
 				<select value="0.30" t="surface" v="grass"/>
 				<select value="0.40" t="surface" v="unpaved"/>
 
-				<!-- Tier 3b: track grade. grade1 is a solid surfaced track and is left alone;
-				     the rest get worse and narrower as the number rises. Upstream already
-				     penalises grade5 at 0.2 unconditionally, so these only tighten grades 3-4
-				     and only when this option is on. -->
-				<select value="0.30" t="tracktype" v="grade4"/>
-				<select value="0.45" t="tracktype" v="grade3"/>
-
 				<!-- Tier 4: one lane shared in both directions - two cars cannot pass. Weaker
 				     than the above because lanes=1 is sometimes tagged on wide one-way roads,
 				     hence the explicit oneway exclusions. -->
@@ -130,11 +144,15 @@ RULES = """
 					<ifnot t="oneway" v="-1"/>
 				</select>
 
-				<!-- Tier 5: living streets are shared pedestrian/vehicle space and are usually
-				     narrow, but they are also legitimate residential through-roads, so this is
-				     the mildest penalty here - a nudge to prefer a normal street when one
-				     exists, not an avoidance. -->
-				<select value="0.60" t="highway" v="living_street"/>
+				<!-- Tier 5: living streets are shared pedestrian/vehicle space and usually
+				     narrow, but they are also legitimate residential roads, so this is the
+				     mildest penalty in the set.
+				     0.35 and not 0.60: upstream already rates living_street 0.5 by default, and
+				     because these rules sit at the TOP of the block and first match wins, any
+				     value above 0.5 would OVERRIDE upstream and make living streets MORE
+				     attractive with the option switched on - the exact opposite of the intent.
+				     Every value here must stay below the upstream default it shadows. -->
+				<select value="0.35" t="highway" v="living_street"/>
 			</if>
 """ % PARAM_ID
 
