@@ -22,6 +22,7 @@ import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.helpers.TargetPointsHelper;
 import net.osmand.plus.helpers.TargetPoint;
+import net.osmand.plus.routing.LaneHint;
 import net.osmand.plus.routing.NextDirectionInfo;
 import net.osmand.plus.routing.RoutingHelper;
 import net.osmand.plus.routing.data.AnnounceTimeDistances;
@@ -149,8 +150,9 @@ public class TripHelper {
 			nextTurnType = TripUtils.getNextTurnType(atd, nextNextDirInfo, speed, nextDirInfo.distanceTo);
 		}
 		stepBuilder.setManeuver(maneuver);
-		stepBuilder.setCue(TripUtils.getNextTurnDescription(app, nextDirInfo, turnType, nextTurnType));
+		String cue = TripUtils.getNextTurnDescription(app, nextDirInfo, turnType, nextTurnType);
 
+		String laneHint = null;
 		nextDirInfo = routingHelper.getNextRouteDirectionInfo(calc, false);
 		if (nextDirInfo != null && nextDirInfo.directionInfo != null && nextDirInfo.directionInfo.getTurnType() != null) {
 			int[] lanes = nextDirInfo.directionInfo.getTurnType().getLanes();
@@ -166,10 +168,27 @@ public class TripHelper {
 			}
 			//int dist = nextDirInfo.distanceTo;
 			if (lanes != null) {
+				laneHint = LaneHint.getHint(app, lanes);
 				Bitmap lanesBitmap = createLanesBitmap(stepBuilder, lanes, locimminent, leftSide, density);
 				stepBuilder.setLanesImage(new CarIcon.Builder(IconCompat.createWithBitmap(lanesBitmap)).build());
 			}
 		}
+
+		// Say the lane choice in words next to the arrows, the way Google Maps and Waze both do.
+		// The arrow strip alone asks the driver to count arrows and spot which ones are highlighted
+		// at a glance, and it is the piece of the screen that gets misread most.
+		//
+		// The street name drops out of the cue while a lane hint is showing, deliberately: the cue
+		// is a single line the host truncates without warning, and "Turn right, use the 2 right
+		// lanes" must not get cut off to make room for a street name that setRoad() is already
+		// displaying directly underneath it.
+		if (laneHint != null) {
+			String turnName = turnType != null ? TripUtils.nextTurnsToString(app, turnType, nextTurnType) : "";
+			cue = Algorithms.isEmpty(turnName)
+					? laneHint
+					: app.getString(R.string.ltr_or_rtl_combine_via_comma, turnName, laneHint);
+		}
+		stepBuilder.setCue(cue);
 
 		if (deviatedFromRoute) {
 			lastCurrentRoad = null;

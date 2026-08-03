@@ -110,10 +110,17 @@ public class VoiceAnnouncesFragment extends BaseSettingsFragment {
 	}
 
 	private void setupTurnByTurnDirections() {
+		ApplicationMode mode = getSelectedAppMode();
+		boolean turnByTurn = settings.TURN_BY_TURN_DIRECTIONS.getModeValue(mode);
 		SwitchPreferenceCompat speakStreetNames = findPreference(settings.SPEAK_STREET_NAMES.getId());
-		if(speakStreetNames != null) {
-			ApplicationMode mode = getSelectedAppMode();
-			speakStreetNames.setVisible(settings.TURN_BY_TURN_DIRECTIONS.getModeValue(mode));
+		if (speakStreetNames != null) {
+			speakStreetNames.setVisible(turnByTurn);
+		}
+		// Lane guidance rides on the same "in 300 m, turn right" prompt, so it is meaningless
+		// without turn-by-turn directions and hides with them.
+		SwitchPreferenceCompat announceLanes = findPreference(settings.ANNOUNCE_LANE_GUIDANCE.getId());
+		if (announceLanes != null) {
+			announceLanes.setVisible(turnByTurn);
 		}
 	}
 

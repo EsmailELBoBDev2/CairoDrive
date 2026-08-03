@@ -123,6 +123,18 @@ public abstract class CommandPlayer {
 
 	public abstract boolean supportsStructuredStreetNames();
 
+	/**
+	 * Whether this player can speak a sentence that did not come out of the voice grammar.
+	 *
+	 * <p>Only the TTS player can. The recorded-voice player takes the very same list of strings and
+	 * treats each entry as the name of an audio file to play, so handing it arbitrary text would
+	 * queue a file that does not exist. Anything adding free text to a command must check here
+	 * first - see {@link CommandBuilder#addSpokenText}.
+	 */
+	public boolean supportsFreeText() {
+		return false;
+	}
+
 	@NonNull
 	public abstract List<String> playCommands(@NonNull CommandBuilder builder);
 

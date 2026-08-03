@@ -39,6 +39,12 @@
 		android:title="@string/speak_street_names" />
 
 	<SwitchPreferenceCompat
+		android:key="announce_lane_guidance"
+		android:layout="@layout/preference_switch"
+		android:summary="@string/announce_lane_guidance_description"
+		android:title="@string/announce_lane_guidance" />
+
+	<SwitchPreferenceCompat
 		android:key="exit_number_names"
 		android:layout="@layout/preference_switch"
 		android:title="@string/exit_number" />

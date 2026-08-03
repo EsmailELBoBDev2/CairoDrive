@@ -1,5 +1,7 @@
 package net.osmand.plus.voice;
 
+import androidx.annotation.Nullable;
+
 import net.osmand.plus.routing.data.StreetName;
 
 import java.util.ArrayList;
@@ -135,6 +137,25 @@ public abstract class CommandBuilder {
 
 	protected CommandBuilder addCommand(String name, Object... args) {
 		addToCommandList(name, args);
+		return this;
+	}
+
+	/**
+	 * Appends an already-localised sentence to the spoken output, after whatever commands have been
+	 * added so far.
+	 *
+	 * <p>This exists because some things worth saying have no command in the voice grammar and
+	 * cannot get one: the grammar lives in per-language .js voice packages that ship separately from
+	 * the app, so a new command would be silent on every voice package already installed. Lane
+	 * guidance ("use the 2 right lanes") is the case this was added for.
+	 *
+	 * <p>Silently does nothing on a recorded-voice player, which maps this same list to audio file
+	 * names - see {@link CommandPlayer#supportsFreeText()}. Callers do not need to check.
+	 */
+	public CommandBuilder addSpokenText(@Nullable String text) {
+		if (text != null && !text.isEmpty() && commandPlayer.supportsFreeText()) {
+			listStruct.add(text);
+		}
 		return this;
 	}
 

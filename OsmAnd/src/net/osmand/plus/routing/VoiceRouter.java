@@ -8,11 +8,13 @@ import static net.osmand.plus.routing.data.AnnounceTimeDistances.STATE_PREPARE_T
 import static net.osmand.plus.routing.data.AnnounceTimeDistances.STATE_TURN_IN;
 import static net.osmand.plus.routing.data.AnnounceTimeDistances.STATE_TURN_NOW;
 
+import android.content.Context;
 import android.content.res.AssetFileDescriptor;
 import android.media.AudioAttributes;
 import android.media.SoundPool;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import net.osmand.Location;
 import net.osmand.StateChangedListener;
@@ -39,6 +41,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 
@@ -91,6 +94,10 @@ public class VoiceRouter {
 	private VoiceCommandPending pendingCommand;
 	private RouteDirectionInfo nextRouteDirection;
 	private StateChangedListener<Boolean> stateChangedListener;
+
+	// Resources localised to the voice package's language, not the UI's - see getVoiceLanguageContext().
+	private Context voiceLanguageContext;
+	private String voiceLanguageContextKey;
 
 	public interface VoiceMessageListener {
 		void onVoiceMessage(List<String> listCommands, List<String> played);
@@ -751,6 +758,17 @@ public class VoiceRouter {
 			} else {
 				isPlay = false;
 			}
+			// Say which lane to take, right after the manoeuvre it belongs to and before any
+			// "then keep left" for the turn after it, so the order matches the order they happen:
+			// "In 300 metres turn right, use the 2 right lanes, then keep left".
+			//
+			// This prompt is the one to attach it to. It fires at TURN_IN distance - far enough
+			// out to still change lanes, and it is the same moment the lane arrows appear on
+			// screen, so the words and the picture arrive together instead of contradicting each
+			// other. The "turn now" prompt deliberately does not repeat it: by then the lane
+			// choice has already been made or missed.
+			appendLaneGuidance(p, next.getTurnType());
+
 			// 'then keep' preparation for next after next. (Also announces an interim straight segment, which is not pronounced above.)
 			if (pronounceNextNext != null) {
 				TurnType t = pronounceNextNext.getTurnType();
@@ -770,6 +788,44 @@ public class VoiceRouter {
 				play(p);
 			}
 		}
+	}
+
+	/**
+	 * Adds "use the 2 right lanes" to a turn prompt, in the voice package's language.
+	 *
+	 * <p>Localised against the voice language rather than the app language on purpose. The two are
+	 * set independently - an Arabic UI with an English voice is a normal configuration - and handing
+	 * Arabic text to an English TTS engine produces either silence or nonsense. {@link CommandPlayer}
+	 * knows which language it was loaded for, so that is what the sentence is built in.
+	 */
+	private void appendLaneGuidance(@Nullable CommandBuilder p, @Nullable TurnType turnType) {
+		if (p == null || turnType == null || !settings.ANNOUNCE_LANE_GUIDANCE.get()) {
+			return;
+		}
+		String hint = LaneHint.getHint(getVoiceLanguageContext(), turnType.getLanes());
+		p.addSpokenText(hint);
+	}
+
+	@NonNull
+	private Context getVoiceLanguageContext() {
+		CommandPlayer currentPlayer = player;
+		String language = currentPlayer != null ? currentPlayer.getLanguage() : null;
+		if (Algorithms.isEmpty(language)) {
+			return app;
+		}
+		if (language.equals(voiceLanguageContextKey) && voiceLanguageContext != null) {
+			return voiceLanguageContext;
+		}
+		// Voice package languages are stored as "en", "ar", or occasionally a tag like "en-US".
+		Locale locale = Locale.forLanguageTag(language.replace('_', '-'));
+		if (Algorithms.isEmpty(locale.getLanguage())) {
+			return app;
+		}
+		// Cached because building it wraps a new Configuration and a new Context, and this runs on
+		// every turn prompt while the voice language changes at most once per drive.
+		voiceLanguageContext = app.getLocaleHelper().getLocalizedContext(locale);
+		voiceLanguageContextKey = language;
+		return voiceLanguageContext;
 	}
 
 	private void playGoAndArriveAtDestination(boolean repeat, NextDirectionInfo nextInfo, RouteSegmentResult currentSegment) {

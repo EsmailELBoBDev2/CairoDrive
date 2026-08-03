@@ -1757,6 +1757,10 @@ public class OsmandSettings {
 
 	public final OsmandPreference<Boolean> TURN_BY_TURN_DIRECTIONS = new BooleanPreference(this, "turn_by_turn_directions", true).makeProfile().cache();
 	public final OsmandPreference<Boolean> SPEAK_STREET_NAMES = new BooleanPreference(this, "speak_street_names", true).makeProfile().cache();
+	// On by default: the lane arrows alone ask the driver to count arrows and spot a highlight at a
+	// glance, which is the part of the screen people misread most. Saying it out loud is what Google
+	// Maps and Waze both do alongside the same strip.
+	public final OsmandPreference<Boolean> ANNOUNCE_LANE_GUIDANCE = new BooleanPreference(this, "announce_lane_guidance", true).makeProfile().cache();
 	public final CommonPreference<Boolean> SPEAK_TRAFFIC_WARNINGS = new BooleanPreference(this, "speak_traffic_warnings", true).makeProfile().cache();
 	public final CommonPreference<Boolean> SPEAK_PEDESTRIAN = new BooleanPreference(this, "speak_pedestrian", false).makeProfile().cache();
 

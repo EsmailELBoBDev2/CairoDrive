@@ -284,6 +284,13 @@ public class JsTtsCommandPlayer extends CommandPlayer {
 		return true;
 	}
 
+	@Override
+	public boolean supportsFreeText() {
+		// Every string in the list is handed straight to the TTS engine, so a sentence the voice
+		// grammar never produced is spoken exactly as written.
+		return true;
+	}
+
 	@NonNull
 	public static String getTtsVoiceStatus() {
 		return ttsVoiceStatus;
