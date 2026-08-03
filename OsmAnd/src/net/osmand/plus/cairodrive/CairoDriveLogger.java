@@ -1190,10 +1190,14 @@ public class CairoDriveLogger {
 			// file names. Each rung drops modifiers the previous one might not be accepted
 			// with; the last rung still asks for utc, in the alternative spelling, so a
 			// degraded pump does not silently start writing local time into a UTC file.
+			// UTC is spelled uppercase in AOSP's format-modifier table, and a POCO C85 on
+			// Android 15 rejects the lowercase form outright: `logcat: Invalid -v 'utc'.`
+			// Uppercase is tried first; the lowercase spelling stays as a rung because other
+			// vendors have accepted it.
 			String[][] commands = {
+					logcatCommand("-v", "threadtime,year,uid,UTC", "-b", "main,system,crash"),
 					logcatCommand("-v", "threadtime,year,uid,utc", "-b", "main,system,crash"),
-					logcatCommand("-v", "threadtime,utc"),
-					logcatCommand("-v", "threadtime", "-v", "utc"),
+					logcatCommand("-v", "threadtime,UTC"),
 					logcatCommand("-v", "threadtime"),
 			};
 			int attempt = 0;
@@ -1201,6 +1205,7 @@ public class CairoDriveLogger {
 				String[] command = commands[Math.min(attempt, commands.length - 1)];
 				Process process = null;
 				boolean produced = false;
+				boolean rejected = false;
 				long runStartedAt = SystemClock.elapsedRealtime();
 				try {
 					process = new ProcessBuilder(command).redirectErrorStream(true).start();
@@ -1212,6 +1217,19 @@ public class CairoDriveLogger {
 							process.getInputStream(), StandardCharsets.UTF_8), 32768)) {
 						String line;
 						while (started && (line = reader.readLine()) != null) {
+							// redirectErrorStream(true) merges logcat's OWN stderr into this
+							// stream, so its rejection message arrives as an ordinary line. It
+							// used to set produced=true, telling the loop below the command had
+							// been accepted, which reset the fallback rung - so a rejected
+							// command was retried forever and the ladder never advanced. A real
+							// log showed four identical rejected starts in 33 seconds and not one
+							// captured line, which is where CD_SEARCH and the LANG_ TTS markers
+							// live.
+							if (isLogcatRejection(line)) {
+								rejected = true;
+								log("LOGCAT", "rejected by platform, falling back: " + line);
+								continue;
+							}
 							produced = true;
 							writer.write("LOGCAT| " + redactSecrets(line));
 						}
@@ -1236,7 +1254,7 @@ public class CairoDriveLogger {
 				// its later death is logd restarting or the process being killed, and
 				// degrading the format for that would lose the UTC stamps for good.
 				long ranForMs = SystemClock.elapsedRealtime() - runStartedAt;
-				if (produced || ranForMs >= LOGCAT_ACCEPTED_AFTER_MS) {
+				if (!rejected && (produced || ranForMs >= LOGCAT_ACCEPTED_AFTER_MS)) {
 					attempt = 0;
 				} else {
 					attempt++;
@@ -1279,6 +1297,24 @@ public class CairoDriveLogger {
 
 	/** {@code logcat <options...> <filters...>} - filterspecs always come last. */
 	@NonNull
+	/**
+	 * True for logcat's own complaint about the command line, as opposed to a captured log line.
+	 * <p>
+	 * Deliberately narrow: it has to match what the tool prints when it refuses to start and
+	 * nothing an app might legitimately log. Both halves are required - the "logcat: " prefix
+	 * that only the tool itself emits at the start of a line, and a refusal word.
+	 */
+	private static boolean isLogcatRejection(@NonNull String line) {
+		if (!line.startsWith("logcat: ")) {
+			return false;
+		}
+		String rest = line.substring(8).toLowerCase(Locale.US);
+		return rest.startsWith("invalid")
+				|| rest.startsWith("unable")
+				|| rest.startsWith("unrecognized")
+				|| rest.startsWith("unknown");
+	}
+
 	private static String[] logcatCommand(@NonNull String... options) {
 		String[] command = new String[1 + options.length + LOGCAT_FILTERS.length];
 		command[0] = "logcat";
