@@ -52,6 +52,22 @@ public class CairoDriveLogWriter {
 	private static final long DAY_MS = 24L * 60 * 60 * 1000;
 
 	/** Start a new file once the current one passes this size. */
+	/**
+	 * How often the writer checks that the file it is writing to still exists.
+	 * <p>
+	 * It can stop existing without the writer being told. Deleting an open file on Linux unlinks
+	 * it and leaves the process writing to an invisible inode - so `adb shell rm ...*.log`, a
+	 * cleaner app, or the user tidying up mid-session all silently send every subsequent line
+	 * nowhere. Nothing here noticed, because the only triggers for a new file are the size and
+	 * age caps: logging would resume 8 MB or a day later, whichever came first.
+	 * <p>
+	 * This cost a real drive to discover - the log directory was cleared before setting off,
+	 * with the app already running, and the trace for the whole drive went into a deleted file.
+	 * Five seconds is a stat() every 5 s on a background thread; the failure it prevents is
+	 * losing a drive.
+	 */
+	private static final long FILE_EXISTENCE_CHECK_INTERVAL_MS = 5000;
+
 	public static final long MAX_FILE_BYTES = 8L * 1024 * 1024;
 	/**
 	 * ...or once it spans this much time. Deletion works on whole files, so this is what
@@ -124,6 +140,8 @@ public class CairoDriveLogWriter {
 	private long currentFileStartedAt;
 	/** Monotonic deadline for age rotation - immune to the clock being corrected. */
 	private long currentFileRotateAt;
+	/** Throttles the existence check - see FILE_EXISTENCE_CHECK_INTERVAL_MS. */
+	private long nextExistenceCheckAt;
 	/** Monotonic. */
 	private long nextIoAttemptAt;
 	private boolean resumeChecked;
@@ -332,7 +350,8 @@ public class CairoDriveLogWriter {
 		long elapsed = SystemClock.elapsedRealtime();
 		if (writer == null
 				|| currentFileBytes >= MAX_FILE_BYTES
-				|| elapsed >= currentFileRotateAt) {
+				|| elapsed >= currentFileRotateAt
+				|| currentFileVanished(elapsed)) {
 			if (writer == null && elapsed < nextIoAttemptAt) {
 				// Storage is unavailable; drop the line rather than retrying per line.
 				// Counted, because the whole point of droppedLines is that a gap in the log
@@ -407,6 +426,21 @@ public class CairoDriveLogWriter {
 		}
 	}
 
+	/**
+	 * True when the file being written to has been deleted from underneath this writer, which is
+	 * the signal to mint a new one. Throttled to one stat() per
+	 * {@link #FILE_EXISTENCE_CHECK_INTERVAL_MS} - the check has to be in the WRITE path rather
+	 * than in rollFile(), because a healthy writer under both caps never reaches rollFile() at
+	 * all, which is exactly the state this has to break out of.
+	 */
+	private boolean currentFileVanished(long elapsed) {
+		if (currentFile == null || elapsed < nextExistenceCheckAt) {
+			return false;
+		}
+		nextExistenceCheckAt = elapsed + FILE_EXISTENCE_CHECK_INTERVAL_MS;
+		return !currentFile.exists();
+	}
+
 	private void rollFile() {
 		closeWriter();
 		//noinspection ResultOfMethodCallIgnored
@@ -422,6 +456,7 @@ public class CairoDriveLogWriter {
 		// and age caps mint a new one. Otherwise a failing disk would fill the directory
 		// with header-only stubs and prune() would evict real logs to make room for them.
 		if (currentFile != null
+				&& currentFile.exists()
 				&& currentFileBytes < MAX_FILE_BYTES
 				&& elapsed < currentFileRotateAt) {
 			file = currentFile;
