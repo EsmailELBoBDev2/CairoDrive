@@ -169,13 +169,15 @@ public class TripHelper {
 			}
 			//int dist = nextDirInfo.distanceTo;
 			if (lanes != null) {
-				// Same two tones as the voice, and switched by the same yardstick: TURN_IN is the
-				// state the "in 300 metres, turn right" prompt fires in, and it is derived from
-				// the driver's actual speed rather than a fixed number of metres - so on the Ring
-				// Road it flips to the urgent wording much further out than it does in a side
-				// street, exactly like every other cue in the app. Nothing here is hardcoded.
-				boolean urgent = timeDistances.isTurnStateActive(timeDistances.getSpeed(currentLocation),
-						nextDirInfo.distanceTo, STATE_TURN_IN);
+				// Same two tones as the voice, flipped by the same test the voice uses, so the
+				// screen and the speaker can never say different things. The threshold is derived
+				// from the driver's speed and from how many lanes may still have to be crossed -
+				// see VoiceRouter.isTurnInDue - rather than being a distance chosen here.
+				int crossings = LaneHint.getLaneCrossings(lanes);
+				float speed = timeDistances.getSpeed(currentLocation);
+				boolean urgent = crossings > 0
+						? timeDistances.isLaneChangeDue(speed, nextDirInfo.distanceTo, crossings)
+						: timeDistances.isTurnStateActive(speed, nextDirInfo.distanceTo, STATE_TURN_IN);
 				laneHint = LaneHint.getHint(app, lanes, urgent);
 				Bitmap lanesBitmap = createLanesBitmap(stepBuilder, lanes, locimminent, leftSide, density);
 				stepBuilder.setLanesImage(new CarIcon.Builder(IconCompat.createWithBitmap(lanesBitmap)).build());

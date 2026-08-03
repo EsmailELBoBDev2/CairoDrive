@@ -34,6 +34,20 @@ public class AnnounceTimeDistances {
 	private static final int LANES_MAX_METERS_NOT_SPOKEN_TURN = 800;
 	private static final int LANES_MAX_METERS_SPOKEN_TURN = 1200;
 
+	// What one lane change actually costs a driver in traffic, in seconds. From the naturalistic
+	// lane-change literature: mean visual search before the change is up to 6.1 s once there is
+	// traffic to look for (Finnegan & Green, "The Time to Change Lanes", UMTRI), and the change
+	// itself takes a mean of ~5.5 s for a passenger car (Chen et al., survival analysis of
+	// lane-changing duration, 2021). Call it 12 s, prep included.
+	//
+	// Cross-check against what the industry ships: Waze surfaces lane guidance ~500 m before a
+	// city turn and ~1 km before a motorway exit. At the speeds those roads are driven, both come
+	// out at ~36 s - which is 3 lane changes at this rate. So this number reproduces Waze's two
+	// published distances from one rule, and then keeps scaling past them for the roads Waze's
+	// flat figure under-serves: a six-lane arterial approached from the far side needs 4 changes,
+	// not 3, and 36 s is not enough for it.
+	private static final float SECONDS_PER_LANE_CHANGE = 12;
+
 
 	private final ApplicationMode appMode;
 	// Default speed to have comfortable announcements (m/s)
@@ -166,6 +180,41 @@ public class AnnounceTimeDistances {
 				return isDistanceLess(currentSpeed, dist, LONG_PNT_ANNOUNCE_RADIUS);
 		}
 		return false;
+	}
+
+	/**
+	 * Whether a turn that needs the driver to be on a particular side of the road is close enough
+	 * to announce, given how many lanes they may still have to cross to get there.
+	 *
+	 * <p>Unlike {@link #isTurnStateActive} this does not take a fixed state: the lead distance is
+	 * derived from the work the driver actually has left to do. Two lanes on a side street and six
+	 * lanes on an arterial are not the same instruction, and warning about both at the same moment
+	 * means one of them is wrong.
+	 *
+	 * <p>Bounded at both ends. It can never fire later than the ordinary turn-in prompt, so no turn
+	 * is ever announced later than it is today; and it can never reach back past the end of the
+	 * prepare prompt's window or past the distance at which the lane arrows themselves appear, so
+	 * it cannot crowd the announcement before it or talk about arrows that are not on screen yet.
+	 *
+	 * @param laneCrossings worst-case number of lanes between the driver and a usable lane - that
+	 *                      is, assuming they are currently on the far side of the road.
+	 */
+	public boolean isLaneChangeDue(float currentSpeed, double dist, int laneCrossings) {
+		// Floor: never later than the ordinary turn-in prompt, so no turn is ever announced later
+		// than it would have been without any of this.
+		if (isTurnStateActive(currentSpeed, dist, STATE_TURN_IN)) {
+			return true;
+		}
+		double lead = laneCrossings * SECONDS_PER_LANE_CHANGE * DEFAULT_SPEED;
+		// Scaled by real speed the same way every other lead distance is: the driver needs a fixed
+		// amount of TIME to change lanes, so the distance that buys it grows with how fast they are
+		// travelling.
+		lead = Math.max(lead, currentSpeed / DEFAULT_SPEED * lead);
+		// Ceiling, two reasons, whichever binds first. Past the end of the prepare prompt's window
+		// this would start treading on the announcement before it, and past the distance at which
+		// the lane arrows appear the words would arrive with no picture to match them.
+		lead = Math.min(lead, Math.min(PREPARE_DISTANCE_END, LANES_MAX_METERS_SPOKEN_TURN));
+		return dist <= lead + currentSpeed * voicePromptDelayTimeSec;
 	}
 
 	public boolean isTurnStateNotPassed(float currentSpeed, double dist, int turnType) {

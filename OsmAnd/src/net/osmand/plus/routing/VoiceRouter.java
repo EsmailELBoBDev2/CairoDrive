@@ -497,7 +497,7 @@ public class VoiceRouter {
 			nextStatusAfter(STATUS_TURN);
 
 		// STATUS_TURN_IN = "Turn in ..."
-		} else if ((repeat || statusNotPassed(STATUS_TURN_IN)) && atd.isTurnStateActive(speed, dist, STATE_TURN_IN)) {
+		} else if ((repeat || statusNotPassed(STATUS_TURN_IN)) && isTurnInDue(speed, dist, next)) {
 			if (repeat || atd.isTurnStateNotPassed(0, dist, STATE_TURN_IN)) {
 				if (nextNextInfo != null && (atd.isTurnStateActive(speed, nextNextInfo.distanceTo, STATE_TURN_NOW)
 						|| !atd.isTurnStateNotPassed(speed, nextNextInfo.distanceTo, STATE_TURN_IN))) {
@@ -799,6 +799,36 @@ public class VoiceRouter {
 				play(p);
 			}
 		}
+	}
+
+	/**
+	 * When to play the "in 300 metres, turn right" prompt.
+	 *
+	 * <p>Normally at the turn-in distance, 22 s of travel, unchanged from upstream. But that prompt
+	 * is also the one carrying the lane instruction, and 22 s is roughly two lane changes once the
+	 * mirror check is counted - fine for sliding one lane over, useless if the driver is on the far
+	 * side of a six-lane arterial. So when the turn has lane data saying a particular side of the
+	 * road is required, the prompt moves earlier in proportion to how many lanes may have to be
+	 * crossed.
+	 *
+	 * <p>This is what Google Maps does - the lane instruction and the turn are one sentence,
+	 * delivered while the lane change is still possible, rather than the turn being announced and
+	 * the lanes being someone else's problem. Waze's published figures (~500 m in town, ~1 km on a
+	 * motorway) work out at about three lane changes' worth of time; this generalises that to the
+	 * road actually ahead instead of picking between two buckets.
+	 *
+	 * <p>It can only ever move a prompt earlier, never later - the lead distance is floored at the
+	 * ordinary turn-in distance - so no turn is announced later than it is today, with or without
+	 * lane data.
+	 */
+	private boolean isTurnInDue(float speed, int dist, @Nullable RouteDirectionInfo next) {
+		if (next != null && next.getTurnType() != null && settings.ANNOUNCE_LANE_GUIDANCE.get()) {
+			int crossings = LaneHint.getLaneCrossings(next.getTurnType().getLanes());
+			if (crossings > 0) {
+				return atd.isLaneChangeDue(speed, dist, crossings);
+			}
+		}
+		return atd.isTurnStateActive(speed, dist, STATE_TURN_IN);
 	}
 
 	/**
