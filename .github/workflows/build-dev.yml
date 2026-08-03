@@ -40,11 +40,24 @@ on:
   workflow_dispatch:
     inputs:
       abi:
-        description: 'ABI flavor. Anything narrower than fat cannot be rolled out on Google Play.'
+        # Corrected from "anything narrower than fat cannot be rolled out on Google Play",
+        # which overstated it. Play accepts an arm64-only bundle perfectly well - what it
+        # refuses is a release that strands EXISTING installs: if someone already has the app
+        # on an ABI the new bundle omits, the upload is rejected with "doesn't allow any
+        # existing users to upgrade". With a single internal tester on an arm64 phone there is
+        # nothing to strand, which is why arm64 is the default here.
+        #
+        # It is also the biggest remaining lever on build time. jni/Application.mk keys off
+        # ARM64_ONLY, so this compiles the C++ routing core for one ABI instead of four - the
+        # native phase, which is most of the build, drops to about a quarter.
+        #
+        # Switch back to fat before any wider rollout, or if Play ever reports the upgrade
+        # error above.
+        description: 'ABI flavor. arm64 builds ~4x faster; use fat for a wide rollout.'
         type: choice
         required: false
-        default: 'fat'
-        options: [fat, armonly, arm64, armv7, x86]
+        default: 'arm64'
+        options: [arm64, armonly, fat, armv7, x86]
       core:
         description: 'Core flavor. legacy compiles the native core with the NDK and is much slower.'
         type: choice
@@ -73,7 +86,9 @@ env:
   # AAB per device, so a fat bundle costs its users nothing in download size, while a
   # single-ABI one strands everybody on the other three: "You can't rollout this release
   # because it doesn't allow any existing users to upgrade to the newly added app bundles."
-  ABI: ${{ inputs.abi || 'fat' }}
+  # `inputs.abi` is empty on a push, so this fallback is what every push build uses. Kept in
+  # step with the dispatch default above - see the note there for why arm64 rather than fat.
+  ABI: ${{ inputs.abi || 'arm64' }}
   CORE: ${{ inputs.core || 'opengl' }}
 
 jobs:
