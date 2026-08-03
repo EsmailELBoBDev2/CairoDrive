@@ -469,12 +469,25 @@ public class RoutingHelper {
 					} else {
 						distOrth = RoutingHelperUtils.getOrthogonalDistance(currentLocation, routeNodes.get(currentRoute - 1), routeNodes.get(currentRoute));
 					}
-					// A single fix past the threshold is not enough to spend a recalculation
-					// on - see CairoDriveOffRoute. The distance test is unchanged; what
-					// changes is how much agreement it takes to be believed.
-					if (offRouteHysteresis.shouldRecalculate(currentLocation, distOrth > allowableDeviation)) {
+					// "Am I off the route" and "is it worth recalculating" are two different
+					// questions, and only the second one is hysteresis-gated.
+					//
+					// isDeviatedFromRoute drives the display: the Android Auto OFF-ROUTE
+					// manoeuvre, the next-turn and lane widgets, the notification. Setting it
+					// inside the recalculation branch made it a ONE-FIX PULSE whenever the
+					// hysteresis is enabled - shouldRecalculate stamps a cooldown when it fires,
+					// so the following fixes are refused and the flag, cleared at the top of
+					// this method, stays false for the whole recalculation window. The driver
+					// would lose the off-route indication precisely while off route.
+					//
+					// Not reachable in the shipping build, because the hysteresis is off by
+					// default and shouldRecalculate then returns its argument unchanged - which
+					// is exactly upstream's behaviour. Fixed anyway so the flag is safe to turn
+					// on, rather than leaving a trap for whoever does.
+					boolean offRoute = distOrth > allowableDeviation;
+					isDeviatedFromRoute = offRoute;
+					if (offRouteHysteresis.shouldRecalculate(currentLocation, offRoute)) {
 						log.info("Recalculate route, because correlation  : " + distOrth); //$NON-NLS-1$
-						isDeviatedFromRoute = true;
 						calculateRoute = !settings.DISABLE_OFFROUTE_RECALC.get();
 					}
 				}

@@ -191,27 +191,50 @@ public class CairoDriveLogger {
 	 * ones without consulting this fork. Filtering the pipe covers all of them, including the
 	 * ones that do not exist yet.
 	 */
-	private static final Pattern SECRET_PATTERN = Pattern.compile(
-			"(?i)\\b(accessToken|access_token|refresh_token|token|password|passwd|pwd|apikey|api_key"
-					+ "|key|secret|authorization|orderId|deviceid|userid|email)=([^&\\s\"']*)");
+	private static final String SECRET_NAMES =
+			"accessToken|access_token|refresh_token|token|password|passwd|pwd|apikey|api_key"
+					+ "|key|secret|authorization|auth|orderId|deviceid|userid|email|sessionid";
+
+	/**
+	 * The three shapes a credential actually appears in, because one pattern does not cover them.
+	 *
+	 * <p>The first version of this matched only {@code name=value} - the query-string form used by
+	 * AndroidNetworkUtils.uploadFile, which was the leak that prompted it. That closed one vector
+	 * and left two open, and it short-circuited on any line without an '=', which is most of them:
+	 * <ul>
+	 *   <li>QUERY - {@code ...?accessToken=eyJ...&deviceid=1}</li>
+	 *   <li>JSON  - {@code {"accessToken":"eyJ..."}}, which is how AndroidNetworkUtils.sendRequest
+	 *       logs a request body, and how the device-registration response comes back</li>
+	 *   <li>HEADER - {@code Authorization: Bearer eyJ...}, plus any {@code name: value} header</li>
+	 * </ul>
+	 * A bearer token is equally compromising in all three, so all three are stripped.
+	 */
+	private static final Pattern SECRET_QUERY =
+			Pattern.compile("(?i)\\b(" + SECRET_NAMES + ")=([^&\\s\"']*)");
+	private static final Pattern SECRET_JSON =
+			Pattern.compile("(?i)\"(" + SECRET_NAMES + ")\"\\s*:\\s*\"[^\"]*\"");
+	private static final Pattern SECRET_HEADER =
+			Pattern.compile("(?i)\\b(" + SECRET_NAMES + ")\\s*:\\s*(Bearer\\s+)?[A-Za-z0-9._~+/=-]{8,}");
 
 	@NonNull
 	static String redactSecrets(@NonNull String line) {
-		if (line.indexOf('=') < 0) {
-			// Overwhelmingly the common case, and it makes the regex cost nothing on most lines.
-			return line;
+		// No cheap pre-filter on '=' any more: the JSON and header forms do not contain one, and
+		// skipping them was exactly the gap. Checking for a ':' as well would still miss nothing
+		// useful but costs the same as just running the matchers on a miss, so run them.
+		String out = line;
+		Matcher matcher = SECRET_QUERY.matcher(out);
+		if (matcher.find()) {
+			out = matcher.replaceAll("$1=<redacted>");
 		}
-		Matcher matcher = SECRET_PATTERN.matcher(line);
-		if (!matcher.find()) {
-			return line;
+		matcher = SECRET_JSON.matcher(out);
+		if (matcher.find()) {
+			out = matcher.replaceAll("\"$1\":\"<redacted>\"");
 		}
-		StringBuffer out = new StringBuffer(line.length());
-		matcher.reset();
-		while (matcher.find()) {
-			matcher.appendReplacement(out, Matcher.quoteReplacement(matcher.group(1) + "=<redacted>"));
+		matcher = SECRET_HEADER.matcher(out);
+		if (matcher.find()) {
+			out = matcher.replaceAll("$1: <redacted>");
 		}
-		matcher.appendTail(out);
-		return out.toString();
+		return out;
 	}
 
 	private static final String[] LOGCAT_FILTERS = {
@@ -563,7 +586,6 @@ public class CairoDriveLogger {
 	 * That is why {@code CAIRODRIVE_FULL_LOGGING} must be turned off for any public production
 	 * release - see {@code OsmAnd/cairodrive.gradle}.
 	 */
-	@Nullable
 	/**
 	 * Removes every log this fork has ever written. Called only when logging is compiled out -
 	 * see {@link #init}. Best effort and silent: a build with the logger disabled must not spend
@@ -591,6 +613,7 @@ public class CairoDriveLogger {
 		}
 	}
 
+	@Nullable
 	private File resolveLogDirectory(@NonNull Context context) {
 		File base = context.getExternalFilesDir(null);
 		if (base == null) {

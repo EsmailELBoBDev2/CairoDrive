@@ -55,3 +55,7 @@ OsmAnd-java/src/test/resources/approximation/*
 #Shared library resources
 OsmAnd-shared/src/androidMain/resources/
 OsmAnd-shared/src/jvmMain/resources/
+# Python bytecode. patches/ is executed by CI, including the job that holds the
+# release keystore - an unreviewable binary must never live there.
+__pycache__/
+*.pyc
