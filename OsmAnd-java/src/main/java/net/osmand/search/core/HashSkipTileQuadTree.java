@@ -8,7 +8,6 @@ import java.util.NoSuchElementException;
 import gnu.trove.list.array.TIntArrayList;
 import gnu.trove.list.array.TLongArrayList;
 import gnu.trove.map.hash.TLongObjectHashMap;
-import gnu.trove.set.hash.TLongHashSet;
 import net.osmand.util.MapUtils;
 
 public class HashSkipTileQuadTree<T> {
@@ -34,6 +33,26 @@ public class HashSkipTileQuadTree<T> {
 		this.minZoom = minZoom;
 		this.maxZoom = maxZoom;
 		this.indxZooms = indexedZooms;
+	}
+	
+	// Extra index to be extended
+	public static class TreeExtraIndex<EntryIndex, ZoomIndex> {
+
+		public EntryIndex buildEntryIndex() {
+			return null;
+		}
+		
+		public <T> ZoomIndex buildZoomIndex(ZoomBucket bucket, HashSkipTileQuadTree<T> tree) {
+			return null;
+		}
+		
+		public boolean acceptJoinBucket(EntryIndex entry, ZoomIndex zoom) {
+			return true;
+		}
+		
+		public boolean acceptJoin(EntryIndex entry1, EntryIndex entry2) {
+			return true;
+		}
 	}
 	
 
@@ -316,7 +335,7 @@ public class HashSkipTileQuadTree<T> {
 		return MapUtils.interleaveBits(x, y);
 	}
 
-	static boolean intersectsBBox(int[] a, int[] b) {
+	public static boolean intersectsBBox(int[] a, int[] b) {
 		return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
 	}
 
@@ -344,8 +363,8 @@ public class HashSkipTileQuadTree<T> {
 	public int build() {
 		if (modified != null) {
 			List<TileEntry<T>> tileEntries = new ArrayList<>();
-			for(TileEntry<T> e : this.tileEntries) {
-				if(!modified.containsKey(e.objId)) {
+			for (TileEntry<T> e : this.tileEntries) {
+				if (!modified.containsKey(e.objId)) {
 					tileEntries.add(e);
 				}
 			}
@@ -525,9 +544,8 @@ public class HashSkipTileQuadTree<T> {
 		return res;
 	}
 	
-	List<TileEntry<T>> getTileEntries() {
+	public List<TileEntry<T>> getTileEntries() {
 		return tileEntries;
 	}
-
 
 }
