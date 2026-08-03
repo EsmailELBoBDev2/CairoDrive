@@ -655,6 +655,21 @@ public class CairoDriveLogger {
 		} catch (Throwable t) {
 			log("SESSION", "hardware probe failed", t);
 		}
+		// Every fork flag, so a log says which build produced it.
+		//
+		// Without this a drive log cannot be attributed. The whole working method here is
+		// change one thing, drive, compare - and several of these flags have been flipped
+		// between drives already. A frame time that moved is meaningless if nobody can tell
+		// whether the tilted camera or the render scale was on when it moved, and the answer
+		// was previously "ask whoever ran the build", which does not survive a week.
+		log("SESSION", "flags"
+				+ " drivingView=" + BuildConfig.CAIRODRIVE_DRIVING_VIEW
+				+ " offRouteHysteresis=" + BuildConfig.CAIRODRIVE_OFFROUTE_HYSTERESIS
+				+ " surfaceOverscan=" + BuildConfig.CAIRODRIVE_SURFACE_OVERSCAN
+				+ " renderScale=" + BuildConfig.CAIRODRIVE_RENDER_SCALE
+				+ " fullLogging=" + BuildConfig.CAIRODRIVE_FULL_LOGGING
+				+ " unlockPro=" + BuildConfig.CAIRODRIVE_UNLOCK_PRO
+				+ " dataSaver=" + BuildConfig.CAIRODRIVE_DATA_SAVER);
 		log("SESSION", "locale=" + Locale.getDefault() + " timezone=" + java.util.TimeZone.getDefault().getID());
 		log("SESSION", "logDir=" + writer.getDirectory().getAbsolutePath()
 				+ " maxFileBytes=" + CairoDriveLogWriter.MAX_FILE_BYTES
