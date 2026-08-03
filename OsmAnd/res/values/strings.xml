@@ -13,14 +13,14 @@
 -->
 	<string name="announce_lane_guidance">Announce lanes</string>
 	<string name="announce_lane_guidance_description">Say which lane to take before a turn, in addition to showing the lane arrows.</string>
-	<string name="lane_hint_left_lane">Use the left lane</string>
-	<string name="lane_hint_right_lane">Use the right lane</string>
-	<string name="lane_hint_middle_lane">Use the middle lane</string>
-	<string name="lane_hint_left_lanes">Use the %1$d left lanes</string>
-	<string name="lane_hint_right_lanes">Use the %1$d right lanes</string>
-	<string name="lane_hint_middle_lanes">Use the %1$d middle lanes</string>
-	<string name="lane_hint_nth_lane_from_left">Use lane %1$d from the left</string>
-	<string name="lane_hint_nth_lane_from_right">Use lane %1$d from the right</string>
+	<string name="lane_hint_left_lane">get in the left lane</string>
+	<string name="lane_hint_right_lane">get in the right lane</string>
+	<string name="lane_hint_middle_lane">get in the middle lane</string>
+	<string name="lane_hint_left_side">stay on the left side</string>
+	<string name="lane_hint_right_side">stay on the right side</string>
+	<string name="lane_hint_middle_lanes">stay in the middle lanes</string>
+	<string name="lane_hint_nth_lane_from_left">get in lane %1$d from the left</string>
+	<string name="lane_hint_nth_lane_from_right">get in lane %1$d from the right</string>
 	<string name="use_spatial_text_search">Use spatial text search</string>
 	<string name="use_spatial_text_search_description">Replace the standard quick search APIs with the experimental spatial text search engine.</string>
 	<string name="astro_lunar_eclipse">Lunar eclipse</string>

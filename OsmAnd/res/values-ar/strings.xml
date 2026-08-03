@@ -5,9 +5,9 @@
     <string name="lane_hint_left_lane">الزم الحارة اليسرى</string>
     <string name="lane_hint_right_lane">الزم الحارة اليمنى</string>
     <string name="lane_hint_middle_lane">الزم الحارة الوسطى</string>
-    <string name="lane_hint_left_lanes">الزم %1$d حارات على اليسار</string>
-    <string name="lane_hint_right_lanes">الزم %1$d حارات على اليمين</string>
-    <string name="lane_hint_middle_lanes">الزم %1$d حارات في المنتصف</string>
+    <string name="lane_hint_left_side">خليك على اليسار</string>
+    <string name="lane_hint_right_side">خليك على اليمين</string>
+    <string name="lane_hint_middle_lanes">خليك في حارات المنتصف</string>
     <string name="lane_hint_nth_lane_from_left">الزم الحارة رقم %1$d من اليسار</string>
     <string name="lane_hint_nth_lane_from_right">الزم الحارة رقم %1$d من اليمين</string>
     <string name="recording_context_menu_show">أظهر</string>

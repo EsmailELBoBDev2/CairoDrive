@@ -9,7 +9,7 @@ import net.osmand.plus.R;
 import net.osmand.router.TurnType;
 
 /**
- * Turns a lane layout into a sentence: "Use the 2 right lanes".
+ * Turns a lane layout into a sentence: "stay on the right side".
  *
  * <p>The lane strip that OsmAnd draws - a row of arrows with the usable ones highlighted - is the
  * densest piece of information on the navigation screen and the one most often misread, because
@@ -85,13 +85,18 @@ public class LaneHint {
 					? ctx.getString(R.string.lane_hint_nth_lane_from_left, fromLeft + 1)
 					: ctx.getString(R.string.lane_hint_nth_lane_from_right, fromRight + 1);
 		}
+		// More than one lane works, so there is no single lane to name. Say which SIDE of the road
+		// to be on and stop there - deliberately dropping the count, which is the part drivers
+		// report not understanding. "Two lanes in from the edge" is also not something anyone can
+		// verify at speed on a Cairo road, where lane paint is routinely worn away or ignored,
+		// whereas "which side am I on" always answers itself.
 		if (fromLeft == 0) {
-			return ctx.getString(R.string.lane_hint_left_lanes, count);
+			return ctx.getString(R.string.lane_hint_left_side);
 		}
 		if (fromRight == 0) {
-			return ctx.getString(R.string.lane_hint_right_lanes, count);
+			return ctx.getString(R.string.lane_hint_right_side);
 		}
-		return ctx.getString(R.string.lane_hint_middle_lanes, count);
+		return ctx.getString(R.string.lane_hint_middle_lanes);
 	}
 
 	private static boolean isActive(int lane) {
