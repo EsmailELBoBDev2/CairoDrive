@@ -16,6 +16,9 @@
 	<string name="lane_hint_left_side">stay on the left side</string>
 	<string name="lane_hint_right_side">stay on the right side</string>
 	<string name="lane_hint_middle">stay in the middle</string>
+	<string name="lane_hint_left_side_now">get on the left side now</string>
+	<string name="lane_hint_right_side_now">get on the right side now</string>
+	<string name="lane_hint_middle_now">get in the middle now</string>
 	<string name="use_spatial_text_search">Use spatial text search</string>
 	<string name="use_spatial_text_search_description">Replace the standard quick search APIs with the experimental spatial text search engine.</string>
 	<string name="astro_lunar_eclipse">Lunar eclipse</string>

@@ -9,8 +9,8 @@ import net.osmand.plus.R;
 import net.osmand.router.TurnType;
 
 /**
- * Turns a lane layout into one of exactly three sentences: stay on the left side, stay in the
- * middle, stay on the right side.
+ * Turns a lane layout into one of exactly three positions - left side, middle, right side - in one
+ * of two tones: an early "stay on the right side", and a late "get on the right side now".
  *
  * <p>The lane strip that OsmAnd draws - a row of arrows with the usable ones highlighted - is the
  * densest piece of information on the navigation screen and the one most often misread, because
@@ -29,13 +29,17 @@ import net.osmand.router.TurnType;
 public class LaneHint {
 
 	/**
-	 * @param ctx   used only to resolve strings, so pass a locale-specific context when the text is
-	 *              destined for TTS in a voice language that differs from the UI language.
-	 * @param lanes lane layout for the upcoming turn, as stored on {@link TurnType#getLanes()}.
+	 * @param ctx    used only to resolve strings, so pass a locale-specific context when the text is
+	 *               destined for TTS in a voice language that differs from the UI language.
+	 * @param lanes  lane layout for the upcoming turn, as stored on {@link TurnType#getLanes()}.
+	 * @param urgent false for the early heads-up given while there is still room to move over,
+	 *               true once the turn is close enough that being on the wrong side is a problem.
+	 *               The caller decides which, from the same speed-scaled thresholds every other
+	 *               prompt uses - see AnnounceTimeDistances.
 	 * @return a human-readable instruction, or null when there is nothing worth saying.
 	 */
 	@Nullable
-	public static String getHint(@NonNull Context ctx, @Nullable int[] lanes) {
+	public static String getHint(@NonNull Context ctx, @Nullable int[] lanes, boolean urgent) {
 		if (lanes == null || lanes.length < 2) {
 			// One lane is not a choice, so naming it is noise.
 			return null;
@@ -76,13 +80,17 @@ public class LaneHint {
 		// The precision is not really lost either, because the lane arrows are still drawn right
 		// next to this text and still carry the exact layout. This is the caption, not the diagram,
 		// and a caption that is instantly right beats one that is exactly right.
+		// Said twice on the way to a turn, in two tones: "stay on the right side" while there is
+		// still room to move over, then "get on the right side now" once the turn is close. Same
+		// three positions either way - the escalation is in the tone, not in new vocabulary, so
+		// there is still nothing extra to learn.
 		if (first == 0) {
-			return ctx.getString(R.string.lane_hint_left_side);
+			return ctx.getString(urgent ? R.string.lane_hint_left_side_now : R.string.lane_hint_left_side);
 		}
 		if (last == lanes.length - 1) {
-			return ctx.getString(R.string.lane_hint_right_side);
+			return ctx.getString(urgent ? R.string.lane_hint_right_side_now : R.string.lane_hint_right_side);
 		}
-		return ctx.getString(R.string.lane_hint_middle);
+		return ctx.getString(urgent ? R.string.lane_hint_middle_now : R.string.lane_hint_middle);
 	}
 
 	private static boolean isActive(int lane) {

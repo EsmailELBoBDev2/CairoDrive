@@ -515,7 +515,10 @@ public class VoiceRouter {
 				if (!repeat && (next.getTurnType().keepLeft() || next.getTurnType().keepRight())) {
 					// Do not play prepare for keep left/right
 				} else {
-					playPrepareTurn(currentSegment, next, atd.calcDistanceWithoutDelay(speed, dist));
+					// The lane heads-up rides on this prompt, not the long-prepare one below: this
+					// is the last announcement before the turn-in prompt, so it is the natural
+					// first half of "stay on the right side" ... "get on the right side now".
+					playPrepareTurn(currentSegment, next, atd.calcDistanceWithoutDelay(speed, dist), true);
 					playGoAndArriveAtDestination(repeat, nextInfo, currentSegment);
 				}
 			}
@@ -524,7 +527,9 @@ public class VoiceRouter {
 		// STATUS_LONG_PREPARE =  also "Turn after ...", we skip this now, users said this is obsolete
 		} else if ((repeat || statusNotPassed(STATUS_LONG_PREPARE)) && atd.isTurnStateActive(0, dist, STATE_LONG_PREPARE_TURN)) {
 			if (repeat || atd.isTurnStateNotPassed(0, dist, STATE_LONG_PREPARE_TURN)) {
-				playPrepareTurn(currentSegment, next, dist);
+				// No lane hint this far out - kilometres ahead of the turn it is not actionable,
+				// and saying it three times per turn is how a prompt gets tuned out.
+				playPrepareTurn(currentSegment, next, dist, false);
 				playGoAndArriveAtDestination(repeat, nextInfo, currentSegment);
 			}
 			nextStatusAfter(STATUS_LONG_PREPARE);
@@ -686,7 +691,8 @@ public class VoiceRouter {
 		return pn;
 	}
 
-	private void playPrepareTurn(RouteSegmentResult currentSegment, RouteDirectionInfo next, int dist) {
+	private void playPrepareTurn(RouteSegmentResult currentSegment, RouteDirectionInfo next, int dist,
+	                             boolean announceLanes) {
 		if(router.getSettings().TURN_BY_TURN_DIRECTIONS.get()) {
 			CommandBuilder p = getNewCommandPlayerToPlay();
 			if (p != null) {
@@ -697,6 +703,11 @@ public class VoiceRouter {
 					p.prepareRoundAbout(dist, next.getTurnType().getExitOut(), getSpeakableStreetName(currentSegment, next, true));
 				} else if (next.getTurnType().getValue() == TurnType.TU || next.getTurnType().getValue() == TurnType.TRU) {
 					p.prepareMakeUT(dist, getSpeakableStreetName(currentSegment, next, true));
+				}
+				if (announceLanes) {
+					// Early heads-up, calm tone: "in 2 km turn right onto X, stay on the right
+					// side". Far enough out that moving over is a lane change and not a swerve.
+					appendLaneGuidance(p, next.getTurnType(), false);
 				}
 			}
 			play(p);
@@ -758,16 +769,16 @@ public class VoiceRouter {
 			} else {
 				isPlay = false;
 			}
-			// Say which lane to take, right after the manoeuvre it belongs to and before any
-			// "then keep left" for the turn after it, so the order matches the order they happen:
-			// "In 300 metres turn right, use the 2 right lanes, then keep left".
+			// Second half of the lane escalation, urgent tone: "in 300 metres turn right onto X,
+			// get on the right side now". Placed right after the manoeuvre it belongs to and
+			// before any "then keep left" for the turn after it, so the sentence runs in the same
+			// order the events do.
 			//
-			// This prompt is the one to attach it to. It fires at TURN_IN distance - far enough
-			// out to still change lanes, and it is the same moment the lane arrows appear on
-			// screen, so the words and the picture arrive together instead of contradicting each
-			// other. The "turn now" prompt deliberately does not repeat it: by then the lane
-			// choice has already been made or missed.
-			appendLaneGuidance(p, next.getTurnType());
+			// This is also the moment the lane arrows appear on the Android Auto screen, so the
+			// words and the picture arrive together instead of contradicting each other. The
+			// "turn now" prompt after this one deliberately stays silent about lanes: by then the
+			// choice has been made or missed, and one more sentence would only be noise.
+			appendLaneGuidance(p, next.getTurnType(), true);
 
 			// 'then keep' preparation for next after next. (Also announces an interim straight segment, which is not pronounced above.)
 			if (pronounceNextNext != null) {
@@ -791,18 +802,18 @@ public class VoiceRouter {
 	}
 
 	/**
-	 * Adds "use the 2 right lanes" to a turn prompt, in the voice package's language.
+	 * Adds "stay on the right side" to a turn prompt, in the voice package's language.
 	 *
 	 * <p>Localised against the voice language rather than the app language on purpose. The two are
 	 * set independently - an Arabic UI with an English voice is a normal configuration - and handing
 	 * Arabic text to an English TTS engine produces either silence or nonsense. {@link CommandPlayer}
 	 * knows which language it was loaded for, so that is what the sentence is built in.
 	 */
-	private void appendLaneGuidance(@Nullable CommandBuilder p, @Nullable TurnType turnType) {
+	private void appendLaneGuidance(@Nullable CommandBuilder p, @Nullable TurnType turnType, boolean urgent) {
 		if (p == null || turnType == null || !settings.ANNOUNCE_LANE_GUIDANCE.get()) {
 			return;
 		}
-		String hint = LaneHint.getHint(getVoiceLanguageContext(), turnType.getLanes());
+		String hint = LaneHint.getHint(getVoiceLanguageContext(), turnType.getLanes(), urgent);
 		p.addSpokenText(hint);
 	}
 
