@@ -1,8 +1,26 @@
 name: Sync with upstream OsmAnd
 
-# Imports new commits from the repository this fork is based on. Nothing is pushed to
-# master or dev and no build is triggered: every import lands on a throwaway sync branch
-# and is offered as a pull request.
+# Imports new commits from the repository this fork is based on. Every import lands on a
+# throwaway sync branch and is opened as a pull request; whether that pull request then
+# merges itself depends on what is in it.
+#
+#   Touches nothing CI executes  -> merged automatically, master and dev stay current
+#                                   without anyone doing anything.
+#   Touches a build script, the  -> left open for review. Gradle runs arbitrary code out of
+#   Gradle wrapper or a workflow    every *.gradle file it loads, and merging is what puts
+#                                   that code on a runner holding this fork's keys.
+#
+# That split is the point: the overwhelming majority of upstream commits are Java, Kotlin
+# and translations, which can only break the app - and the build catches that. The handful
+# that can actually attack the repository are the ones a human should look at, and they are
+# exactly the ones this leaves alone.
+#
+# WHERE THIS FILE HAS TO LIVE
+#   On the DEFAULT branch, or the schedule below never fires. GitHub reads `schedule:`
+#   triggers only from the default branch's copy of a workflow - a cron sitting on a
+#   feature branch is silently inert, with no error anywhere to say so. This fork learned
+#   that the hard way: the file lived only on dev for its first weeks and the daily sync
+#   never ran once. Keep it on master.
 #
 #   upstream/master --merge--> sync/upstream-master --PR--> master
 #                                       |
@@ -183,6 +201,15 @@ jobs:
             # repository rather than merely break it.
             executable="$(printf '%s\n' "${files}" \
               | grep -E '(\.gradle(\.kts)?|\.properties|gradlew(\.bat)?)$|^gradle/wrapper/|^\.github/(workflows|actions)/' || true)"
+            # An import that changes nothing CI executes cannot attack this repository - it can
+            # only break the app, which the build catches. Those merge themselves. Anything that
+            # touches a build script, the Gradle wrapper or a workflow waits for a human, because
+            # merging it is what puts that code on a runner.
+            if [ -n "${executable}" ]; then
+              echo "automerge=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "automerge=true" >> "$GITHUB_OUTPUT"
+            fi
             {
               echo "Merges \`${UPSTREAM_REPOSITORY}@${UPSTREAM_BRANCH}\` (\`${UPSTREAM_SHA}\`) into \`${MAIN_BRANCH}\`."
               echo
@@ -292,6 +319,33 @@ jobs:
           echo "number=${number}" >> "$GITHUB_OUTPUT"
           echo "url=$(gh pr view "${number}" --json url --jq .url)" >> "$GITHUB_OUTPUT"
 
+      - name: Merge the ${{ env.MAIN_BRANCH }} pull request
+        id: automerge_main
+        if: steps.pr_main.outputs.number != '' && steps.merge_main.outputs.automerge == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ steps.pr_main.outputs.number }}
+        run: |
+          set -uo pipefail
+          if gh pr merge "${NUMBER}" --merge; then
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+            echo "Merged pull request #${NUMBER} - the import touches nothing CI executes."
+          else
+            # Never fatal. A blocked merge just means the pull request stays open for a human,
+            # which is the same place an unsafe import would have ended up anyway.
+            echo "::warning::Could not merge pull request #${NUMBER} automatically; it is open for review."
+          fi
+          exit 0
+
+      # The dev sync branch is built from origin/dev, so it has to be rebuilt after the master
+      # pull request is merged - otherwise it would merge a MAIN_SYNC_BRANCH that no longer
+      # matches what master now contains. Cheap, and keeps the two sides consistent.
+      - name: Refresh ${{ env.MAIN_BRANCH }} after the automatic merge
+        if: steps.automerge_main.outputs.merged == 'true'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+refs/heads/${MAIN_BRANCH}:refs/remotes/origin/${MAIN_BRANCH}"
+
       # dev is only offered a merge from a master import that is itself clean, so a
       # conflicted master never leaks a partially merged tree into the development branch.
       # It runs even when upstream brought nothing new, because dev can still be behind a
@@ -341,6 +395,12 @@ jobs:
             file_count="$(printf '%s\n' "${files}" | grep -c . || true)"
             executable="$(printf '%s\n' "${files}" \
               | grep -E '(\.gradle(\.kts)?|\.properties|gradlew(\.bat)?)$|^gradle/wrapper/|^\.github/(workflows|actions)/' || true)"
+            # Same rule as on master; see the comment there.
+            if [ -n "${executable}" ]; then
+              echo "automerge=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "automerge=true" >> "$GITHUB_OUTPUT"
+            fi
             {
               echo "Merges the \`${UPSTREAM_REPOSITORY}@${UPSTREAM_BRANCH}\` import (\`${UPSTREAM_SHA}\`) into \`${DEV_BRANCH}\`."
               echo
@@ -447,6 +507,22 @@ jobs:
           echo "number=${number}" >> "$GITHUB_OUTPUT"
           echo "url=$(gh pr view "${number}" --json url --jq .url)" >> "$GITHUB_OUTPUT"
 
+      - name: Merge the ${{ env.DEV_BRANCH }} pull request
+        id: automerge_dev
+        if: steps.pr_dev.outputs.number != '' && steps.merge_dev.outputs.automerge == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ steps.pr_dev.outputs.number }}
+        run: |
+          set -uo pipefail
+          if gh pr merge "${NUMBER}" --merge; then
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+            echo "Merged pull request #${NUMBER} - the import touches nothing CI executes."
+          else
+            echo "::warning::Could not merge pull request #${NUMBER} automatically; it is open for review."
+          fi
+          exit 0
+
       - name: Report conflicts
         if: steps.merge_main.outputs.conflict == 'true' || steps.merge_dev.outputs.conflict == 'true'
         env:
@@ -542,21 +618,25 @@ jobs:
           MAIN_CONFLICT: ${{ steps.merge_main.outputs.conflict }}
           MAIN_CHANGED: ${{ steps.merge_main.outputs.changed }}
           MAIN_BLOCKED: ${{ steps.push_main.outputs.blocked }}
+          MAIN_MERGED: ${{ steps.automerge_main.outputs.merged }}
           DEV_CONFLICT: ${{ steps.merge_dev.outputs.conflict }}
           DEV_CHANGED: ${{ steps.merge_dev.outputs.changed }}
           DEV_BLOCKED: ${{ steps.push_dev.outputs.blocked }}
+          DEV_MERGED: ${{ steps.automerge_dev.outputs.merged }}
           DEV_MISSING: ${{ steps.merge_dev.outputs.missing }}
           NEW_COMMITS: ${{ steps.merge_main.outputs.new_commits }}
         run: |
           set -uo pipefail
           describe() {
-            # $1 conflict, $2 changed, $3 blocked, $4 pr url
+            # $1 conflict, $2 changed, $3 blocked, $4 pr url, $5 merged
             if [ "${1:-}" = "true" ]; then
               echo "conflicted - reported on the tracking issue, no pull request"
             elif [ "${3:-}" = "true" ]; then
               echo "not refreshed - the sync branch carries a manual commit"
+            elif [ "${5:-}" = "true" ]; then
+              echo "merged automatically - ${4:-}"
             elif [ "${2:-}" = "true" ] && [ -n "${4:-}" ]; then
-              echo "pull request ${4}"
+              echo "open for review (changes files CI executes) - ${4}"
             elif [ "${2:-}" = "false" ]; then
               echo "already up to date"
             else
@@ -566,16 +646,18 @@ jobs:
           {
             echo "## Upstream sync"
             echo
-            echo "Nothing is pushed to \`${MAIN_BRANCH}\` or \`${DEV_BRANCH}\` and no build is"
-            echo "triggered: merging a pull request below is what does that."
+            echo "Imports that touch no build script merge themselves. Imports that change a"
+            echo "\`*.gradle\` file, the Gradle wrapper or a workflow stay open for review, because"
+            echo "merging those is what puts upstream code on a runner holding this fork's keys."
+            echo "No build is dispatched from here either way."
             echo
             echo "| Target | Result |"
             echo "| --- | --- |"
             echo "| Upstream | \`${UPSTREAM_REPOSITORY}#${UPSTREAM_BRANCH}\` @ \`${UPSTREAM_SHA:-unknown}\` (${NEW_COMMITS:-0} new commits) |"
-            echo "| \`${MAIN_BRANCH}\` | $(describe "${MAIN_CONFLICT}" "${MAIN_CHANGED}" "${MAIN_BLOCKED}" "${MAIN_PR_URL}") |"
+            echo "| \`${MAIN_BRANCH}\` | $(describe "${MAIN_CONFLICT}" "${MAIN_CHANGED}" "${MAIN_BLOCKED}" "${MAIN_PR_URL}" "${MAIN_MERGED}") |"
             if [ "${DEV_MISSING:-}" = "true" ]; then
               echo "| \`${DEV_BRANCH}\` | branch does not exist - create it from \`${MAIN_BRANCH}\` |"
             else
-              echo "| \`${DEV_BRANCH}\` | $(describe "${DEV_CONFLICT}" "${DEV_CHANGED}" "${DEV_BLOCKED}" "${DEV_PR_URL}") |"
+              echo "| \`${DEV_BRANCH}\` | $(describe "${DEV_CONFLICT}" "${DEV_CHANGED}" "${DEV_BLOCKED}" "${DEV_PR_URL}" "${DEV_MERGED}") |"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
