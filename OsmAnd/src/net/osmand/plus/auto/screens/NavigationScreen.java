@@ -139,23 +139,48 @@ public final class NavigationScreen extends BaseAndroidAutoScreen implements Sur
 	public void onFrameRendered(@NonNull Canvas canvas, @NonNull Rect visibleArea, @NonNull Rect stableArea) {
 		SurfaceRenderer surfaceRenderer = getSurfaceRenderer();
 		if (surfaceRenderer != null) {
-			DrawSettings drawSettings = new DrawSettings(getCarContext().isDarkMode(), false, surfaceRenderer.getDensity());
-
-			alarmWidget.updateInfo(drawSettings, true);
-			speedometerWidget.updateInfo(drawSettings, drawSettings.isNightMode());
+			// This runs on the main looper, inside the head unit's locked canvas, at the full
+			// frame rate. What the two widgets DRAW has to happen every frame; what they
+			// RECOMPUTE does not - their content is speed and speed-limit data, which only
+			// changes when a new location fix arrives, roughly once a second against twenty
+			// frames. Recomputing it per frame meant SpeedometerWidget.updateInfo running two
+			// full getSpeedLimitInfo lookups and formatting two strings, and
+			// AlarmWidget.updateInfo walking the pending-alarm list, twenty times a second for
+			// nineteen identical answers.
+			//
+			// Gated on the fix itself rather than on a timer, so it stays exact: a new fix, or a
+			// day/night change, and the widgets rebuild; otherwise the cached bitmaps are drawn
+			// as before and nothing on screen differs.
+			boolean nightMode = getCarContext().isDarkMode();
+			Location location = getApp().getLocationProvider().getLastKnownLocation();
+			long fixTime = location != null ? location.getTime() : 0;
+			if (fixTime != lastWidgetFixTime || nightMode != lastWidgetNightMode) {
+				lastWidgetFixTime = fixTime;
+				lastWidgetNightMode = nightMode;
+				DrawSettings drawSettings = new DrawSettings(nightMode, false, surfaceRenderer.getDensity());
+				alarmWidget.updateInfo(drawSettings, true);
+				speedometerWidget.updateInfo(drawSettings, nightMode);
+			}
 
 			Bitmap alarmBitmap = alarmWidget.getWidgetBitmap();
 			Bitmap speedometerBitmap = speedometerWidget.getWidgetBitmap();
 
+			// null paint, not new Paint(): these are opaque blits with no filter or blend, so a
+			// default Paint changes nothing about the result - but each one carries a native peer
+			// registered with the GC, and there were two of them per frame.
 			if (speedometerBitmap != null) {
-				canvas.drawBitmap(speedometerBitmap, visibleArea.right - speedometerBitmap.getWidth() - 10, visibleArea.top + 10, new Paint());
+				canvas.drawBitmap(speedometerBitmap, visibleArea.right - speedometerBitmap.getWidth() - 10, visibleArea.top + 10, null);
 			}
 			if (alarmBitmap != null) {
 				int offset = speedometerBitmap != null ? speedometerBitmap.getWidth() : 0;
-				canvas.drawBitmap(alarmBitmap, visibleArea.right - alarmBitmap.getWidth() - 10 - offset, visibleArea.top + 10, new Paint());
+				canvas.drawBitmap(alarmBitmap, visibleArea.right - alarmBitmap.getWidth() - 10 - offset, visibleArea.top + 10, null);
 			}
 		}
 	}
+
+	/** Fix timestamp and theme the two car widgets were last rebuilt for - see onFrameRendered. */
+	private long lastWidgetFixTime = -1;
+	private boolean lastWidgetNightMode;
 
 	@Nullable
 	private SurfaceRenderer getSurfaceRenderer() {

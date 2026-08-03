@@ -543,7 +543,13 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 		//           offscreen size, which is what CAIRODRIVE_SURFACE_OVERSCAN controls.
 		//   blit  - copying that Bitmap onto the head unit's canvas. Also scales with size.
 		//   over  - OsmAnd's own overlay drawing, the only part that is ordinary Java work.
+		//   wdgt  - the car screen's own callback: the speedometer and alarm widgets, which
+		//           recompute and redraw themselves inside this locked canvas.
 		//   post  - handing the finished buffer back to the head unit.
+		//
+		// `wdgt` is split out because without it that work fell into `post`, and `post` is the
+		// bucket whose whole meaning is "the head unit is slow, nothing app-side can help".
+		// A drive log would have been read as unfixable when the cost was this app's own widgets.
 		// One drive with this in the log settles it.
 		boolean timing = CairoDriveLogger.isEnabled();
 		long frameStartNanos = timing ? System.nanoTime() : 0;
@@ -552,6 +558,7 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 		long readDoneNanos = lockDoneNanos;
 		long blitDoneNanos = lockDoneNanos;
 		long overDoneNanos = lockDoneNanos;
+		long widgetDoneNanos = lockDoneNanos;
 		try {
 			boolean newDarkMode = carContext.isDarkMode();
 			boolean updateVectorRendering = drawSettings.isUpdateVectorRendering() || darkMode != newDarkMode;
@@ -594,6 +601,9 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 					callback.onFrameRendered(canvas, visibleArea, stableArea);
 				}
 			}
+			if (timing) {
+				widgetDoneNanos = System.nanoTime();
+			}
 		} finally {
 			surface.unlockCanvasAndPost(canvas);
 			if (timing) {
@@ -603,7 +613,8 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 						(readDoneNanos - lockDoneNanos) / 1_000_000L,
 						(blitDoneNanos - readDoneNanos) / 1_000_000L,
 						(overDoneNanos - blitDoneNanos) / 1_000_000L,
-						(endNanos - overDoneNanos) / 1_000_000L);
+						(widgetDoneNanos - overDoneNanos) / 1_000_000L,
+						(endNanos - widgetDoneNanos) / 1_000_000L);
 			}
 		}
 	}
@@ -627,16 +638,18 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 	private long readSumMs;
 	private long blitSumMs;
 	private long overSumMs;
+	private long widgetSumMs;
 	private long postSumMs;
 
 	private void logFrameTiming(long wallMs, long lockMs, long readMs, long blitMs,
-	                            long overMs, long postMs) {
+	                            long overMs, long widgetMs, long postMs) {
 		frameCount++;
 		frameWallSumMs += wallMs;
 		lockSumMs += lockMs;
 		readSumMs += readMs;
 		blitSumMs += blitMs;
 		overSumMs += overMs;
+		widgetSumMs += widgetMs;
 		postSumMs += postMs;
 		if (wallMs > frameWallMaxMs) {
 			frameWallMaxMs = wallMs;
@@ -645,7 +658,7 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 			slowFrameCount++;
 			CairoDriveLogger.getInstance().log("CD_FRAME", "slow wallMs=" + wallMs
 					+ " lock=" + lockMs + " read=" + readMs + " blit=" + blitMs
-					+ " over=" + overMs + " post=" + postMs);
+					+ " over=" + overMs + " wdgt=" + widgetMs + " post=" + postMs);
 		}
 		if (frameCount >= FRAME_SUMMARY_INTERVAL) {
 			// The split is the whole point of the summary: whichever of these dominates is the
@@ -662,11 +675,13 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 					+ " avgRead=" + (readSumMs / frameCount)
 					+ " avgBlit=" + (blitSumMs / frameCount)
 					+ " avgOver=" + (overSumMs / frameCount)
+					+ " avgWidget=" + (widgetSumMs / frameCount)
 					+ " avgPost=" + (postSumMs / frameCount));
 			lockSumMs = 0;
 			readSumMs = 0;
 			blitSumMs = 0;
 			overSumMs = 0;
+			widgetSumMs = 0;
 			postSumMs = 0;
 			frameCount = 0;
 			frameWallSumMs = 0;

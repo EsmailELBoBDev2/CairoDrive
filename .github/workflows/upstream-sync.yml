@@ -199,8 +199,20 @@ jobs:
             # the workflow reading them holds, so they are hoisted to the top of the PR
             # body: they are the only part of an upstream import that can attack this
             # repository rather than merely break it.
+            # ALLOW-LIST, not a deny-list. The deny-list this replaces listed the build files
+            # someone thought of - *.gradle, *.properties, the wrapper, .github/workflows - and
+            # silently auto-merged everything else. It missed OsmAnd/old-ndk-build.sh, which
+            # build-common.gradle executes via `bash`, and OsmAnd/jni/*.mk, which are fed to
+            # ndk-build (GNU make, which runs $(shell ...)). An upstream edit to any of those
+            # would have merged itself onto a branch whose next build runs with this fork's
+            # Places key, and the pull request would have said "no build scripts in this import".
+            #
+            # Inverting it fixes the whole class rather than the three instances: content types
+            # that cannot execute are named explicitly, and ANYTHING else - a file extension
+            # nobody has thought of yet - waits for a human. That is the failure direction to
+            # choose when the cost of being wrong is a signing key.
             executable="$(printf '%s\n' "${files}" \
-              | grep -E '(\.gradle(\.kts)?|\.properties|gradlew(\.bat)?)$|^gradle/wrapper/|^\.github/(workflows|actions)/' || true)"
+              | grep -vE '\.(java|kt|xml|json|txt|md|png|webp|jpe?g|gif|svg|ttf|otf)$' || true)"
             # An import that changes nothing CI executes cannot attack this repository - it can
             # only break the app, which the build catches. Those merge themselves. Anything that
             # touches a build script, the Gradle wrapper or a workflow waits for a human, because
@@ -228,10 +240,10 @@ jobs:
                 printf '%s\n' "${executable}"
                 echo '```'
               else
-                echo "### No build scripts in this import"
+                echo "### Nothing executable in this import"
                 echo
-                echo "Nothing here matches \`*.gradle\`, \`*.properties\`, the Gradle wrapper"
-                echo "or \`.github/workflows\`, so merging it does not change what CI executes."
+                echo "Every changed file is source, markup or an image - nothing CI can run."
+                echo "Merged automatically."
               fi
               echo
               echo "### Upstream commits"
@@ -393,8 +405,20 @@ jobs:
 
             files="$(git diff --name-only "${before}" HEAD)"
             file_count="$(printf '%s\n' "${files}" | grep -c . || true)"
+            # ALLOW-LIST, not a deny-list. The deny-list this replaces listed the build files
+            # someone thought of - *.gradle, *.properties, the wrapper, .github/workflows - and
+            # silently auto-merged everything else. It missed OsmAnd/old-ndk-build.sh, which
+            # build-common.gradle executes via `bash`, and OsmAnd/jni/*.mk, which are fed to
+            # ndk-build (GNU make, which runs $(shell ...)). An upstream edit to any of those
+            # would have merged itself onto a branch whose next build runs with this fork's
+            # Places key, and the pull request would have said "no build scripts in this import".
+            #
+            # Inverting it fixes the whole class rather than the three instances: content types
+            # that cannot execute are named explicitly, and ANYTHING else - a file extension
+            # nobody has thought of yet - waits for a human. That is the failure direction to
+            # choose when the cost of being wrong is a signing key.
             executable="$(printf '%s\n' "${files}" \
-              | grep -E '(\.gradle(\.kts)?|\.properties|gradlew(\.bat)?)$|^gradle/wrapper/|^\.github/(workflows|actions)/' || true)"
+              | grep -vE '\.(java|kt|xml|json|txt|md|png|webp|jpe?g|gif|svg|ttf|otf)$' || true)"
             # Same rule as on master; see the comment there.
             if [ -n "${executable}" ]; then
               echo "automerge=false" >> "$GITHUB_OUTPUT"
@@ -425,10 +449,10 @@ jobs:
                 printf '%s\n' "${executable}"
                 echo '```'
               else
-                echo "### No build scripts in this import"
+                echo "### Nothing executable in this import"
                 echo
-                echo "Nothing here matches \`*.gradle\`, \`*.properties\`, the Gradle wrapper"
-                echo "or \`.github/workflows\`."
+                echo "Every changed file is source, markup or an image - nothing CI can run."
+                echo "Merged automatically."
               fi
               echo
               echo "### Commits"

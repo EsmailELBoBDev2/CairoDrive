@@ -49,6 +49,8 @@ import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.TimeZone;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -174,6 +176,44 @@ public class CairoDriveLogger {
 	 * {@code android.util.Log} with a private tag, plus the platform's own complaints about
 	 * skipped frames and dropped buffers - while dropping their routine chatter.
 	 */
+	/**
+	 * Strips credentials out of a captured logcat line before it is written to disk.
+	 *
+	 * <p>This is not hypothetical. OsmAnd builds its backup requests by appending every parameter
+	 * to the URL as a query string (AndroidNetworkUtils.uploadFile) and then logs the assembled
+	 * URL at INFO - and BackupHelper puts accessToken in those parameters. This fork asks logcat
+	 * for net.osmand:V and writes what comes back to a file, so without this every OsmAnd Cloud
+	 * sync would leave a live bearer token in app-scoped external storage for up to four days.
+	 * On API 24-29 any app holding READ_EXTERNAL_STORAGE can read that directory.
+	 *
+	 * <p>Redacting here rather than at the call site on purpose: the logger cannot know which of
+	 * the app's thousands of log statements will one day carry a secret, and upstream adds new
+	 * ones without consulting this fork. Filtering the pipe covers all of them, including the
+	 * ones that do not exist yet.
+	 */
+	private static final Pattern SECRET_PATTERN = Pattern.compile(
+			"(?i)\\b(accessToken|access_token|refresh_token|token|password|passwd|pwd|apikey|api_key"
+					+ "|key|secret|authorization|orderId|deviceid|userid|email)=([^&\\s\"']*)");
+
+	@NonNull
+	static String redactSecrets(@NonNull String line) {
+		if (line.indexOf('=') < 0) {
+			// Overwhelmingly the common case, and it makes the regex cost nothing on most lines.
+			return line;
+		}
+		Matcher matcher = SECRET_PATTERN.matcher(line);
+		if (!matcher.find()) {
+			return line;
+		}
+		StringBuffer out = new StringBuffer(line.length());
+		matcher.reset();
+		while (matcher.find()) {
+			matcher.appendReplacement(out, Matcher.quoteReplacement(matcher.group(1) + "=<redacted>"));
+		}
+		matcher.appendTail(out);
+		return out.toString();
+	}
+
 	private static final String[] LOGCAT_FILTERS = {
 			PlatformUtil.TAG + ":V",
 			"NavigationSession:V",
@@ -307,7 +347,20 @@ public class CairoDriveLogger {
 	 * OsmAnd subsystem is initialised - only {@link Context} file APIs are touched here.
 	 */
 	public synchronized void init(@NonNull OsmandApplication app) {
-		if (started || !isEnabled()) {
+		if (started) {
+			return;
+		}
+		if (!isEnabled()) {
+			// A build with logging compiled OUT still has to clear what a previous build wrote.
+			//
+			// Retention - 4 days, 40 files, 320 MB - is enforced only by CairoDriveLogWriter's
+			// prune(), which runs on the writer thread. With logging disabled that thread never
+			// starts, so nothing ever sweeps the directory: an in-place Play update from this
+			// internal-testing build to a logging-disabled public one would strand up to 320 MB
+			// of position history and search queries in Android/data indefinitely, until the
+			// user uninstalled. The retention window silently stops applying at exactly the
+			// moment it is being relied on.
+			deleteLogs(app);
 			return;
 		}
 		File directory = resolveLogDirectory(app);
@@ -511,6 +564,33 @@ public class CairoDriveLogger {
 	 * release - see {@code OsmAnd/cairodrive.gradle}.
 	 */
 	@Nullable
+	/**
+	 * Removes every log this fork has ever written. Called only when logging is compiled out -
+	 * see {@link #init}. Best effort and silent: a build with the logger disabled must not spend
+	 * startup time, or crash, on housekeeping for a feature it does not have.
+	 */
+	private void deleteLogs(@NonNull Context context) {
+		try {
+			File base = context.getExternalFilesDir(null);
+			File directory = base == null ? null : new File(base, LOG_DIR_NAME);
+			if (directory == null || !directory.isDirectory()) {
+				return;
+			}
+			File[] files = directory.listFiles();
+			if (files != null) {
+				for (File file : files) {
+					String name = file.getName();
+					if (name.startsWith("cairodrive-") && name.endsWith(".log")) {
+						file.delete();
+					}
+				}
+			}
+			directory.delete();
+		} catch (RuntimeException ignored) {
+			// Nothing to report to - the logger is off.
+		}
+	}
+
 	private File resolveLogDirectory(@NonNull Context context) {
 		File base = context.getExternalFilesDir(null);
 		if (base == null) {
@@ -1095,7 +1175,7 @@ public class CairoDriveLogger {
 						String line;
 						while (started && (line = reader.readLine()) != null) {
 							produced = true;
-							writer.write("LOGCAT| " + line);
+							writer.write("LOGCAT| " + redactSecrets(line));
 						}
 					}
 				} catch (IOException e) {
