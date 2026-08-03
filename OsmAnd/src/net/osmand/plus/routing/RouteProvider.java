@@ -1029,6 +1029,29 @@ public class RouteProvider {
 	private static final String NARROW_TAG = "CD_NARROW";
 
 	/**
+	 * Egyptian street-name words that mean "alley" outright, and the ones that mean "proper road".
+	 *
+	 * <p>Measured, not acted on - see {@link #logNarrowStreetCoverage}. An Overpass count of
+	 * central Cairo showed the tags the routing rules depend on cover at most 2.5% of the network
+	 * (width 14 ways out of 71922, surface 1.4%), while 74% of it is a bare highway=residential.
+	 * The one field that IS populated on those ways is the name, and Egyptian naming encodes width
+	 * by convention: an عطفة or a حارة is an alley by definition of what it is called, the same way
+	 * service=alley is. Whether that is worth building on depends on how much of the network
+	 * actually carries these words, which is what this counts.
+	 */
+	private static final String[] NARROW_NAME_WORDS = {"عطفة", "حارة", "زقاق", "درب", "ممر"};
+	private static final String[] WIDE_NAME_WORDS = {"شارع", "طريق", "كوبري", "محور", "ميدان", "كورنيش"};
+
+	private static boolean startsWithAny(@NonNull String name, @NonNull String[] words) {
+		for (String word : words) {
+			if (name.startsWith(word)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * Reports how much of the road the router just chose actually carries the tags the
 	 * "deprioritise narrow streets" option depends on.
 	 *
@@ -1061,12 +1084,22 @@ public class RouteProvider {
 			Set<Long> seen = new HashSet<>();
 			int ways = 0, width = 0, maxwidth = 0, lanes = 0, surface = 0, smoothness = 0;
 			int tracktype = 0, service = 0, actionable = 0;
+			int named = 0, narrowName = 0, wideName = 0;
 			for (RouteSegmentResult segment : segments) {
 				RouteDataObject obj = segment == null ? null : segment.getObject();
 				if (obj == null || !seen.add(obj.getId())) {
 					continue;
 				}
 				ways++;
+				String name = obj.getName();
+				if (name != null && !name.isEmpty()) {
+					named++;
+					if (startsWithAny(name, NARROW_NAME_WORDS)) {
+						narrowName++;
+					} else if (startsWithAny(name, WIDE_NAME_WORDS)) {
+						wideName++;
+					}
+				}
 				boolean any = false;
 				if (obj.getValue("width") != null) { width++; any = true; }
 				if (obj.getValue("maxwidth") != null) { maxwidth++; any = true; }
@@ -1086,7 +1119,8 @@ public class RouteProvider {
 					+ " actionable=" + actionable + " (" + (actionable * 100 / ways) + "%)"
 					+ " width=" + width + " maxwidth=" + maxwidth + " lanes=" + lanes
 					+ " surface=" + surface + " smoothness=" + smoothness
-					+ " tracktype=" + tracktype + " service=" + service);
+					+ " tracktype=" + tracktype + " service=" + service
+					+ " named=" + named + " nameAlley=" + narrowName + " nameStreet=" + wideName);
 		} catch (RuntimeException e) {
 			// Diagnostics must never be able to break a navigation calculation.
 			log.error(NARROW_TAG + " failed to measure tag coverage", e);
