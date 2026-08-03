@@ -94,6 +94,57 @@ masquerading as a Play build has wasted a drive before.
 | `CAIRODRIVE_FULL_LOGGING` | `true` | Both build types — a Play build must log or a drive produces nothing |
 | ABI | `arm64` | The only test device is a POCO C85 (`arm64-v8a`). Switch to `fat` before any wide rollout, or Play rejects it for stranding existing installs |
 
+## API keys — never write a value into this repo
+
+**No key, token or fingerprint value goes in a file, a commit message, or a comment.** A repo is
+forever and this one is on GitHub. Record the *name* and the *action*, never the secret. If a key
+value appears in chat, treat it as burned and say so — it is in a transcript.
+
+| Key | Where it lives | State |
+|---|---|---|
+| `GOOGLE_PLACES_API_KEY` | GitHub repository secret → `BuildConfig` → ships inside every APK | **Rotate.** A value was pasted into chat. It also ships in the APK by design, so it is only ever as safe as its restrictions |
+| Release keystore (`CAIRODRIVE_KEYSTORE_*` / `ANDROID_*`) | `production` GitHub Environment, reviewer-gated | Not rotatable — it is the app's identity on Play. A leak ends updates to the listing |
+
+**Owed on the Places key, both owner-side:**
+1. Register **only** the Play app-signing SHA-1 (Play Console → Setup → App integrity) plus a
+   private local dev key. Without it, search fails *only* on Play-installed builds — which looks
+   random, because sideloads keep working.
+2. **Remove the checked-in debug keystore's SHA-1.** That keystore is in the repo (inherited from
+   upstream, so it is in thousands of clones) with its password in plaintext. While its
+   fingerprint is registered, anyone with a dev APK can extract the key, rebuild as
+   `com.cairodrive.app`, sign with that public keystore, pass Google's package+cert check, and
+   bill it to this account. Set a daily quota cap too.
+
+Absence is handled gracefully: no key ⇒ offline OSM search (`GooglePlacesSearchApi` falls back,
+CI warns rather than failing). So revoking first and fixing later is safe.
+
+**Play Data safety:** required on every track including internal testing — not for the on-device
+logger, which never leaves the phone, but because Places search sends the user's typed query and
+their location to a third party. That is "Location — precise" + "App activity — search history".
+
+## Adding Places API features: one at a time, each one measured
+
+Today the integration is deliberately minimal: a single `places:searchText` call with the
+cheapest field mask that still supports a map pin and a context menu —
+`places.id,displayName,formattedAddress,location,types,primaryType`.
+
+**Google bills by the fields requested and by the endpoint.** Adding a field or a call can move
+the request to a different SKU, so a change that looks like one line is a change to the bill.
+Deferred, and to be added **one per build, each verified on a real drive before the next**:
+
+| Feature | Cost shape |
+|---|---|
+| Autocomplete as you type | New endpoint, billed per keystroke session — the most expensive thing on this list by far |
+| Place Details (hours, phone, rating) | New endpoint per tapped result |
+| Photos | New endpoint + bandwidth |
+| Nearby Search ("petrol near me") | New endpoint |
+| Extra fields on the existing call | Same call, higher SKU tier |
+
+Do not batch them. The reason is not caution for its own sake: with several landing together, a
+bill or a latency regression cannot be attributed, and `CD_SEARCH` traces in the drive log are the
+only measurement available. One change, one drive, one answer — the same rule the frame work
+follows.
+
 ## Measure before optimising
 
 Two things were nearly optimised blind and both would have been wrong: the nine performance
