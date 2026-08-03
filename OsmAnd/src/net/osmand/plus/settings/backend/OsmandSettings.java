@@ -3192,17 +3192,34 @@ public class OsmandSettings {
 	public static final String VOICE_PROVIDER_NOT_USE = "VOICE_PROVIDER_NOT_USE";
 
 	// this value could localized
+	/**
+	 * Voice language this fork prefers regardless of the phone's UI language.
+	 *
+	 * <p>Street names are spoken exactly as they are written in the map data, and in Cairo that
+	 * data is overwhelmingly Arabic. Handed to an English engine, an Arabic street name comes out
+	 * as noise or as nothing - which makes the single most useful part of a turn prompt useless.
+	 * An Arabic engine reads both the instruction and the street name correctly, so it is the
+	 * right default here even for someone running the interface in English.
+	 *
+	 * <p>Only a default. Changing the voice in settings still works, and if no Arabic voice
+	 * package exists the phone's own language is used exactly as upstream would.
+	 */
+	private static final String PREFERRED_VOICE_LANGUAGE = "ar";
+
 	public final OsmandPreference<String> VOICE_PROVIDER = new StringPreference(this, "voice_provider", null) {
 		@Override
 		public String getProfileDefaultValue(ApplicationMode mode) {
-			String language = ctx.getResources().getConfiguration().locale.getLanguage();
 			Map<String, IndexItem> supportedTTS = getSupportedTtsByLanguages(ctx);
-			IndexItem index = supportedTTS.get(language);
-			if (index != null) {
-				if (!index.isDownloaded() && (ctx.isApplicationInitializing() || !index.isDownloading(ctx))) {
-					downloadTtsWithoutInternet(ctx, index);
+			String deviceLanguage = ctx.getResources().getConfiguration().locale.getLanguage();
+			// Arabic first, the phone's own language second. Upstream only ever tries the latter.
+			for (String language : new String[] {PREFERRED_VOICE_LANGUAGE, deviceLanguage}) {
+				IndexItem index = supportedTTS.get(language);
+				if (index != null) {
+					if (!index.isDownloaded() && (ctx.isApplicationInitializing() || !index.isDownloading(ctx))) {
+						downloadTtsWithoutInternet(ctx, index);
+					}
+					return language + IndexConstants.VOICE_PROVIDER_SUFFIX;
 				}
-				return language + IndexConstants.VOICE_PROVIDER_SUFFIX;
 			}
 			return VOICE_PROVIDER_NOT_USE;
 		}

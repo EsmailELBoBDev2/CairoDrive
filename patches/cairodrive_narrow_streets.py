@@ -69,8 +69,12 @@ import sys
 
 PARAM_ID = "avoid_narrow_streets"
 
+# default="true" is read by RoutingConfiguration.parseRoutingParameter into
+# RoutingParameter.defaultBoolean, which is what OsmandSettings.getCustomRoutingBooleanProperty
+# is handed as the preference default. So this is what makes the option ON out of the box without
+# any app-side code: the user can still turn it off in Route parameters.
 PARAM_DECL = (
-    '\t\t<parameter id="%s" name="Deprioritise narrow streets"'
+    '\t\t<parameter id="%s" name="Deprioritise narrow streets" default="true"'
     ' description="Strongly prefer wider roads. Narrow streets are still used when they'
     ' are the only way to the destination." type="boolean"/>\n' % PARAM_ID
 )
@@ -113,6 +117,7 @@ RULES = """
 				     road" - they mean it. Highest-precision signal available without a survey.
 				     Tracktype comes first so a graded track keeps its specific value instead of
 				     being swallowed by the generic highway=track rule below it. -->
+				<select value="0.25" t="tracktype" v="grade5"/>
 				<select value="0.30" t="tracktype" v="grade4"/>
 				<select value="0.45" t="tracktype" v="grade3"/>
 				<select value="0.15" t="service" v="alley"/>
@@ -134,7 +139,29 @@ RULES = """
 				<select value="0.25" t="surface" v="mud"/>
 				<select value="0.25" t="surface" v="sand"/>
 				<select value="0.30" t="surface" v="grass"/>
+				<select value="0.30" t="surface" v="gravel"/>
+				<select value="0.30" t="surface" v="fine_gravel"/>
+				<select value="0.30" t="surface" v="pebblestone"/>
 				<select value="0.40" t="surface" v="unpaved"/>
+				<select value="0.45" t="surface" v="compacted"/>
+				<!-- Cobbles and setts are paved and perfectly drivable, so the penalty is mild.
+				     They are here because in Cairo they overwhelmingly mark the old quarters,
+				     where the streets they surface are narrow by construction. -->
+				<select value="0.35" t="surface" v="cobblestone"/>
+				<select value="0.35" t="surface" v="sett"/>
+
+				<!-- Tier 3b: surveyed ride quality. Same standing as surface - positively
+				     surveyed, never inferred - and the same caveat: it measures how rough a road
+				     is, not how wide. It earns its place because in Cairo's informal areas the
+				     rough streets and the narrow streets are largely the same streets, and
+				     because smoothness is one of the few tags the router can actually see.
+				     Kept mild at the common end: "bad" only means a car needs decent wheels, and
+				     it is tagged on plenty of ordinary through-roads. -->
+				<select value="0.10" t="smoothness" v="impassable"/>
+				<select value="0.15" t="smoothness" v="very_horrible"/>
+				<select value="0.20" t="smoothness" v="horrible"/>
+				<select value="0.30" t="smoothness" v="very_bad"/>
+				<select value="0.45" t="smoothness" v="bad"/>
 
 				<!-- Tier 4: one lane shared in both directions - two cars cannot pass. Weaker
 				     than the above because lanes=1 is sometimes tagged on wide one-way roads,

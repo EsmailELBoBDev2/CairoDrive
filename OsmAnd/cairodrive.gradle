@@ -55,6 +55,23 @@ def drivingView = drivingViewEnv?.trim() ? drivingViewEnv.trim() : "false"
 def offRouteEnv = System.getenv("CAIRODRIVE_OFFROUTE_HYSTERESIS")
 def offRouteHysteresis = offRouteEnv?.trim() ? offRouteEnv.trim() : "false"
 
+// How much WIDER than the head unit's screen the offscreen map is rendered, as a fraction.
+// Upstream uses 0.5 - half a screen of extra width, rendered every frame and then cropped.
+//
+// It buys one thing: when the Android Auto card panel changes size, the visible window can
+// slide across the already-rendered image without asking the map core to re-render. It costs
+// that on every single frame, in the most expensive part of the Android Auto pipeline - the
+// map is read back from the GPU into a Bitmap and then blitted onto the head unit's canvas,
+// and at 0.5 both of those copies move 50% more pixels than are ever displayed. On a 1920-wide
+// head unit that is 2880x1080 read and copied per frame to show 1920x1080.
+//
+// Zero is not an untested path: the shift is also implemented in the camera itself
+// (cameraCenterShiftX in SurfaceRenderer.changeVisibleArea), and that is the branch the
+// non-OpenGL renderer has always used. Set CAIRODRIVE_SURFACE_OVERSCAN=0.5 to restore
+// upstream behaviour if the panel transition looks wrong on a real head unit.
+def overscanEnv = System.getenv("CAIRODRIVE_SURFACE_OVERSCAN")
+def surfaceOverscan = overscanEnv?.trim() ? overscanEnv.trim() : "0.0"
+
 // Keep bulk transfers off a metered connection unless the user asks for them explicitly.
 // This fork is driven on Egyptian mobile data, where an unattended download is a bill rather
 // than an inconvenience, and CAIRODRIVE_UNLOCK_PRO hands the user features - weather most of
@@ -109,6 +126,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_DRIVING_VIEW", drivingView
 			buildConfigField "boolean", "CAIRODRIVE_OFFROUTE_HYSTERESIS", offRouteHysteresis
 			buildConfigField "boolean", "CAIRODRIVE_DATA_SAVER", dataSaver
+			buildConfigField "float", "CAIRODRIVE_SURFACE_OVERSCAN", surfaceOverscan + "f"
 		}
 		release {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
@@ -117,6 +135,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_DRIVING_VIEW", drivingView
 			buildConfigField "boolean", "CAIRODRIVE_OFFROUTE_HYSTERESIS", offRouteHysteresis
 			buildConfigField "boolean", "CAIRODRIVE_DATA_SAVER", dataSaver
+			buildConfigField "float", "CAIRODRIVE_SURFACE_OVERSCAN", surfaceOverscan + "f"
 		}
 	}
 }

@@ -30,6 +30,7 @@ import net.osmand.core.android.MapRendererView.MapRendererViewListener;
 import net.osmand.core.jni.ZoomLevel;
 import net.osmand.data.RotatedTileBox;
 import net.osmand.plus.AppInitializeListener;
+import net.osmand.plus.BuildConfig;
 import net.osmand.plus.AppInitializer;
 import net.osmand.plus.OsmAndConstants;
 import net.osmand.plus.cairodrive.CairoDriveLogger;
@@ -95,7 +96,13 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 
 	private SurfaceRendererCallback callback;
 
-	private static final float surfaceWidthMultiply = 0.5f;
+	/**
+	 * Extra offscreen width, as a fraction of the head unit's screen. See
+	 * CAIRODRIVE_SURFACE_OVERSCAN in cairodrive.gradle for why this defaults to 0 here and 0.5
+	 * upstream: at 0.5 the per-frame GPU readback and canvas blit each move 50% more pixels than
+	 * are ever displayed, and those two copies are the bulk of an Android Auto frame.
+	 */
+	private static final float surfaceWidthMultiply = BuildConfig.CAIRODRIVE_SURFACE_OVERSCAN;
 	private int surfaceAdditionalWidth = 0;
 	// Ratios are calculated dynamically using surfaceWidthMultiply
 	private float minRatio = 0.5f;
@@ -528,8 +535,23 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 		// This whole method runs on the main looper, so its wall time is exactly the head-unit
 		// stutter a driver feels. Logged to the on-device file (not logcat, which MIUI filters)
 		// so "did the Android Auto smoothing work" is a grep over a pulled log rather than a guess.
-		long frameStartNanos = CairoDriveLogger.isEnabled() ? System.nanoTime() : 0;
+		// Timed in five parts, because "the frame took 90 ms" does not say what to fix and the
+		// candidates want completely different answers:
+		//   lock  - waiting for the head unit to hand back a buffer. Nothing app-side helps;
+		//           it means the display pipeline, not this code, is the bottleneck.
+		//   read  - pulling the rendered map out of the GPU into a Bitmap. Scales with the
+		//           offscreen size, which is what CAIRODRIVE_SURFACE_OVERSCAN controls.
+		//   blit  - copying that Bitmap onto the head unit's canvas. Also scales with size.
+		//   over  - OsmAnd's own overlay drawing, the only part that is ordinary Java work.
+		//   post  - handing the finished buffer back to the head unit.
+		// One drive with this in the log settles it.
+		boolean timing = CairoDriveLogger.isEnabled();
+		long frameStartNanos = timing ? System.nanoTime() : 0;
 		Canvas canvas = surface.lockCanvas(null);
+		long lockDoneNanos = timing ? System.nanoTime() : 0;
+		long readDoneNanos = lockDoneNanos;
+		long blitDoneNanos = lockDoneNanos;
+		long overDoneNanos = lockDoneNanos;
 		try {
 			boolean newDarkMode = carContext.isDarkMode();
 			boolean updateVectorRendering = drawSettings.isUpdateVectorRendering() || darkMode != newDarkMode;
@@ -537,6 +559,9 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 			drawSettings = new DrawSettings(newDarkMode, updateVectorRendering);
 			Bitmap mapBitmap = offscreenMapRendererView != null && firstFrameReady
 					? offscreenMapRendererView.getBitmap() : null;
+			if (timing) {
+				readDoneNanos = System.nanoTime();
+			}
 			if (mapBitmap != null) {
 				// No drawColor() first: the map bitmap is opaque and covers the whole surface,
 				// so clearing underneath it was a full-screen fill discarded on the very next
@@ -554,7 +579,13 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 				// rather than a broken screen.
 				canvas.drawColor(newDarkMode ? EMPTY_FRAME_NIGHT_COLOR : EMPTY_FRAME_DAY_COLOR);
 			}
+			if (timing) {
+				blitDoneNanos = System.nanoTime();
+			}
 			mapView.drawOverMap(canvas, tileBox, drawSettings);
+			if (timing) {
+				overDoneNanos = System.nanoTime();
+			}
 			SurfaceRendererCallback callback = this.callback;
 			if (callback != null) {
 				Rect visibleArea = this.visibleArea;
@@ -565,8 +596,14 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 			}
 		} finally {
 			surface.unlockCanvasAndPost(canvas);
-			if (frameStartNanos != 0) {
-				logFrameTiming((System.nanoTime() - frameStartNanos) / 1_000_000L);
+			if (timing) {
+				long endNanos = System.nanoTime();
+				logFrameTiming((endNanos - frameStartNanos) / 1_000_000L,
+						(lockDoneNanos - frameStartNanos) / 1_000_000L,
+						(readDoneNanos - lockDoneNanos) / 1_000_000L,
+						(blitDoneNanos - readDoneNanos) / 1_000_000L,
+						(overDoneNanos - blitDoneNanos) / 1_000_000L,
+						(endNanos - overDoneNanos) / 1_000_000L);
 			}
 		}
 	}
@@ -586,20 +623,51 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 	 * frames gives the steady state. The file writer is non-blocking, so this never adds to the
 	 * frame it is measuring, and the whole method is skipped when file logging is compiled out.
 	 */
-	private void logFrameTiming(long wallMs) {
+	private long lockSumMs;
+	private long readSumMs;
+	private long blitSumMs;
+	private long overSumMs;
+	private long postSumMs;
+
+	private void logFrameTiming(long wallMs, long lockMs, long readMs, long blitMs,
+	                            long overMs, long postMs) {
 		frameCount++;
 		frameWallSumMs += wallMs;
+		lockSumMs += lockMs;
+		readSumMs += readMs;
+		blitSumMs += blitMs;
+		overSumMs += overMs;
+		postSumMs += postMs;
 		if (wallMs > frameWallMaxMs) {
 			frameWallMaxMs = wallMs;
 		}
 		if (wallMs >= SLOW_FRAME_MS) {
 			slowFrameCount++;
-			CairoDriveLogger.getInstance().log("CD_FRAME", "slow wallMs=" + wallMs);
+			CairoDriveLogger.getInstance().log("CD_FRAME", "slow wallMs=" + wallMs
+					+ " lock=" + lockMs + " read=" + readMs + " blit=" + blitMs
+					+ " over=" + overMs + " post=" + postMs);
 		}
 		if (frameCount >= FRAME_SUMMARY_INTERVAL) {
+			// The split is the whole point of the summary: whichever of these dominates is the
+			// thing to fix, and they have different fixes. A large `lock` means the head unit is
+			// the bottleneck and no app-side change will help. Large `read` or `blit` means the
+			// per-frame GPU readback and canvas copy dominate, which is what the overscan setting
+			// attacks. A large `over` would mean OsmAnd's own overlay drawing, the only part that
+			// is plain Java and the only part easily optimised further.
 			CairoDriveLogger.getInstance().log("CD_FRAME", "summary frames=" + frameCount
 					+ " avgMs=" + (frameWallSumMs / frameCount)
-					+ " maxMs=" + frameWallMaxMs + " slow=" + slowFrameCount);
+					+ " maxMs=" + frameWallMaxMs + " slow=" + slowFrameCount
+					+ " overscan=" + surfaceWidthMultiply
+					+ " avgLock=" + (lockSumMs / frameCount)
+					+ " avgRead=" + (readSumMs / frameCount)
+					+ " avgBlit=" + (blitSumMs / frameCount)
+					+ " avgOver=" + (overSumMs / frameCount)
+					+ " avgPost=" + (postSumMs / frameCount));
+			lockSumMs = 0;
+			readSumMs = 0;
+			blitSumMs = 0;
+			overSumMs = 0;
+			postSumMs = 0;
 			frameCount = 0;
 			frameWallSumMs = 0;
 			frameWallMaxMs = 0;

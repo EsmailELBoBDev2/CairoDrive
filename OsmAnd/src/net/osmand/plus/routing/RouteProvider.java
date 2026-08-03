@@ -15,6 +15,7 @@ import net.osmand.ResultMatcher;
 import net.osmand.plus.settings.enums.RouteCalculationMethod;
 import net.osmand.plus.shared.SharedUtil;
 import net.osmand.binary.BinaryMapIndexReader;
+import net.osmand.binary.RouteDataObject;
 import net.osmand.data.LatLon;
 import net.osmand.gpx.GPXFile;
 import net.osmand.plus.OsmandApplication;
@@ -1020,6 +1021,75 @@ public class RouteProvider {
 		} catch (RuntimeException e) {
 			// Diagnostics must never be able to break a navigation calculation.
 			log.error(TIMING_TAG + " failed to log timing", e);
+		}
+		logNarrowStreetCoverage(result);
+	}
+
+	/** Grep handle for the narrow-street data coverage line. */
+	private static final String NARROW_TAG = "CD_NARROW";
+
+	/**
+	 * Reports how much of the road the router just chose actually carries the tags the
+	 * "deprioritise narrow streets" option depends on.
+	 *
+	 * <p>Why this exists rather than a cleverer routing rule. That option can only act on tags
+	 * that are positively present - a width, a surface, a service classification. Inferring
+	 * narrowness from ABSENT data is not something that can be done accurately: in an under-mapped
+	 * city the absence of a width tag is the normal state of a perfectly good four-lane road, so
+	 * any rule of the form "untagged residential means narrow" penalises most of Cairo and makes
+	 * routing worse. There is no honest proxy, so the question "does this option do anything on
+	 * the roads I actually drive" has to be answered with a measurement instead of a guess.
+	 *
+	 * <p>This is that measurement, and it is taken on the real route rather than on a sample of
+	 * the city, which makes it the right population: one drive produces a line saying exactly what
+	 * fraction of the roads used were taggeable at all, and which rule tier could have fired.
+	 * If coverage turns out to be near zero the answer is to improve OSM, or to drop the feature -
+	 * not to invent a proxy for it.
+	 *
+	 * <p>Counted per distinct way, not per segment, so a long road split into forty pieces does
+	 * not swamp the numbers.
+	 */
+	private void logNarrowStreetCoverage(@Nullable RouteResultPreparation.RouteCalcResult result) {
+		if (!CairoDriveLogger.isEnabled() || result == null || !result.isCorrect()) {
+			return;
+		}
+		try {
+			List<RouteSegmentResult> segments = result.getList();
+			if (segments == null || segments.isEmpty()) {
+				return;
+			}
+			Set<Long> seen = new HashSet<>();
+			int ways = 0, width = 0, maxwidth = 0, lanes = 0, surface = 0, smoothness = 0;
+			int tracktype = 0, service = 0, actionable = 0;
+			for (RouteSegmentResult segment : segments) {
+				RouteDataObject obj = segment == null ? null : segment.getObject();
+				if (obj == null || !seen.add(obj.getId())) {
+					continue;
+				}
+				ways++;
+				boolean any = false;
+				if (obj.getValue("width") != null) { width++; any = true; }
+				if (obj.getValue("maxwidth") != null) { maxwidth++; any = true; }
+				if (obj.getValue("lanes") != null) { lanes++; any = true; }
+				if (obj.getValue("surface") != null) { surface++; any = true; }
+				if (obj.getValue("smoothness") != null) { smoothness++; any = true; }
+				if (obj.getValue("tracktype") != null) { tracktype++; any = true; }
+				if (obj.getValue("service") != null) { service++; any = true; }
+				if (any) {
+					actionable++;
+				}
+			}
+			if (ways == 0) {
+				return;
+			}
+			CairoDriveLogger.getInstance().log(NARROW_TAG, "ways=" + ways
+					+ " actionable=" + actionable + " (" + (actionable * 100 / ways) + "%)"
+					+ " width=" + width + " maxwidth=" + maxwidth + " lanes=" + lanes
+					+ " surface=" + surface + " smoothness=" + smoothness
+					+ " tracktype=" + tracktype + " service=" + service);
+		} catch (RuntimeException e) {
+			// Diagnostics must never be able to break a navigation calculation.
+			log.error(NARROW_TAG + " failed to measure tag coverage", e);
 		}
 	}
 
