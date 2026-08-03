@@ -991,7 +991,21 @@ public class RouteProvider {
 					.append(" warm=").append(warmHHContext ? 1 : 0)
 					.append(" reuse=").append(reuseCount)
 					.append(" setup=").append(ms(setupNanos))
-					.append(" search=").append(ms(searchNanos));
+					.append(" search=").append(ms(searchNanos))
+					// OsmAnd's own verdict on whether the fast Highway-Hierarchy path actually
+					// worked - which nothing here was recording. engine=hh-cpp only says which
+					// planner was ASKED; this says what happened. SUCCESS means the precomputed
+					// shortcuts in the .obf were used. Anything FAILED_* means the route was
+					// produced the slow way, and the enum names the reason:
+					//   FAILED_UNSUPPORTED_PARAMETERS - a routing parameter is set to a value the
+					//     HH index was not built for. HHRoutePlanner.matchGroupRoutingParams counts
+					//     a parameter as unsupported only when it DIFFERS FROM ITS DECLARED
+					//     DEFAULT, so a profile left alone is fine and a customised one may not be.
+					//   FAILED_NO_HH_ROUTING_DATA - the map carries no HH index at all.
+					//   FAILED_WITH_MIXED_MAPS / MISSING_MAPS / NEED_MORE_LAND_MAPS - map coverage.
+					// Without this, a degraded route and a fast one look identical in the log -
+					// which is how five hypotheses came to be tested against the wrong number.
+					.append(" fast=").append(fastRoutingStatus(progress));
 			if (progress != null) {
 				sb.append(" find=").append(ms(progress.timeToFindInitialSegments))
 						.append(" load=").append(ms(progress.timeToLoad))
@@ -1124,6 +1138,23 @@ public class RouteProvider {
 		} catch (RuntimeException e) {
 			// Diagnostics must never be able to break a navigation calculation.
 			log.error(NARROW_TAG + " failed to measure tag coverage", e);
+		}
+	}
+
+	/**
+	 * OsmAnd's fast-routing verdict as a short token, or {@code n/a} when the progress object
+	 * does not carry one. Defensive: this reads an enum that crosses the JNI boundary.
+	 */
+	@NonNull
+	private static String fastRoutingStatus(@Nullable RouteCalculationProgress progress) {
+		if (progress == null) {
+			return "n/a";
+		}
+		try {
+			FastRoutingState.Status status = progress.getFastRoutingStatus();
+			return status == null ? "n/a" : status.name();
+		} catch (RuntimeException e) {
+			return "n/a";
 		}
 	}
 
