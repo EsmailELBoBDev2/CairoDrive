@@ -102,21 +102,32 @@ value appears in chat, treat it as burned and say so — it is in a transcript.
 
 | Key | Where it lives | State |
 |---|---|---|
-| `GOOGLE_PLACES_API_KEY` | GitHub repository secret → `BuildConfig` → ships inside every APK | **Rotate.** A value was pasted into chat. It also ships in the APK by design, so it is only ever as safe as its restrictions |
+| `GOOGLE_PLACES_API_KEY` | GitHub repository secret → `BuildConfig` → ships inside every APK | Restricted by package + SHA-1, daily quota capped. Rotation declined — see below |
 | Release keystore (`CAIRODRIVE_KEYSTORE_*` / `ANDROID_*`) | `production` GitHub Environment, reviewer-gated | Not rotatable — it is the app's identity on Play. A leak ends updates to the listing |
 
-**Owed on the Places key, both owner-side:**
-1. Register **only** the Play app-signing SHA-1 (Play Console → Setup → App integrity) plus a
-   private local dev key. Without it, search fails *only* on Play-installed builds — which looks
-   random, because sideloads keep working.
-2. **Remove the checked-in debug keystore's SHA-1.** That keystore is in the repo (inherited from
-   upstream, so it is in thousands of clones) with its password in plaintext. While its
-   fingerprint is registered, anyone with a dev APK can extract the key, rebuild as
-   `com.cairodrive.app`, sign with that public keystore, pass Google's package+cert check, and
-   bill it to this account. Set a daily quota cap too.
+### Decided — do not re-raise these
+
+The owner has settled all three. They are recorded so a later session does not reopen them.
+
+| | Decision | Why it holds |
+|---|---|---|
+| Daily quota cap | **Set** | This is the control that actually bounds the bill, and the only one an attacker cannot forge around |
+| Rotate the key | **No** | Owner's call, made with the exposure understood |
+| SHA-1 restriction | **Leave as is** | Package + SHA-1 restriction is registered and search works. Changing it would break Places on the builds he actually installs |
+
+Context, not an argument to re-litigate: an Android app restriction is a deterrent, not a
+boundary. `GooglePlacesSearchApi:450` sends `X-Android-Package` and `X-Android-Cert` as plain
+headers with no cryptographic proof, and both values are public — the package name from the Play
+listing, the signing SHA-1 from any downloaded APK. The quota cap is therefore doing the real
+work here, which is why the decision above is sound rather than merely accepted.
+
+One live fact worth keeping: `keystores/debug.keystore` is committed in this repo with its
+password in plaintext (inherited from upstream, so it exists in thousands of clones). Its SHA-1
+is `E6:FA:...:CD` — do not treat a build signed with it as trusted, and never register it against
+anything new.
 
 Absence is handled gracefully: no key ⇒ offline OSM search (`GooglePlacesSearchApi` falls back,
-CI warns rather than failing). So revoking first and fixing later is safe.
+CI warns rather than failing).
 
 **Play Data safety:** required on every track including internal testing — not for the on-device
 logger, which never leaves the phone, but because Places search sends the user's typed query and
