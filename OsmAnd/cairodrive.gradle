@@ -34,12 +34,26 @@ def proUnlocked = unlockPro?.trim() ? unlockPro.trim() : "true"
 
 // Start navigating on the vehicle arrow, close in and tilted, instead of on a zoomed-out
 // view of the whole route. See CairoDriveNavigationView.
-// OFF by default alongside the hysteresis, for the same reason: it changes the camera at the
-// moment navigation starts, it has never been verified on a real drive, and the owner reports
-// the start of navigation as one of the places the app stutters. Stock camera behaviour until
-// there is a log that says otherwise.
+//
+// ON as of the owner's report that the map starts flat and top-down rather than at ground
+// level the way Google Maps and Waze do. That is not a missing feature, it is a chicken-and-egg
+// in upstream: MapViewTrackingUtilities only applies AUTO_ZOOM_3D_ANGLE when the map is ALREADY
+// tilted (`getElevationAngle() != DEFAULT_ELEVATION_ANGLE`), and DEFAULT is 90 - flat. Anyone
+// who has never tilted the map by hand therefore never gets the 3D view, no matter what the
+// setting says. The car profile's AUTO_ZOOM_3D_ANGLE has defaulted to 40 the whole time and
+// never once fired. This substitutes it when the stored angle is flat.
+//
+// It also stops a mid-drive recalculation yanking the head unit back to the whole-route view,
+// which additionally resets rotation to north and the camera to flat.
+//
+// Was off pending evidence, on the theory that changing the camera at the moment navigation
+// starts might be the reported stutter. That was precaution, not measurement. The honest risk
+// is the opposite one and it is worth watching for: a tilted camera sees FURTHER, so more tiles
+// are in frame and every frame draws more. If CD_FRAME's `over` bucket or avgMs is worse on the
+// drive that follows this, that is why - set CAIRODRIVE_DRIVING_VIEW=false and it is back to
+// flat.
 def drivingViewEnv = System.getenv("CAIRODRIVE_DRIVING_VIEW")
-def drivingView = drivingViewEnv?.trim() ? drivingViewEnv.trim() : "false"
+def drivingView = drivingViewEnv?.trim() ? drivingViewEnv.trim() : "true"
 
 // Require corroboration from several fixes before a deviation costs a route recalculation.
 // See CairoDriveOffRoute.
