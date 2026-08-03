@@ -5,6 +5,7 @@ import static net.osmand.plus.views.MapViewWithLayers.SYMBOLS_UPDATE_INTERVAL;
 
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Message;
@@ -103,6 +104,20 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 	 * are ever displayed, and those two copies are the bulk of an Android Auto frame.
 	 */
 	private static final float surfaceWidthMultiply = BuildConfig.CAIRODRIVE_SURFACE_OVERSCAN;
+
+	/**
+	 * Fraction of the head unit's resolution the map is rendered at - see CAIRODRIVE_RENDER_SCALE
+	 * in cairodrive.gradle. 1.0 is native size and the default.
+	 * <p>
+	 * Below 1.0 the offscreen renderer produces a smaller bitmap which is stretched onto the car
+	 * canvas. Both of the expensive per-frame steps - the GPU readback and the software blit -
+	 * scale with pixel count, so 0.75 moves 44% fewer pixels through each. It costs sharpness,
+	 * which is why the default changes nothing.
+	 */
+	private static final float renderScale = BuildConfig.CAIRODRIVE_RENDER_SCALE;
+	/** Reused; allocating a Paint per frame is what the widget path was just fixed for. */
+	private final Paint upscalePaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+	private final Rect blitDst = new Rect();
 	private int surfaceAdditionalWidth = 0;
 	// Ratios are calculated dynamically using surfaceWidthMultiply
 	private float minRatio = 0.5f;
@@ -441,7 +456,12 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 							boolean enableMSAA = getApp().getSettings().ENABLE_MSAA.get();
 
 							mapRendererContext.presetMapRendererOptions(offscreenMapRendererView, enableMSAA);
-							offscreenMapRendererView.setupRenderer(carContext, getWidth(), getHeight(), mapRendererView);
+							// Scaled dimensions, not the surface's. The phone path passes 0,0 which puts
+							// the core in window mode; the car path passes explicit sizes, so this is
+							// simply how big the offscreen framebuffer is - and therefore how many
+							// pixels are read back and blitted every frame.
+							offscreenMapRendererView.setupRenderer(carContext, scaled(getWidth()),
+									scaled(getHeight()), mapRendererView);
 							offscreenMapRendererView.setMinZoomLevel(ZoomLevel.swigToEnum(mapView.getMinZoom()));
 							offscreenMapRendererView.setMaxZoomLevel(ZoomLevel.swigToEnum(mapView.getMaxZoom()));
 							offscreenMapRendererView.setAzimuth(0);
@@ -487,6 +507,11 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 			}
 			offscreenMapRendererView = null;
 		}
+	}
+
+	/** Applies {@link #renderScale}, never returning 0 - a zero-sized framebuffer is not valid. */
+	private static int scaled(int value) {
+		return Math.max(1, Math.round(value * renderScale));
 	}
 
 	public int getWidth() {
@@ -583,14 +608,23 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 				// or a panel resize an older, smaller bitmap is blitted at (0,0) onto a bigger
 				// canvas. lockCanvas returns an uncleared swap-chain buffer, so the uncovered
 				// strip would show a stale frame rather than background.
-				if (mapBitmap.getWidth() < canvas.getWidth() || mapBitmap.getHeight() < canvas.getHeight()) {
+				if (renderScale == 1.0f
+						&& (mapBitmap.getWidth() < canvas.getWidth() || mapBitmap.getHeight() < canvas.getHeight())) {
 					canvas.drawColor(newDarkMode ? EMPTY_FRAME_NIGHT_COLOR : EMPTY_FRAME_DAY_COLOR);
 				}
-				float leftOffset = 0.0f;
-				if (surfaceAdditionalWidth != 0) {
-					leftOffset = -surfaceAdditionalWidth * ((maxRatio - cachedRatioX) / (maxRatio - minRatio));
+				if (renderScale != 1.0f) {
+					// Stretch to fill. The destination covers the whole canvas, so no background
+					// shows through and the undersized-bitmap guard above is not needed on this
+					// path - the bitmap being smaller is the intent here, not a resize glitch.
+					blitDst.set(0, 0, canvas.getWidth(), canvas.getHeight());
+					canvas.drawBitmap(mapBitmap, null, blitDst, upscalePaint);
+				} else {
+					float leftOffset = 0.0f;
+					if (surfaceAdditionalWidth != 0) {
+						leftOffset = -surfaceAdditionalWidth * ((maxRatio - cachedRatioX) / (maxRatio - minRatio));
+					}
+					canvas.drawBitmap(mapBitmap, leftOffset, 0, null);
 				}
-				canvas.drawBitmap(mapBitmap, leftOffset, 0, null);
 			} else {
 				// Nothing to show yet - the offscreen renderer is still being set up, which is
 				// what the driver sees as "the map is blank for a bit" at start and after the
@@ -692,6 +726,7 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 					+ " avgMs=" + (frameWallSumMs / frameCount)
 					+ " maxMs=" + frameWallMaxMs + " slow=" + slowFrameCount
 					+ " overscan=" + surfaceWidthMultiply
+					+ " renderScale=" + renderScale
 					+ " avgLock=" + (lockSumMs / frameCount)
 					+ " avgRead=" + (readSumMs / frameCount)
 					+ " avgBlit=" + (blitSumMs / frameCount)

@@ -72,6 +72,26 @@ def offRouteHysteresis = offRouteEnv?.trim() ? offRouteEnv.trim() : "false"
 def overscanEnv = System.getenv("CAIRODRIVE_SURFACE_OVERSCAN")
 def surfaceOverscan = overscanEnv?.trim() ? overscanEnv.trim() : "0.0"
 
+// Fraction of the head unit's resolution the map is rendered at, before being upscaled onto
+// the car canvas. 1.0 renders at native size - upstream behaviour and the default here.
+//
+// This is the cheap lever on the two most expensive steps of an Android Auto frame. Every
+// frame the map is read back from the GPU into a Bitmap and then blitted onto the head unit's
+// canvas with a SOFTWARE blit - a lockCanvas canvas is never hardware accelerated - and both
+// copies scale with pixel count, not with scene complexity. At 0.75 they each move 44% fewer
+// pixels; at 0.85, 28% fewer.
+//
+// It costs sharpness, which is why it is not on by default: that is a judgement about how the
+// map LOOKS and belongs to whoever is driving, not to a build script. Set
+// CAIRODRIVE_RENDER_SCALE=0.75 to trade some for frame rate. The value is recorded in every
+// CD_FRAME summary line, so a log always says which setting produced it.
+//
+// The real fix is not to copy at all - render into the car Surface through a VirtualDisplay,
+// which needs no core change - but that needs proving on a real head unit first. This is the
+// thing worth having in the meantime, and the fallback if that does not pan out.
+def renderScaleEnv = System.getenv("CAIRODRIVE_RENDER_SCALE")
+def renderScale = renderScaleEnv?.trim() ? renderScaleEnv.trim() : "1.0"
+
 // Keep bulk transfers off a metered connection unless the user asks for them explicitly.
 // This fork is driven on Egyptian mobile data, where an unattended download is a bill rather
 // than an inconvenience, and CAIRODRIVE_UNLOCK_PRO hands the user features - weather most of
@@ -145,6 +165,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_OFFROUTE_HYSTERESIS", offRouteHysteresis
 			buildConfigField "boolean", "CAIRODRIVE_DATA_SAVER", dataSaver
 			buildConfigField "float", "CAIRODRIVE_SURFACE_OVERSCAN", surfaceOverscan + "f"
+			buildConfigField "float", "CAIRODRIVE_RENDER_SCALE", renderScale + "f"
 		}
 		release {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
@@ -154,6 +175,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_OFFROUTE_HYSTERESIS", offRouteHysteresis
 			buildConfigField "boolean", "CAIRODRIVE_DATA_SAVER", dataSaver
 			buildConfigField "float", "CAIRODRIVE_SURFACE_OVERSCAN", surfaceOverscan + "f"
+			buildConfigField "float", "CAIRODRIVE_RENDER_SCALE", renderScale + "f"
 		}
 	}
 }
