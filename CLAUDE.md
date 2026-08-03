@@ -143,13 +143,25 @@ cheapest field mask that still supports a map pin and a context menu —
 the request to a different SKU, so a change that looks like one line is a change to the bill.
 Deferred, and to be added **one per build, each verified on a real drive before the next**:
 
-| Feature | Cost shape |
-|---|---|
-| Autocomplete as you type | New endpoint, billed per keystroke session — the most expensive thing on this list by far |
-| Place Details (hours, phone, rating) | New endpoint per tapped result |
-| Photos | New endpoint + bandwidth |
-| Nearby Search ("petrol near me") | New endpoint |
-| Extra fields on the existing call | Same call, higher SKU tier |
+The owner's stated goal is "the info Google Maps shows for a business". Most of that is
+reachable; one headline part of it is not.
+
+| Feature | Available? | Cost shape | Daily quota today |
+|---|---|---|---|
+| Photos | Yes | `GetPhotoMedia` — new endpoint + bandwidth | 50 |
+| Place Details (hours, phone, rating, review count, price level, editorial summary) | Yes | `GetPlace` — new endpoint per tapped result | 32 |
+| Reviews | Yes | Field on Place Details | — |
+| Autocomplete as you type | Yes | `AutocompletePlaces` — billed **per keystroke session**, by far the most expensive here | 32 |
+| Nearby Search ("petrol near me") | Yes | `SearchNearby` — new endpoint | **0 (blocked)** |
+| Extra fields on the existing `searchText` | Yes | Same call, higher SKU tier | n/a |
+| **Popular times / "best time to visit"** | **NO** | Google does not expose it through any Places API — it exists only in the Maps app. Scraping it breaks the ToS | n/a |
+
+Quotas are deliberately left non-zero on the endpoints above because these features are planned;
+the amounts are small enough that the exposure is pennies. **Raising the relevant quota is part of
+shipping the feature** — which is convenient, because it makes the console enforce the
+one-at-a-time rule rather than relying on anyone remembering it.
+
+Current cap on the only endpoint in use: `SearchTextRequest` **160/day**, against ~12/day actual.
 
 Do not batch them. The reason is not caution for its own sake: with several landing together, a
 bill or a latency regression cannot be attributed, and `CD_SEARCH` traces in the drive log are the
