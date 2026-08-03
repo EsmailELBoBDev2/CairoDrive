@@ -9,7 +9,8 @@ import net.osmand.plus.R;
 import net.osmand.router.TurnType;
 
 /**
- * Turns a lane layout into a sentence: "stay on the right side".
+ * Turns a lane layout into one of exactly three sentences: stay on the left side, stay in the
+ * middle, stay on the right side.
  *
  * <p>The lane strip that OsmAnd draws - a row of arrows with the usable ones highlighted - is the
  * densest piece of information on the navigation screen and the one most often misread, because
@@ -64,39 +65,24 @@ public class LaneHint {
 			return null;
 		}
 
-		int fromLeft = first;
-		int fromRight = lanes.length - 1 - last;
-
-		if (count == 1) {
-			if (fromLeft == 0) {
-				return ctx.getString(R.string.lane_hint_left_lane);
-			}
-			if (fromRight == 0) {
-				return ctx.getString(R.string.lane_hint_right_lane);
-			}
-			if (fromLeft == fromRight) {
-				// Dead centre of an odd-numbered set - "the middle lane" is how a passenger would
-				// say it, and it is unambiguous only in this exact case.
-				return ctx.getString(R.string.lane_hint_middle_lane);
-			}
-			// Count from whichever edge is closer: "2nd from the right" is easier to verify at
-			// speed than "4th from the left" on a six-lane road.
-			return fromLeft < fromRight
-					? ctx.getString(R.string.lane_hint_nth_lane_from_left, fromLeft + 1)
-					: ctx.getString(R.string.lane_hint_nth_lane_from_right, fromRight + 1);
-		}
-		// More than one lane works, so there is no single lane to name. Say which SIDE of the road
-		// to be on and stop there - deliberately dropping the count, which is the part drivers
-		// report not understanding. "Two lanes in from the edge" is also not something anyone can
-		// verify at speed on a Cairo road, where lane paint is routinely worn away or ignored,
-		// whereas "which side am I on" always answers itself.
-		if (fromLeft == 0) {
+		// Three possible sentences, and never a fourth. Which side of the road to be on - that is
+		// the whole vocabulary.
+		//
+		// An earlier version of this had six phrasings, including lane counts ("the 2 right lanes")
+		// and offsets ("lane 2 from the right"). More precise, and worse: the owner's verdict on
+		// reading them was "I'm still lost". A hint the driver has to decode is not a hint. Six
+		// sentences is six things to learn while driving; three is a fact about where you are.
+		//
+		// The precision is not really lost either, because the lane arrows are still drawn right
+		// next to this text and still carry the exact layout. This is the caption, not the diagram,
+		// and a caption that is instantly right beats one that is exactly right.
+		if (first == 0) {
 			return ctx.getString(R.string.lane_hint_left_side);
 		}
-		if (fromRight == 0) {
+		if (last == lanes.length - 1) {
 			return ctx.getString(R.string.lane_hint_right_side);
 		}
-		return ctx.getString(R.string.lane_hint_middle_lanes);
+		return ctx.getString(R.string.lane_hint_middle);
 	}
 
 	private static boolean isActive(int lane) {
