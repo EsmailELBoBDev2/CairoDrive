@@ -154,7 +154,7 @@ reachable; one headline part of it is not.
 | Autocomplete as you type | Yes | `AutocompletePlaces` — billed **per keystroke session**, by far the most expensive here | 32 |
 | Nearby Search ("petrol near me") | Yes | `SearchNearby` — new endpoint | **0 (blocked)** |
 | Extra fields on the existing `searchText` | Yes | Same call, higher SKU tier | n/a |
-| **Popular times / "best time to visit"** | **NO** | Google does not expose it through any Places API — it exists only in the Maps app. Scraping it breaks the ToS | n/a |
+| **Popular times / "best time to visit"** | **Not from Google** | Not a Places API field — it exists only in the Maps app. Third parties (Outscraper, ScrapingBee, Apify, BestTime.app) sell it by SCRAPING Maps: separate provider, separate key, separate bill, and it breaks whenever Google changes its markup. Consider the Play-policy angle too, since it is scraped Google data | n/a |
 
 Quotas are deliberately left non-zero on the endpoints above because these features are planned;
 the amounts are small enough that the exposure is pennies. **Raising the relevant quota is part of
@@ -163,10 +163,24 @@ one-at-a-time rule rather than relying on anyone remembering it.
 
 Current cap on the only endpoint in use: `SearchTextRequest` **160/day**, against ~12/day actual.
 
-Do not batch them. The reason is not caution for its own sake: with several landing together, a
-bill or a latency regression cannot be attributed, and `CD_SEARCH` traces in the drive log are the
-only measurement available. One change, one drive, one answer — the same rule the frame work
-follows.
+Do not batch them, and the primary reason is PERFORMANCE, not billing.
+
+This has been tried once already: all the features went in together and the app was, in the
+owner's words, "buggy as hell" — with no way to tell which addition caused it, so the whole lot
+had to come out. That is the failure being avoided. Billing attribution is a secondary benefit.
+
+So each feature ships alone AND is judged on the drive log, not on whether it looks right in the
+UI. What to check after adding one:
+
+- `CD_SEARCH` — request count, latency, and whether the cache hit rate collapsed. A feature that
+  quietly defeats the prefix cache multiplies every later search.
+- `CD_FRAME` — a details or photo fetch that touches the main thread shows up in `over`, and a
+  bitmap-heavy one shows up as GC pauses in `maxMs` even when the average looks fine.
+- Anything that runs per keystroke (autocomplete above all) must be judged while TYPING, not
+  after. That is where the previous attempt went wrong.
+
+If a feature makes it worse, it comes out on its own rather than as part of a mass revert — which
+is only possible because it went in on its own.
 
 ## Measure before optimising
 
