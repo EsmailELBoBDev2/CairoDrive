@@ -1,0 +1,663 @@
+name: Sync with upstream OsmAnd
+
+# Imports new commits from the repository this fork is based on. Every import lands on a
+# throwaway sync branch and is opened as a pull request; whether that pull request then
+# merges itself depends on what is in it.
+#
+#   Touches nothing CI executes  -> merged automatically, master and dev stay current
+#                                   without anyone doing anything.
+#   Touches a build script, the  -> left open for review. Gradle runs arbitrary code out of
+#   Gradle wrapper or a workflow    every *.gradle file it loads, and merging is what puts
+#                                   that code on a runner holding this fork's keys.
+#
+# That split is the point: the overwhelming majority of upstream commits are Java, Kotlin
+# and translations, which can only break the app - and the build catches that. The handful
+# that can actually attack the repository are the ones a human should look at, and they are
+# exactly the ones this leaves alone.
+#
+# WHERE THIS FILE HAS TO LIVE
+#   On the DEFAULT branch, or the schedule below never fires. GitHub reads `schedule:`
+#   triggers only from the default branch's copy of a workflow - a cron sitting on a
+#   feature branch is silently inert, with no error anywhere to say so. This fork learned
+#   that the hard way: the file lived only on dev for its first weeks and the daily sync
+#   never ran once. Keep it on master.
+#
+#   upstream/master --merge--> sync/upstream-master --PR--> master
+#                                       |
+#                                       +--merge--> sync/upstream-dev --PR--> dev
+#
+# Why a pull request rather than a push (2026-07 supply-chain review):
+#
+#   Gradle executes arbitrary code out of every *.gradle file it loads. The previous
+#   version of this workflow pushed unreviewed upstream commits straight to master and
+#   dev and then dispatched build-dev.yml, which at the time held the release keystore,
+#   all three of its credentials and the Google Places key. A single added line in any
+#   upstream build script would therefore have run against this fork's production signing
+#   material within 24 hours of being committed, with nobody having looked at it.
+#
+#   A pull request puts a human in that gap. This workflow no longer dispatches any build
+#   either, so upstream code cannot reach a runner holding secrets until someone merges
+#   the PR - and the signing keys have moved out of ordinary dev builds entirely, into a
+#   tag-triggered job behind the `production` environment. See .github/CICD.md.
+#
+# If either merge conflicts the workflow aborts that merge, leaves the branch alone, and
+# reports the conflicting paths on a tracking issue instead of offering a half-resolved
+# tree for review.
+
+on:
+  schedule:
+    # 03:17 UTC daily - off the hour so it does not queue behind everyone else's
+    # midnight cron jobs.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_repository:
+        # A `choice` rather than free text, and the allow-list is re-checked at run time
+        # below. This input used to accept any repository on GitHub, which - on a workflow
+        # that reached the signing keys - meant anyone with write access could have this
+        # fork import and build code from a repository they controlled.
+        description: 'Upstream repository to sync from (allow-listed)'
+        type: choice
+        required: false
+        default: 'osmandapp/OsmAnd'
+        options:
+          - osmandapp/OsmAnd
+      upstream_branch:
+        description: 'Upstream branch to sync from (e.g. master, or a release branch)'
+        required: false
+        default: 'master'
+
+permissions:
+  # Enough to push the sync/* branches. It cannot be narrowed further - GITHUB_TOKEN has
+  # no per-branch scope - so master and dev are protected by branch protection instead;
+  # see the repository settings checklist in .github/CICD.md.
+  contents: write
+  # Open and refresh the sync pull requests.
+  pull-requests: write
+  # File the conflict tracking issue.
+  issues: write
+  # `actions: write` was dropped together with the build dispatch: this workflow must not
+  # be able to start a build of the code it just imported.
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: ${{ inputs.upstream_repository || 'osmandapp/OsmAnd' }}
+  UPSTREAM_BRANCH: ${{ inputs.upstream_branch || 'master' }}
+  ALLOWED_UPSTREAM_REPOSITORIES: 'osmandapp/OsmAnd'
+  MAIN_BRANCH: master
+  DEV_BRANCH: dev
+  # Stable branch names: the import is rebuilt from scratch and force-pushed on every run,
+  # so an unmerged sync PR is refreshed in place rather than a new one being opened daily.
+  MAIN_SYNC_BRANCH: sync/upstream-master
+  DEV_SYNC_BRANCH: sync/upstream-dev
+  BOT_NAME: 'cairodrive-sync[bot]'
+  BOT_EMAIL: 'cairodrive-sync[bot]@users.noreply.github.com'
+
+jobs:
+  sync:
+    name: Propose upstream merge as pull requests
+    runs-on: ubuntu-latest
+
+    steps:
+      # Before the checkout, so a rejected source never gets as far as being fetched.
+      - name: Validate sync source
+        run: |
+          set -euo pipefail
+          allowed=false
+          for repo in ${ALLOWED_UPSTREAM_REPOSITORIES}; do
+            if [ "${repo}" = "${UPSTREAM_REPOSITORY}" ]; then
+              allowed=true
+            fi
+          done
+          if [ "${allowed}" != "true" ]; then
+            echo "::error::${UPSTREAM_REPOSITORY} is not in the allow-list (${ALLOWED_UPSTREAM_REPOSITORIES}). Add it to ALLOWED_UPSTREAM_REPOSITORIES and to the dispatch input options if it really belongs there."
+            exit 1
+          fi
+          # The branch name is free text and ends up in a git refspec and a remote URL.
+          # Anything outside this character set is rejected rather than quoted around,
+          # which also rules out ref names that git itself would treat as options.
+          if ! printf '%s' "${UPSTREAM_BRANCH}" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]*$'; then
+            echo "::error::Refusing branch name '${UPSTREAM_BRANCH}': letters, digits, dot, underscore, slash and dash only."
+            exit 1
+          fi
+          echo "Syncing from ${UPSTREAM_REPOSITORY}#${UPSTREAM_BRANCH}."
+
+      - name: Checkout fork
+        uses: actions/checkout@v7
+        with:
+          # Full history: the merges below need the whole graph, and the force-push guard
+          # reads the current tip of the sync branches from the remote refs.
+          fetch-depth: 0
+          # Needed here, unlike in build-dev.yml: this job pushes the sync branches. It
+          # never runs a build tool, so nothing untrusted shares the runner with the token.
+          persist-credentials: true
+
+      - name: Configure git identity
+        run: |
+          set -euo pipefail
+          git config user.name "${BOT_NAME}"
+          git config user.email "${BOT_EMAIL}"
+
+      - name: Fetch upstream
+        id: fetch
+        run: |
+          set -euo pipefail
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          for attempt in 1 2 3 4; do
+            if git fetch --no-tags upstream "${UPSTREAM_BRANCH}"; then
+              break
+            fi
+            if [ "$attempt" = "4" ]; then
+              echo "::error::Could not fetch ${UPSTREAM_REPOSITORY}#${UPSTREAM_BRANCH} after 4 attempts"
+              exit 1
+            fi
+            sleep $((2 ** attempt))
+          done
+          echo "upstream_sha=$(git rev-parse "upstream/${UPSTREAM_BRANCH}")" >> "$GITHUB_OUTPUT"
+
+      - name: Merge upstream into the ${{ env.MAIN_BRANCH }} sync branch
+        id: merge_main
+        env:
+          UPSTREAM_SHA: ${{ steps.fetch.outputs.upstream_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          git checkout -B "${MAIN_SYNC_BRANCH}" "origin/${MAIN_BRANCH}"
+          before="$(git rev-parse HEAD)"
+          behind="$(git rev-list --count "HEAD..upstream/${UPSTREAM_BRANCH}")"
+          echo "new_commits=${behind}" >> "$GITHUB_OUTPUT"
+
+          if [ "${behind}" = "0" ]; then
+            {
+              echo "conflict=false"
+              echo "changed=false"
+            } >> "$GITHUB_OUTPUT"
+            echo "Already up to date with ${UPSTREAM_REPOSITORY}#${UPSTREAM_BRANCH}."
+            exit 0
+          fi
+
+          # --no-ff on purpose, even when the merge could fast-forward. Two reasons: the
+          # import stays one reviewable commit on top of the branch point, and the tip of
+          # the sync branch is then always authored by this bot - which is exactly what the
+          # force-push guard in the next step keys on to tell its own work apart from a
+          # human's conflict resolution.
+          if git merge --no-ff --no-edit \
+              -m "Merge ${UPSTREAM_REPOSITORY}@${UPSTREAM_BRANCH} into ${MAIN_BRANCH}" \
+              "upstream/${UPSTREAM_BRANCH}"; then
+            {
+              echo "conflict=false"
+              echo "changed=true"
+            } >> "$GITHUB_OUTPUT"
+
+            files="$(git diff --name-only "${before}" HEAD)"
+            file_count="$(printf '%s\n' "${files}" | grep -c . || true)"
+            # Files CI executes. A line added to any of them runs with whatever credentials
+            # the workflow reading them holds, so they are hoisted to the top of the PR
+            # body: they are the only part of an upstream import that can attack this
+            # repository rather than merely break it.
+            executable="$(printf '%s\n' "${files}" \
+              | grep -E '(\.gradle(\.kts)?|\.properties|gradlew(\.bat)?)$|^gradle/wrapper/|^\.github/(workflows|actions)/' || true)"
+            # An import that changes nothing CI executes cannot attack this repository - it can
+            # only break the app, which the build catches. Those merge themselves. Anything that
+            # touches a build script, the Gradle wrapper or a workflow waits for a human, because
+            # merging it is what puts that code on a runner.
+            if [ -n "${executable}" ]; then
+              echo "automerge=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "automerge=true" >> "$GITHUB_OUTPUT"
+            fi
+            {
+              echo "Merges \`${UPSTREAM_REPOSITORY}@${UPSTREAM_BRANCH}\` (\`${UPSTREAM_SHA}\`) into \`${MAIN_BRANCH}\`."
+              echo
+              echo "- **${behind}** new upstream commits, **${file_count}** files changed"
+              echo "- Merged cleanly - no conflicts"
+              echo "- Opened by [this workflow run](${RUN_URL})"
+              echo
+              if [ -n "${executable}" ]; then
+                echo "### :warning: This import changes files that CI executes"
+                echo
+                echo "Read these before anything else. Gradle runs arbitrary code from any"
+                echo "build script it loads, and a merge of this PR is what lets that code"
+                echo "onto a runner. Nothing here is signed or trusted upstream."
+                echo
+                echo '```'
+                printf '%s\n' "${executable}"
+                echo '```'
+              else
+                echo "### No build scripts in this import"
+                echo
+                echo "Nothing here matches \`*.gradle\`, \`*.properties\`, the Gradle wrapper"
+                echo "or \`.github/workflows\`, so merging it does not change what CI executes."
+              fi
+              echo
+              echo "### Upstream commits"
+              echo
+              git log --no-merges --max-count=50 --format='- `%h` %s' "${before}..HEAD"
+              if [ "${behind}" -gt 50 ]; then
+                echo "- ... and $(( behind - 50 )) more"
+              fi
+            } > "${RUNNER_TEMP}/pr-body-main.md"
+          else
+            {
+              echo "conflict=true"
+              echo "changed=false"
+              # Random delimiter: the interpolated values are upstream-controlled file
+              # names, and a file literally called CONFLICT_EOF would close the heredoc
+              # early and let the remaining paths be parsed as further key=value outputs -
+              # which drive the `if:` conditions below.
+              delimiter="EOF_$(openssl rand -hex 16)"
+              echo "conflicts<<${delimiter}"
+              git diff --name-only --diff-filter=U
+              echo "${delimiter}"
+            } >> "$GITHUB_OUTPUT"
+            git merge --abort || true
+            echo "::warning::Conflicts merging upstream into ${MAIN_BRANCH}; no pull request opened."
+          fi
+          exit 0
+
+      - name: Push the ${{ env.MAIN_BRANCH }} sync branch
+        id: push_main
+        if: steps.merge_main.outputs.changed == 'true'
+        run: |
+          set -uo pipefail
+          # The branch is rebuilt from scratch every run and force-pushed, so if someone has
+          # committed a conflict resolution onto an open sync branch, force-pushing would
+          # silently throw that work away. Refuse instead and let the open PR be dealt with.
+          # Re-fetch first: the guard is only as good as the freshness of the remote ref,
+          # and the fetch simply fails when the branch does not exist yet, which is fine.
+          git fetch --no-tags --quiet origin \
+            "+refs/heads/${MAIN_SYNC_BRANCH}:refs/remotes/origin/${MAIN_SYNC_BRANCH}" 2>/dev/null || true
+          if git rev-parse --verify -q "origin/${MAIN_SYNC_BRANCH}" >/dev/null; then
+            tip_author="$(git log -1 --format='%ae' "origin/${MAIN_SYNC_BRANCH}")"
+            if [ "${tip_author}" != "${BOT_EMAIL}" ]; then
+              echo "::warning::${MAIN_SYNC_BRANCH} ends in a commit by ${tip_author}, not this bot. Leaving it alone - merge or close the open pull request first."
+              echo "blocked=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          for attempt in 1 2 3 4; do
+            if git push --force origin "${MAIN_SYNC_BRANCH}:refs/heads/${MAIN_SYNC_BRANCH}"; then
+              echo "pushed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep $((2 ** attempt))
+          done
+          echo "::error::Could not push ${MAIN_SYNC_BRANCH}"
+          exit 1
+
+      - name: Open or refresh the ${{ env.MAIN_BRANCH }} pull request
+        id: pr_main
+        if: steps.push_main.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_COMMITS: ${{ steps.merge_main.outputs.new_commits }}
+        run: |
+          set -euo pipefail
+          gh label create upstream-sync \
+            --description "Automated import of upstream OsmAnd commits" \
+            --color 1D76DB 2>/dev/null || true
+
+          title="Sync ${UPSTREAM_REPOSITORY}@${UPSTREAM_BRANCH} into ${MAIN_BRANCH} (${NEW_COMMITS} commits)"
+          number="$(gh pr list --head "${MAIN_SYNC_BRANCH}" --base "${MAIN_BRANCH}" \
+            --state open --json number --jq '.[0].number // empty')"
+          if [ -n "${number}" ]; then
+            # The branch was force-pushed under an existing PR; retitle and rewrite the body
+            # so it describes what is on the branch now, not what was there yesterday.
+            gh pr edit "${number}" --title "${title}" \
+              --body-file "${RUNNER_TEMP}/pr-body-main.md" >/dev/null
+          else
+            gh pr create --base "${MAIN_BRANCH}" --head "${MAIN_SYNC_BRANCH}" \
+              --title "${title}" --body-file "${RUNNER_TEMP}/pr-body-main.md" \
+              --label upstream-sync >/dev/null
+            number="$(gh pr list --head "${MAIN_SYNC_BRANCH}" --base "${MAIN_BRANCH}" \
+              --state open --json number --jq '.[0].number // empty')"
+          fi
+          echo "number=${number}" >> "$GITHUB_OUTPUT"
+          echo "url=$(gh pr view "${number}" --json url --jq .url)" >> "$GITHUB_OUTPUT"
+
+      - name: Merge the ${{ env.MAIN_BRANCH }} pull request
+        id: automerge_main
+        if: steps.pr_main.outputs.number != '' && steps.merge_main.outputs.automerge == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ steps.pr_main.outputs.number }}
+        run: |
+          set -uo pipefail
+          if gh pr merge "${NUMBER}" --merge; then
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+            echo "Merged pull request #${NUMBER} - the import touches nothing CI executes."
+          else
+            # Never fatal. A blocked merge just means the pull request stays open for a human,
+            # which is the same place an unsafe import would have ended up anyway.
+            echo "::warning::Could not merge pull request #${NUMBER} automatically; it is open for review."
+          fi
+          exit 0
+
+      # The dev sync branch is built from origin/dev, so it has to be rebuilt after the master
+      # pull request is merged - otherwise it would merge a MAIN_SYNC_BRANCH that no longer
+      # matches what master now contains. Cheap, and keeps the two sides consistent.
+      - name: Refresh ${{ env.MAIN_BRANCH }} after the automatic merge
+        if: steps.automerge_main.outputs.merged == 'true'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+refs/heads/${MAIN_BRANCH}:refs/remotes/origin/${MAIN_BRANCH}"
+
+      # dev is only offered a merge from a master import that is itself clean, so a
+      # conflicted master never leaks a partially merged tree into the development branch.
+      # It runs even when upstream brought nothing new, because dev can still be behind a
+      # master import that was merged on an earlier run while the dev pull request was not.
+      - name: Merge the import into the ${{ env.DEV_BRANCH }} sync branch
+        id: merge_dev
+        if: steps.merge_main.outputs.conflict == 'false'
+        env:
+          UPSTREAM_SHA: ${{ steps.fetch.outputs.upstream_sha }}
+          MAIN_PR_URL: ${{ steps.pr_main.outputs.url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          if ! git ls-remote --exit-code --heads origin "${DEV_BRANCH}" >/dev/null 2>&1; then
+            # Previously this branch was created from master by the sync itself. A pull
+            # request needs a base branch that already exists, and creating a long-lived
+            # branch is not something an unattended job should do, so it is left to a human.
+            echo "::warning::Branch ${DEV_BRANCH} does not exist; create it from ${MAIN_BRANCH} once and the sync will keep proposing merges into it."
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git checkout -B "${DEV_SYNC_BRANCH}" "origin/${DEV_BRANCH}"
+          before="$(git rev-parse HEAD)"
+          behind="$(git rev-list --count "HEAD..${MAIN_SYNC_BRANCH}")"
+          echo "new_commits=${behind}" >> "$GITHUB_OUTPUT"
+
+          if [ "${behind}" = "0" ]; then
+            {
+              echo "conflict=false"
+              echo "changed=false"
+            } >> "$GITHUB_OUTPUT"
+            echo "${DEV_BRANCH} already contains this import."
+            exit 0
+          fi
+
+          # --no-ff for the same reason as on master: a bot-authored tip is what the
+          # force-push guard uses to recognise its own branch.
+          if git merge --no-ff --no-edit \
+              -m "Merge ${MAIN_BRANCH} sync into ${DEV_BRANCH}" "${MAIN_SYNC_BRANCH}"; then
+            {
+              echo "conflict=false"
+              echo "changed=true"
+            } >> "$GITHUB_OUTPUT"
+
+            files="$(git diff --name-only "${before}" HEAD)"
+            file_count="$(printf '%s\n' "${files}" | grep -c . || true)"
+            executable="$(printf '%s\n' "${files}" \
+              | grep -E '(\.gradle(\.kts)?|\.properties|gradlew(\.bat)?)$|^gradle/wrapper/|^\.github/(workflows|actions)/' || true)"
+            # Same rule as on master; see the comment there.
+            if [ -n "${executable}" ]; then
+              echo "automerge=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "automerge=true" >> "$GITHUB_OUTPUT"
+            fi
+            {
+              echo "Merges the \`${UPSTREAM_REPOSITORY}@${UPSTREAM_BRANCH}\` import (\`${UPSTREAM_SHA}\`) into \`${DEV_BRANCH}\`."
+              echo
+              echo "- **${behind}** commits not yet on \`${DEV_BRANCH}\`, **${file_count}** files changed"
+              echo "- Merged cleanly against the fork's own commits - no conflicts"
+              if [ -n "${MAIN_PR_URL}" ]; then
+                echo "- Companion pull request into \`${MAIN_BRANCH}\`: ${MAIN_PR_URL}"
+              fi
+              echo "- Opened by [this workflow run](${RUN_URL})"
+              echo
+              echo "Merging this is what puts upstream code in front of the dev build, so"
+              echo "review it on its own terms even if the \`${MAIN_BRANCH}\` pull request"
+              echo "has already been merged."
+              echo
+              if [ -n "${executable}" ]; then
+                echo "### :warning: This import changes files that CI executes"
+                echo
+                echo "Read these first - Gradle runs arbitrary code from any build script it"
+                echo "loads, and merging this PR is what puts that code on a runner."
+                echo
+                echo '```'
+                printf '%s\n' "${executable}"
+                echo '```'
+              else
+                echo "### No build scripts in this import"
+                echo
+                echo "Nothing here matches \`*.gradle\`, \`*.properties\`, the Gradle wrapper"
+                echo "or \`.github/workflows\`."
+              fi
+              echo
+              echo "### Commits"
+              echo
+              git log --no-merges --max-count=50 --format='- `%h` %s' "${before}..HEAD"
+              if [ "${behind}" -gt 50 ]; then
+                echo "- ... and $(( behind - 50 )) more"
+              fi
+            } > "${RUNNER_TEMP}/pr-body-dev.md"
+          else
+            {
+              echo "conflict=true"
+              echo "changed=false"
+              # Random delimiter, for the same reason as on the master merge above.
+              delimiter="EOF_$(openssl rand -hex 16)"
+              echo "conflicts<<${delimiter}"
+              git diff --name-only --diff-filter=U
+              echo "${delimiter}"
+            } >> "$GITHUB_OUTPUT"
+            git merge --abort || true
+            echo "::warning::Conflicts merging ${MAIN_BRANCH} into ${DEV_BRANCH}; no pull request opened."
+          fi
+          exit 0
+
+      - name: Push the ${{ env.DEV_BRANCH }} sync branch
+        id: push_dev
+        if: steps.merge_dev.outputs.changed == 'true'
+        run: |
+          set -uo pipefail
+          # Same manual-commit guard as on the master sync branch; see the comment there.
+          git fetch --no-tags --quiet origin \
+            "+refs/heads/${DEV_SYNC_BRANCH}:refs/remotes/origin/${DEV_SYNC_BRANCH}" 2>/dev/null || true
+          if git rev-parse --verify -q "origin/${DEV_SYNC_BRANCH}" >/dev/null; then
+            tip_author="$(git log -1 --format='%ae' "origin/${DEV_SYNC_BRANCH}")"
+            if [ "${tip_author}" != "${BOT_EMAIL}" ]; then
+              echo "::warning::${DEV_SYNC_BRANCH} ends in a commit by ${tip_author}, not this bot. Leaving it alone - merge or close the open pull request first."
+              echo "blocked=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          for attempt in 1 2 3 4; do
+            if git push --force origin "${DEV_SYNC_BRANCH}:refs/heads/${DEV_SYNC_BRANCH}"; then
+              echo "pushed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep $((2 ** attempt))
+          done
+          echo "::error::Could not push ${DEV_SYNC_BRANCH}"
+          exit 1
+
+      - name: Open or refresh the ${{ env.DEV_BRANCH }} pull request
+        id: pr_dev
+        if: steps.push_dev.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_COMMITS: ${{ steps.merge_dev.outputs.new_commits }}
+        run: |
+          set -euo pipefail
+          gh label create upstream-sync \
+            --description "Automated import of upstream OsmAnd commits" \
+            --color 1D76DB 2>/dev/null || true
+
+          title="Sync ${UPSTREAM_REPOSITORY}@${UPSTREAM_BRANCH} into ${DEV_BRANCH} (${NEW_COMMITS} commits)"
+          number="$(gh pr list --head "${DEV_SYNC_BRANCH}" --base "${DEV_BRANCH}" \
+            --state open --json number --jq '.[0].number // empty')"
+          if [ -n "${number}" ]; then
+            gh pr edit "${number}" --title "${title}" \
+              --body-file "${RUNNER_TEMP}/pr-body-dev.md" >/dev/null
+          else
+            gh pr create --base "${DEV_BRANCH}" --head "${DEV_SYNC_BRANCH}" \
+              --title "${title}" --body-file "${RUNNER_TEMP}/pr-body-dev.md" \
+              --label upstream-sync >/dev/null
+            number="$(gh pr list --head "${DEV_SYNC_BRANCH}" --base "${DEV_BRANCH}" \
+              --state open --json number --jq '.[0].number // empty')"
+          fi
+          echo "number=${number}" >> "$GITHUB_OUTPUT"
+          echo "url=$(gh pr view "${number}" --json url --jq .url)" >> "$GITHUB_OUTPUT"
+
+      - name: Merge the ${{ env.DEV_BRANCH }} pull request
+        id: automerge_dev
+        if: steps.pr_dev.outputs.number != '' && steps.merge_dev.outputs.automerge == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ steps.pr_dev.outputs.number }}
+        run: |
+          set -uo pipefail
+          if gh pr merge "${NUMBER}" --merge; then
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+            echo "Merged pull request #${NUMBER} - the import touches nothing CI executes."
+          else
+            echo "::warning::Could not merge pull request #${NUMBER} automatically; it is open for review."
+          fi
+          exit 0
+
+      - name: Report conflicts
+        if: steps.merge_main.outputs.conflict == 'true' || steps.merge_dev.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAIN_CONFLICT: ${{ steps.merge_main.outputs.conflict }}
+          MAIN_CONFLICTS: ${{ steps.merge_main.outputs.conflicts }}
+          MAIN_PR_URL: ${{ steps.pr_main.outputs.url }}
+          DEV_CONFLICTS: ${{ steps.merge_dev.outputs.conflicts }}
+          UPSTREAM_SHA: ${{ steps.fetch.outputs.upstream_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            echo "The automatic upstream sync stopped because a merge conflicted."
+            echo
+            # Nothing is ever pushed to master or dev now, so the only question is which of
+            # the two pull requests exists. Say which, instead of implying both are blocked.
+            if [ "${MAIN_CONFLICT}" = "true" ]; then
+              echo "No pull request was opened - \`${MAIN_BRANCH}\` and \`${DEV_BRANCH}\` are untouched, as are their sync branches."
+            elif [ -n "${MAIN_PR_URL}" ]; then
+              echo "The \`${MAIN_BRANCH}\` import merged cleanly and is open for review at ${MAIN_PR_URL}."
+              echo "Only the \`${DEV_BRANCH}\` side conflicted; no pull request was opened for it."
+            else
+              echo "Only the \`${DEV_BRANCH}\` side conflicted; no pull request was opened for it."
+            fi
+            echo
+            echo "- Upstream: \`${UPSTREAM_REPOSITORY}#${UPSTREAM_BRANCH}\` at \`${UPSTREAM_SHA}\`"
+            echo "- Run: ${RUN_URL}"
+            echo
+            if [ -n "${MAIN_CONFLICTS}" ]; then
+              echo "**Conflicts merging upstream into \`${MAIN_BRANCH}\`:**"
+              echo '```'
+              echo "${MAIN_CONFLICTS}"
+              echo '```'
+              echo
+            fi
+            if [ -n "${DEV_CONFLICTS}" ]; then
+              echo "**Conflicts merging \`${MAIN_BRANCH}\` into \`${DEV_BRANCH}\`:**"
+              echo '```'
+              echo "${DEV_CONFLICTS}"
+              echo '```'
+              echo
+            fi
+            echo "Resolve locally on the sync branch, push it, and the pull request opens"
+            echo "(or updates) by itself. The sync will not force-push over a branch whose"
+            echo "last commit is not the bot's, so your resolution is safe there."
+            echo '```'
+            echo "git fetch origin"
+            if [ "${MAIN_CONFLICT}" = "true" ]; then
+              echo "git remote add upstream https://github.com/${UPSTREAM_REPOSITORY}.git"
+              echo "git fetch upstream ${UPSTREAM_BRANCH}"
+              echo "git checkout -B ${MAIN_SYNC_BRANCH} origin/${MAIN_BRANCH}"
+              echo "git merge --no-ff upstream/${UPSTREAM_BRANCH}"
+              echo "# resolve, commit, then:"
+              echo "git push -u origin ${MAIN_SYNC_BRANCH}"
+              echo "gh pr create --base ${MAIN_BRANCH} --head ${MAIN_SYNC_BRANCH} --fill"
+            else
+              echo "git checkout -B ${DEV_SYNC_BRANCH} origin/${DEV_BRANCH}"
+              echo "git merge --no-ff origin/${MAIN_SYNC_BRANCH}"
+              echo "# resolve, commit, then:"
+              echo "git push -u origin ${DEV_SYNC_BRANCH}"
+              echo "gh pr create --base ${DEV_BRANCH} --head ${DEV_SYNC_BRANCH} --fill"
+            fi
+            echo '```'
+          } > "${RUNNER_TEMP}/conflict-body.md"
+
+          existing="$(gh issue list --label upstream-sync-conflict --state open \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body-file "${RUNNER_TEMP}/conflict-body.md"
+          else
+            gh label create upstream-sync-conflict \
+              --description "Automatic upstream sync needs manual conflict resolution" \
+              --color B60205 2>/dev/null || true
+            gh issue create \
+              --title "Upstream sync blocked by merge conflicts" \
+              --label upstream-sync-conflict \
+              --body-file "${RUNNER_TEMP}/conflict-body.md"
+          fi
+          exit 1
+
+      # No build is dispatched from here, deliberately. The sync's output is a pull request
+      # of unreviewed third-party code; the build workflow is where the Places key lives and,
+      # for tagged builds, the release keystore. Whoever merges the pull request is what
+      # starts a build, and that is the point of the whole arrangement.
+
+      - name: Summary
+        if: always()
+        env:
+          UPSTREAM_SHA: ${{ steps.fetch.outputs.upstream_sha }}
+          MAIN_PR_URL: ${{ steps.pr_main.outputs.url }}
+          DEV_PR_URL: ${{ steps.pr_dev.outputs.url }}
+          MAIN_CONFLICT: ${{ steps.merge_main.outputs.conflict }}
+          MAIN_CHANGED: ${{ steps.merge_main.outputs.changed }}
+          MAIN_BLOCKED: ${{ steps.push_main.outputs.blocked }}
+          MAIN_MERGED: ${{ steps.automerge_main.outputs.merged }}
+          DEV_CONFLICT: ${{ steps.merge_dev.outputs.conflict }}
+          DEV_CHANGED: ${{ steps.merge_dev.outputs.changed }}
+          DEV_BLOCKED: ${{ steps.push_dev.outputs.blocked }}
+          DEV_MERGED: ${{ steps.automerge_dev.outputs.merged }}
+          DEV_MISSING: ${{ steps.merge_dev.outputs.missing }}
+          NEW_COMMITS: ${{ steps.merge_main.outputs.new_commits }}
+        run: |
+          set -uo pipefail
+          describe() {
+            # $1 conflict, $2 changed, $3 blocked, $4 pr url, $5 merged
+            if [ "${1:-}" = "true" ]; then
+              echo "conflicted - reported on the tracking issue, no pull request"
+            elif [ "${3:-}" = "true" ]; then
+              echo "not refreshed - the sync branch carries a manual commit"
+            elif [ "${5:-}" = "true" ]; then
+              echo "merged automatically - ${4:-}"
+            elif [ "${2:-}" = "true" ] && [ -n "${4:-}" ]; then
+              echo "open for review (changes files CI executes) - ${4}"
+            elif [ "${2:-}" = "false" ]; then
+              echo "already up to date"
+            else
+              echo "not attempted"
+            fi
+          }
+          {
+            echo "## Upstream sync"
+            echo
+            echo "Imports that touch no build script merge themselves. Imports that change a"
+            echo "\`*.gradle\` file, the Gradle wrapper or a workflow stay open for review, because"
+            echo "merging those is what puts upstream code on a runner holding this fork's keys."
+            echo "No build is dispatched from here either way."
+            echo
+            echo "| Target | Result |"
+            echo "| --- | --- |"
+            echo "| Upstream | \`${UPSTREAM_REPOSITORY}#${UPSTREAM_BRANCH}\` @ \`${UPSTREAM_SHA:-unknown}\` (${NEW_COMMITS:-0} new commits) |"
+            echo "| \`${MAIN_BRANCH}\` | $(describe "${MAIN_CONFLICT}" "${MAIN_CHANGED}" "${MAIN_BLOCKED}" "${MAIN_PR_URL}" "${MAIN_MERGED}") |"
+            if [ "${DEV_MISSING:-}" = "true" ]; then
+              echo "| \`${DEV_BRANCH}\` | branch does not exist - create it from \`${MAIN_BRANCH}\` |"
+            else
+              echo "| \`${DEV_BRANCH}\` | $(describe "${DEV_CONFLICT}" "${DEV_CHANGED}" "${DEV_BLOCKED}" "${DEV_PR_URL}" "${DEV_MERGED}") |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
