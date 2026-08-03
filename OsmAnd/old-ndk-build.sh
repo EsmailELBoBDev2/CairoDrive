@@ -19,4 +19,12 @@ if [ ! -d "$ANDROID_NDK_ROOT" ]; then
 fi
 export BUILD_ONLY_OLD_LIB=1
 "$SCRIPT_LOC/../../core-legacy/externals/configure.sh"
-(cd "$SCRIPT_LOC" && "$ANDROID_NDK_ROOT/ndk-build" -j2)
+# -j2 was hardcoded upstream and is the single biggest lever on this build's wall time:
+# ndk-build compiles the C++ routing core once per ABI, four times over for a Play bundle,
+# and at -j2 it uses half of a GitHub runner and a fraction of a modern workstation.
+# Scaling to the machine is safe in a way that caching the output is not - it changes only
+# how many compiler processes run at once, never which sources are compiled or what lands
+# in libosmand.so. Falls back to 2 where nproc is unavailable.
+NDK_JOBS="${NDK_JOBS:-$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}"
+echo "ndk-build with -j${NDK_JOBS}"
+(cd "$SCRIPT_LOC" && "$ANDROID_NDK_ROOT/ndk-build" -j"${NDK_JOBS}")
