@@ -115,6 +115,24 @@ android {
 			applicationId "com.cairodrive.app"
 			resValue "string", "app_name", "CairoDrive"
 			resValue "string", "app_edition", System.getenv("APP_EDITION") ? System.getenv("APP_EDITION") : ""
+
+			// Ship two languages instead of 117. res/values-*/ is 41 MB of translations and
+			// ALL of it lands in every install, because upstream disables Play's language
+			// splitting (build.gradle: bundle { language { enableSplit = false } }) - and that
+			// is correct, not an oversight: OsmAnd has an in-app language selector independent
+			// of the system locale, so a split would leave a chosen-but-not-installed language
+			// showing untranslated text.
+			//
+			// resConfigs solves the same problem from the other end and without that hazard: the
+			// languages are dropped at BUILD time, so the selector only ever offers what is
+			// actually present. This is an Egypt-focused fork with an Arabic-speaking user base,
+			// so English and Arabic is the honest list. Add a code here to bring one back.
+			//
+			// Deliberately NOT paired with shrinkResources. That one is genuinely dangerous
+			// here: this app resolves resources by name at runtime via getIdentifier in 20
+			// places, R8 cannot see those references, and it would strip icons and rendering
+			// styles that are very much in use. Upstream leaves it off for the same reason.
+			resConfigs "en", "ar"
 		}
 	}
 
