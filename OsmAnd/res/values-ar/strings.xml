@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+	<string name="routing_attr_avoid_narrow_streets_name">تجنُّب الشوارع الضيقة</string>
+	<string name="routing_attr_avoid_narrow_streets_description">تفضيل الطرق الأوسع بشكل كبير. لا تزال الشوارع الضيقة تُستخدم عندما تكون الطريق الوحيد إلى الوجهة.</string>
     <string name="announce_lane_guidance">نطق الحارات</string>
     <string name="announce_lane_guidance_description">نطق الحارة التي يجب سلوكها قبل الانعطاف، بالإضافة إلى عرض أسهم الحارات.</string>
     <string name="lane_hint_left_side">خليك على اليسار</string>

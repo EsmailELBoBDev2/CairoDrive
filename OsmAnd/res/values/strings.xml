@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8" standalone="no"?>
 <resources>
+	<string name="routing_attr_avoid_narrow_streets_name">Deprioritise narrow streets</string>
+	<string name="routing_attr_avoid_narrow_streets_description">Strongly prefer wider roads. Narrow streets are still used when they are the only way to the destination.</string>
 <!--
 	README:
 	- The preferred way to help with translations is via https://hosted.weblate.org/engage/osmand/
