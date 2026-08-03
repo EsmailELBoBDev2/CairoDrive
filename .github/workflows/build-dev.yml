@@ -2,9 +2,9 @@ name: Build CairoDrive
 
 # Produces the shippable artifacts for the CairoDrive flavor (applicationId
 # com.cairodrive.app, see OsmAnd/cairodrive.gradle) built against the prebuilt OpenGL core
-# AAR, so nothing is compiled with the NDK. It covers all four ABIs by default because a
-# bundle that omits one cannot be rolled out on Play to users who are on it; the abi input
-# narrows that for a quicker throwaway build.
+# AAR for rendering - though the native C++ routing library is still built with the NDK, which
+# is most of the wall time. It builds arm64-v8a only by default; see the abi input for why, and
+# for when to switch back to fat.
 #
 # Two jobs, and the split is the whole point of this file (2026-07 supply-chain review):
 #
@@ -95,12 +95,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # fat covers arm64-v8a, armeabi-v7a, x86 and x86_64 in a single bundle. Play splits an
-  # AAB per device, so a fat bundle costs its users nothing in download size, while a
-  # single-ABI one strands everybody on the other three: "You can't rollout this release
-  # because it doesn't allow any existing users to upgrade to the newly added app bundles."
   # `inputs.abi` is empty on a push, so this fallback is what every push build uses. Kept in
-  # step with the dispatch default above - see the note there for why arm64 rather than fat.
+  # step with the dispatch default above - see the note there for why arm64 rather than fat,
+  # and for the one condition that would send it back to fat.
   ABI: ${{ inputs.abi || 'arm64' }}
   CORE: ${{ inputs.core || 'opengl' }}
 
@@ -293,8 +290,23 @@ jobs:
         working-directory: android
         run: |
           set -euo pipefail
+          # The list has to follow the ABI flavor, not be hardcoded. jni/Application.mk narrows
+          # APP_ABI from the ARM64_ONLY / ARM_ONLY / ARMV7_ONLY / X86_ONLY flags that
+          # build-common.gradle exports from the task name, so an arm64 build legitimately
+          # produces one .so - and this loop, which asserted all four, failed it. Since this step
+          # runs BEFORE the upload steps and none of them carry `if: always()`, that meant a full
+          # build producing zero artifacts. Kept as an assertion, just an accurate one.
+          case "${ABI}" in
+            arm64)   expected="arm64-v8a" ;;
+            armv7)   expected="armeabi-v7a" ;;
+            armonly) expected="arm64-v8a armeabi-v7a" ;;
+            x86)     expected="x86 x86_64" ;;
+            fat)     expected="arm64-v8a armeabi-v7a x86 x86_64" ;;
+            *)       echo "::error::Unknown ABI flavor '${ABI}' - add it to this case."; exit 1 ;;
+          esac
+          echo "ABI flavor '${ABI}' must produce: ${expected}"
           missing=0
-          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+          for abi in ${expected}; do
             if [ -f "OsmAnd/libs/${abi}/libosmand.so" ]; then
               echo "ok  ${abi}: $(stat -c%s "OsmAnd/libs/${abi}/libosmand.so") bytes"
             else
@@ -602,8 +614,23 @@ jobs:
         working-directory: android
         run: |
           set -euo pipefail
+          # The list has to follow the ABI flavor, not be hardcoded. jni/Application.mk narrows
+          # APP_ABI from the ARM64_ONLY / ARM_ONLY / ARMV7_ONLY / X86_ONLY flags that
+          # build-common.gradle exports from the task name, so an arm64 build legitimately
+          # produces one .so - and this loop, which asserted all four, failed it. Since this step
+          # runs BEFORE the upload steps and none of them carry `if: always()`, that meant a full
+          # build producing zero artifacts. Kept as an assertion, just an accurate one.
+          case "${ABI}" in
+            arm64)   expected="arm64-v8a" ;;
+            armv7)   expected="armeabi-v7a" ;;
+            armonly) expected="arm64-v8a armeabi-v7a" ;;
+            x86)     expected="x86 x86_64" ;;
+            fat)     expected="arm64-v8a armeabi-v7a x86 x86_64" ;;
+            *)       echo "::error::Unknown ABI flavor '${ABI}' - add it to this case."; exit 1 ;;
+          esac
+          echo "ABI flavor '${ABI}' must produce: ${expected}"
           missing=0
-          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+          for abi in ${expected}; do
             if [ -f "OsmAnd/libs/${abi}/libosmand.so" ]; then
               echo "ok  ${abi}: $(stat -c%s "OsmAnd/libs/${abi}/libosmand.so") bytes"
             else

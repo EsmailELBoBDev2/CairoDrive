@@ -704,7 +704,11 @@ public class VoiceRouter {
 				} else if (next.getTurnType().getValue() == TurnType.TU || next.getTurnType().getValue() == TurnType.TRU) {
 					p.prepareMakeUT(dist, getSpeakableStreetName(currentSegment, next, true));
 				}
-				if (announceLanes) {
+				// Only ever as a suffix to a real manoeuvre, never on its own. play(p) below runs
+				// unconditionally, so for a turn type this method emits nothing for, appending
+				// here would have the head unit speak a bare "stay on the right side" with no
+				// manoeuvre, no street and no distance attached to it.
+				if (announceLanes && !p.getCommandsList().isEmpty()) {
 					// Early heads-up, calm tone: "in 2 km turn right onto X, stay on the right
 					// side". Far enough out that moving over is a lane change and not a swerve.
 					appendLaneGuidance(p, next.getTurnType(), false);
@@ -778,7 +782,14 @@ public class VoiceRouter {
 			// words and the picture arrive together instead of contradicting each other. The
 			// "turn now" prompt after this one deliberately stays silent about lanes: by then the
 			// choice has been made or missed, and one more sentence would only be noise.
-			appendLaneGuidance(p, next.getTurnType(), true);
+			// Only when this prompt will actually be spoken. When getTurnType() returns null and
+			// it is not a roundabout or U-turn, isPlay stays false and play(p) is never reached,
+			// so appending here unconditionally meant the lane instruction was silently dropped
+			// - or, worse, spoken only if a turn happened to exist AFTER this one, since that is
+			// what flips isPlay back to true further down.
+			if (isPlay) {
+				appendLaneGuidance(p, next.getTurnType(), true);
+			}
 
 			// 'then keep' preparation for next after next. (Also announces an interim straight segment, which is not pronounced above.)
 			if (pronounceNextNext != null) {
@@ -822,10 +833,20 @@ public class VoiceRouter {
 	 * lane data.
 	 */
 	private boolean isTurnInDue(float speed, int dist, @Nullable RouteDirectionInfo next) {
-		int crossings = getLaneCrossings(next);
-		return crossings > 0
-				? atd.isLaneChangeDue(speed, dist, crossings)
-				: atd.isTurnStateActive(speed, dist, STATE_TURN_IN);
+		// Upstream's timing, unchanged, and it must stay that way.
+		//
+		// An earlier version of this made the trigger fire earlier when the turn needed several
+		// lane changes. That was wrong, and badly so. Each rung of this ladder fires EXACTLY
+		// ONCE - nextStatusAfter(STATUS_TURN_IN) advances currentStatus past it, after which
+		// statusNotPassed is permanently false - so moving the trigger earlier does not add a
+		// warning, it MOVES the only one there is. On a four-lane approach at 60 km/h it fired
+		// at 800 m and then said nothing at all until "turn now" at 111 m: roughly 40 seconds
+		// of silence on the run-in to the turn, where upstream speaks at 367 m.
+		//
+		// The lane changes are given their time by the PREPARE prompt instead - see
+		// isPrepareDue, where moving earlier is purely additive because the turn-in prompt
+		// still lands afterwards.
+		return atd.isTurnStateActive(speed, dist, STATE_TURN_IN);
 	}
 
 	/**

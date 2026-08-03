@@ -25,6 +25,7 @@ import net.osmand.plus.helpers.TargetPointsHelper;
 import net.osmand.plus.helpers.TargetPoint;
 import net.osmand.plus.routing.LaneHint;
 import net.osmand.plus.routing.NextDirectionInfo;
+import net.osmand.plus.routing.RouteDirectionInfo;
 import net.osmand.plus.routing.RoutingHelper;
 import net.osmand.plus.routing.data.AnnounceTimeDistances;
 import net.osmand.plus.settings.backend.OsmandSettings;
@@ -154,6 +155,14 @@ public class TripHelper {
 		String cue = TripUtils.getNextTurnDescription(app, nextDirInfo, turnType, nextTurnType);
 
 		String laneHint = null;
+		// Which direction the cue's manoeuvre came from. The lane lookup below asks for
+		// toSpeak=false while the manoeuvre above asked for toSpeak=true, and those return
+		// DIFFERENT directions whenever the nearest one is muted - RouteResultPreparation mutes
+		// keep-left/keep-right turns, which are exactly the turns that carry lane data. Without
+		// this check the cue could pair the manoeuvre of a turn 3 km away with the lanes of a
+		// muted fork 400 m away and read "Turn left, get on the right side now".
+		RouteDirectionInfo cueDirection = nextDirInfo != null ? nextDirInfo.directionInfo : null;
+
 		nextDirInfo = routingHelper.getNextRouteDirectionInfo(calc, false);
 		if (nextDirInfo != null && nextDirInfo.directionInfo != null && nextDirInfo.directionInfo.getTurnType() != null) {
 			int[] lanes = nextDirInfo.directionInfo.getTurnType().getLanes();
@@ -168,16 +177,14 @@ public class TripHelper {
 				lanes = null;
 			}
 			//int dist = nextDirInfo.distanceTo;
-			if (lanes != null) {
+			// Only when the lanes belong to the same turn the cue is describing.
+			if (lanes != null && nextDirInfo.directionInfo == cueDirection) {
 				// Same two tones as the voice, flipped by the same test the voice uses, so the
-				// screen and the speaker can never say different things. The threshold is derived
-				// from the driver's speed and from how many lanes may still have to be crossed -
-				// see VoiceRouter.isTurnInDue - rather than being a distance chosen here.
-				int crossings = LaneHint.getLaneCrossings(lanes);
+				// screen and the speaker can never say different things: STATE_TURN_IN is the
+				// state the spoken "in 300 metres, turn right" fires in, and it is derived from
+				// the driver's real speed rather than a distance chosen here.
 				float speed = timeDistances.getSpeed(currentLocation);
-				boolean urgent = crossings > 0
-						? timeDistances.isLaneChangeDue(speed, nextDirInfo.distanceTo, crossings)
-						: timeDistances.isTurnStateActive(speed, nextDirInfo.distanceTo, STATE_TURN_IN);
+				boolean urgent = timeDistances.isTurnStateActive(speed, nextDirInfo.distanceTo, STATE_TURN_IN);
 				laneHint = LaneHint.getHint(app, lanes, urgent);
 				Bitmap lanesBitmap = createLanesBitmap(stepBuilder, lanes, locimminent, leftSide, density);
 				stepBuilder.setLanesImage(new CarIcon.Builder(IconCompat.createWithBitmap(lanesBitmap)).build());
