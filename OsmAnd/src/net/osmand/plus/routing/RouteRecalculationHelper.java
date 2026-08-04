@@ -205,8 +205,26 @@ class RouteRecalculationHelper {
 		}
 	}
 
-	/** Distance ahead on the old route to aim the probe at - HERE and TomTom both work at this scale. */
+	/** Base distance ahead on the old route - HERE and TomTom both work at this scale. */
 	private static final int REPAIR_PROBE_REJOIN_M = 600;
+	/**
+	 * Item 4 escape hatch, TomTom's shape: the rejoin point moves FURTHER away on each consecutive
+	 * repair that failed its sanity tests, so a driver who keeps leaving the route is not dragged
+	 * back toward a point that keeps receding. 600 -> 1200 -> 2400, then stop trying.
+	 */
+	private static final int REPAIR_MAX_CONSECUTIVE = 3;
+	/** A repair longer than this is never worth it, whatever the ratio says. */
+	private static final int REPAIR_ABSOLUTE_CAP_M = 2500;
+	/** Repair road distance may not exceed this multiple of the along-route distance saved. */
+	private static final double REPAIR_DETOUR_RATIO = 3.0;
+	/** Floor for the ratio test, so a tiny base cannot make the ratio meaningless. */
+	private static final int REPAIR_MIN_BASE_M = 300;
+
+	private int consecutiveRepairs;
+
+	private int repairCutoffM() {
+		return REPAIR_PROBE_REJOIN_M << Math.min(consecutiveRepairs, REPAIR_MAX_CONSECUTIVE - 1);
+	}
 	/** At most one probe per this interval, so a reroute storm cannot turn into a CPU storm. */
 	private static final long REPAIR_PROBE_MIN_INTERVAL_MS = 90_000;
 
@@ -272,7 +290,7 @@ class RouteRecalculationHelper {
 			// picks a point far further along than asked for - and on a loop it never meets the
 			// threshold at all and returns null, so the probe would silently never run. Both would
 			// corrupt the one measurement this whole exercise depends on.
-			Object[] ahead = previous.getLocationAheadAlongRoute(REPAIR_PROBE_REJOIN_M);
+			Object[] ahead = previous.getLocationAheadAlongRoute(repairCutoffM());
 			if (ahead == null) {
 				// Less than 600 m of route left. Nothing to rejoin to, and nothing to learn.
 				return;
@@ -302,6 +320,24 @@ class RouteRecalculationHelper {
 			// CD_ROUTE_TIMING, so the two lines together give cost against distance for the SAME
 			// deviation, seconds apart, on the same roads - which no amount of cross-drive
 			// correlation can match for cleanliness.
+			// SANITY TESTS. A repair that loops 3 km to rejoin 600 m ahead is worse than a full
+			// search, and a ratio test alone cannot tell a necessary detour from an absurd one -
+			// the absolute cap is what does the real work.
+			String reject = null;
+			int repairDistM = probeResult.isCalculated() ? probeResult.getWholeDistance() : -1;
+			if (!probeResult.isCalculated()) {
+				reject = "notCalculated";
+			} else if (repairDistM > REPAIR_ABSOLUTE_CAP_M) {
+				reject = "tooLong";
+			} else if (repairDistM > REPAIR_DETOUR_RATIO * Math.max(alongRouteM, REPAIR_MIN_BASE_M)) {
+				reject = "detourRatio";
+			}
+			if (reject != null) {
+				consecutiveRepairs++;
+			} else {
+				consecutiveRepairs = 0;
+			}
+
 			long straightM = Math.round(MapUtils.getDistance(
 					params.start.getLatitude(), params.start.getLongitude(),
 					probe.end.getLatitude(), probe.end.getLongitude()));
@@ -317,10 +353,62 @@ class RouteRecalculationHelper {
 					+ " alongRouteM=" + alongRouteM
 					+ " askedM=" + REPAIR_PROBE_REJOIN_M
 					+ " ok=" + probeResult.isCalculated()
+					+ " repairDistM=" + repairDistM
+					+ " cutoffM=" + repairCutoffM()
+					+ " consecutiveRepairs=" + consecutiveRepairs
+					+ " reject=" + (reject == null ? "none" : reject)
 					+ " - result DISCARDED, navigation unaffected");
+
+			// THE TEST THAT MATTERS, and the only one that can catch item 4's real failure before
+			// it ever reaches a driver.
+			//
+			// A bad splice does not produce a broken-looking route. It produces a route that is
+			// geometrically continuous, passes every distance check, draws perfectly on the map -
+			// and speaks the WRONG TURN at a real junction, because the reused tail's turn types
+			// were computed against a predecessor segment that the splice replaced.
+			//
+			// Both routes exist here at the same moment, for the same deviation, so comparing the
+			// first turns after the rejoin point costs nothing. If the repair's turns match the
+			// full search's, the splice would have been safe. If they diverge, that is the bug -
+			// found in a log instead of at a junction in Cairo.
+			if (reject == null) {
+				logTurnDiff(probeResult, routingHelper.getRoute());
+			}
 		} catch (Throwable t) {
 			CairoDriveLogger.getInstance().log("CD_REROUTE", "repairProbe failed "
 					+ t.getClass().getSimpleName() + ": " + t.getMessage());
+		}
+	}
+
+	/**
+	 * Compares the first few turn instructions of the shadow repair against the route that actually
+	 * shipped. Pure diagnostics - neither route is modified.
+	 */
+	private void logTurnDiff(@NonNull RouteCalculationResult repair, @Nullable RouteCalculationResult live) {
+		try {
+			if (live == null || !live.isCalculated()) {
+				return;
+			}
+			StringBuilder sb = new StringBuilder(120);
+			int compared = 0;
+			int mismatches = 0;
+			List<RouteDirectionInfo> a = repair.getImmutableAllDirections();
+			List<RouteDirectionInfo> b = live.getImmutableAllDirections();
+			for (int i = 0; i < 3 && i < a.size() && i < b.size(); i++) {
+				String ta = String.valueOf(a.get(i).getTurnType());
+				String tb = String.valueOf(b.get(i).getTurnType());
+				compared++;
+				if (!ta.equals(tb)) {
+					mismatches++;
+					sb.append(" [").append(i).append("] repair=").append(ta).append(" live=").append(tb);
+				}
+			}
+			CairoDriveLogger.getInstance().log("CD_REROUTE", "repairTurnDiff"
+					+ " compared=" + compared + " mismatches=" + mismatches
+					+ (mismatches > 0 ? sb.toString() : " - turns agree, a splice here would have been safe"));
+		} catch (Throwable t) {
+			CairoDriveLogger.getInstance().log("CD_REROUTE",
+					"repairTurnDiff failed " + t.getClass().getSimpleName());
 		}
 	}
 

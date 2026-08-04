@@ -436,11 +436,77 @@ public class OsmandRegions {
 		return queryBboxNoInit(lx, rx, ty, by, checkCenter);
 	}
 
+	/**
+	 * Item 5. Memoised point query.
+	 *
+	 * <p>A single route calculation asks this roughly four times over essentially two points - twice
+	 * from MissingMapsCalculator and twice from calculateRegionsWithAllRoutePoints - and each call
+	 * falls through to queryBboxNoInit, a {@code synchronized} binary search over regions.ocbf
+	 * through a RandomAccessFile plus a polygon ray-cast per candidate. It takes that slow path
+	 * because {@code quadTree} is null: cacheAllCountries() is never called anywhere in the Android
+	 * app, so the fast structure that would make this cheap does not exist at runtime.
+	 *
+	 * <p>Rather than build that structure - which changes query() semantics for multi-polygon
+	 * countries and pins every boundary in RAM - the answer is simply remembered. Country borders
+	 * do not move, so the only correctness question is whether the underlying FILES changed, which
+	 * is what the generation counter covers.
+	 *
+	 * <p>Keyed on the 31-bit point rounded to ~1.2 km (>> 16). Two points that round together are
+	 * inside the same country except within about a kilometre of a border, and there the cache is
+	 * still correct for the point that filled it - the risk is only that a second point very close
+	 * to a border reuses the first one's answer. Bounded at 64 entries, so a whole drive's worth of
+	 * distinct cells costs a few kilobytes.
+	 */
+	private static final int REGION_CACHE_SHIFT = 16;
+	private static final int REGION_CACHE_MAX = 64;
+	private final LinkedHashMap<Long, List<BinaryMapDataObject>> regionPointCache =
+			new LinkedHashMap<Long, List<BinaryMapDataObject>>(16, 0.75f, true) {
+				@Override
+				protected boolean removeEldestEntry(Map.Entry<Long, List<BinaryMapDataObject>> eldest) {
+					return size() > REGION_CACHE_MAX;
+				}
+			};
+	private int regionCacheGeneration;
+	private int regionCacheHits;
+	private int regionCacheMisses;
+
+	/**
+	 * Drops the memo. MUST be called whenever the set of loaded region files changes, or a route
+	 * could be told a map is missing that has since been installed.
+	 */
+	public synchronized void invalidateRegionPointCache() {
+		regionPointCache.clear();
+		regionCacheGeneration++;
+	}
+
+	/** hits/misses since start, for CD_ROUTE_TIMING - so the saving is observed, not assumed. */
+	public synchronized String getRegionCacheStats() {
+		return regionCacheHits + "/" + (regionCacheHits + regionCacheMisses);
+	}
+
 	public List<BinaryMapDataObject> query(final int tile31x, final int tile31y) throws IOException {
-		if (quadTree != null) {
-			return getCountries(tile31x, tile31x, tile31y, tile31y, true);
+		long key = (((long) (tile31x >>> REGION_CACHE_SHIFT)) << 32)
+				| (tile31y >>> REGION_CACHE_SHIFT);
+		synchronized (this) {
+			List<BinaryMapDataObject> cached = regionPointCache.get(key);
+			if (cached != null) {
+				regionCacheHits++;
+				return cached;
+			}
 		}
-		return queryBboxNoInit(tile31x, tile31x, tile31y, tile31y, true);
+		List<BinaryMapDataObject> result;
+		if (quadTree != null) {
+			result = getCountries(tile31x, tile31x, tile31y, tile31y, true);
+		} else {
+			result = queryBboxNoInit(tile31x, tile31x, tile31y, tile31y, true);
+		}
+		synchronized (this) {
+			regionCacheMisses++;
+			// Unmodifiable: callers keep the list, and a shared mutable cached list is how a memo
+			// turns into a bug that only shows up on the second call.
+			regionPointCache.put(key, Collections.unmodifiableList(new ArrayList<>(result)));
+		}
+		return result;
 	}
 
 	private synchronized List<BinaryMapDataObject> queryBboxNoInit(int lx, int rx, int ty, int by, final boolean checkCenter) throws IOException {

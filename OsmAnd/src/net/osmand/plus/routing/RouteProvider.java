@@ -217,6 +217,18 @@ public class RouteProvider {
 	 * gives today - but the flag stops the environment from being handed to the next one.
 	 */
 	public void invalidateWarmEnvironment(@NonNull String reason) {
+		// Item 5: the region point memo is keyed on geography, and geography does not move - but
+		// the FILES it was answered from can. Every signal that drops the warm environment is
+		// exactly a signal that the loaded region set changed, so the two are invalidated together.
+		// Missing this would mean a route being told a map is absent that has since been installed.
+		try {
+			OsmandRegions regions = PlatformUtil.getOsmandRegions();
+			if (regions != null) {
+				regions.invalidateRegionPointCache();
+			}
+		} catch (Throwable ignored) {
+			// Diagnostics and caches must never be able to break a map-change callback.
+		}
 		synchronized (warmLock) {
 			mapGeneration++;
 			if (warmEnvironment != null) {
@@ -1003,6 +1015,15 @@ public class RouteProvider {
 		}
 	}
 
+	private static String regionCacheStats() {
+		try {
+			OsmandRegions regions = PlatformUtil.getOsmandRegions();
+			return regions != null ? regions.getRegionCacheStats() : "n/a";
+		} catch (Throwable t) {
+			return "err";
+		}
+	}
+
 	private void logRouteCalculationTiming(@NonNull RouteCalculationParams params,
 	                                       @NonNull RoutePlannerFrontEnd router,
 	                                       @NonNull RoutingContext ctx,
@@ -1033,6 +1054,10 @@ public class RouteProvider {
 					// asked for, not from the flag, so an uneven split shows up as data rather than
 					// silently skewing the comparison.
 					.append(" alt=").append(RoutePlannerFrontEnd.wasAlternativesUsed() ? 1 : 0)
+					// Item 5. hits/total for the region point memo. If pre= drops and this shows hits,
+					// the two agree; if pre= drops and this shows none, the saving came from somewhere
+					// else and the attribution would have been wrong.
+					.append(" regionCache=").append(regionCacheStats())
 					.append(" warm=").append(warmHHContext ? 1 : 0)
 					.append(" reuse=").append(reuseCount)
 					.append(" setup=").append(ms(setupNanos))
