@@ -23,6 +23,14 @@ public class RouteCalculationParams {
 	public RouteCalculationResult previousToRecalculate;
 
 	public boolean onlyStartPointChanged;
+
+	/**
+	 * Wall clock at which this calculation was dispatched, or 0. Fork-specific and diagnostic only -
+	 * nothing reads it except the CD_REROUTE log line, which uses it to price the span from
+	 * "deviation acted on" to "route produced". CD_ROUTE_TIMING cannot: it starts inside
+	 * RouteProvider, after this task has already been queued.
+	 */
+	public long cairoDriveDispatchedAt;
 	public boolean fast;
 	public boolean leftSide;
 	public boolean startTransportStop;

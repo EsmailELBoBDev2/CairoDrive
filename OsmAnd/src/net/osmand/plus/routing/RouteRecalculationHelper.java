@@ -9,6 +9,7 @@ import net.osmand.Location;
 import net.osmand.PlatformUtil;
 import net.osmand.data.LatLon;
 import net.osmand.plus.OsmandApplication;
+import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.R;
 import net.osmand.plus.onlinerouting.engine.OnlineRoutingEngine;
 import net.osmand.plus.routing.GPXRouteParams.GPXRouteParamsBuilder;
@@ -235,8 +236,30 @@ class RouteRecalculationHelper {
 			LOG.warn("getOsmandRegions", e);
 		}
 		// do not evaluate very often
-		if ((!isRouteBeingCalculated() && System.currentTimeMillis() - lastTimeEvaluatedRoute > evalWaitInterval)
-				|| paramsChanged || !onlyStartPointChanged) {
+		boolean busy = isRouteBeingCalculated();
+		long sinceLastMs = System.currentTimeMillis() - lastTimeEvaluatedRoute;
+		boolean allowed = (!busy && sinceLastMs > evalWaitInterval) || paramsChanged || !onlyStartPointChanged;
+		if (!allowed) {
+			// The request is DROPPED here, silently, and nothing upstream retries it - the next
+			// GPS fix has to raise the deviation all over again. Two things can cause it and they
+			// mean opposite things:
+			//   busy=1        a calculation is already running. Expected, harmless.
+			//   waiting       evalWaitInterval has not elapsed. That interval starts at 0, is set
+			//                 to 3000 on a normal route, and is multiplied by 1.5 up to a cap of
+			//                 120000 every time a route comes back pointing the wrong way
+			//                 (RouteRecalculationHelper:176-179, :429-430). Two minutes of
+			//                 refusing to recalculate reads, from the driver's seat, as the app
+			//                 having given up - and until now it left no trace anywhere.
+			// Logged because CD_ROUTE_TIMING only measures the search itself, so a reroute that
+			// never became a search was invisible in every log this project has.
+			CairoDriveLogger.getInstance().log("CD_REROUTE", "dropped"
+					+ " busy=" + (busy ? 1 : 0)
+					+ " sinceLastMs=" + sinceLastMs
+					+ " evalWaitMs=" + evalWaitInterval
+					+ " waitLeftMs=" + Math.max(0, evalWaitInterval - sinceLastMs));
+			return;
+		}
+		{
 			if (System.currentTimeMillis() - lastTimeEvaluatedRoute < RECALCULATE_THRESHOLD_CAUSING_FULL_RECALCULATE_INTERVAL) {
 				recalculateCountInInterval++;
 			}
@@ -251,12 +274,32 @@ class RouteRecalculationHelper {
 				params.gpxRoute = null;
 			}
 			params.onlyStartPointChanged = onlyStartPointChanged;
+			boolean keptPrevious;
 			if (recalculateCountInInterval < RECALCULATE_THRESHOLD_COUNT_CAUSING_FULL_RECALCULATE
 					|| (gpxRoute != null && isDeviatedFromRoute())) {
 				params.previousToRecalculate = previousRoute;
+				keptPrevious = previousRoute != null;
 			} else {
+				// Three recalculations inside two minutes and upstream throws the previous route
+				// away on purpose, to break a loop where a bad reuse keeps reproducing itself. The
+				// 2026-08-04 drive hit exactly that pattern - reroute after reroute while turning
+				// around - so this branch was almost certainly taken, and nothing recorded it.
 				recalculateCountInInterval = 0;
+				keptPrevious = false;
 			}
+			// Dispatch stamped so the SPAN NOBODY HAS EVER MEASURED can be measured: from the
+			// deviation being acted on to the new route reaching the screen. CD_ROUTE_TIMING covers
+			// `setup` and `search` inside RouteProvider only - it starts after the thread has been
+			// queued and ends before the result is handed to any listener. The driver experiences
+			// the whole span, and the parts outside the search have never been priced.
+			params.cairoDriveDispatchedAt = System.currentTimeMillis();
+			CairoDriveLogger.getInstance().log("CD_REROUTE", "dispatched"
+					+ " sinceLastMs=" + sinceLastMs
+					+ " evalWaitMs=" + evalWaitInterval
+					+ " countInInterval=" + recalculateCountInInterval
+					+ " keptPrevious=" + keptPrevious
+					+ " onlyStartPointChanged=" + onlyStartPointChanged
+					+ " paramsChanged=" + paramsChanged);
 			params.leftSide = getSettings().DRIVING_REGION.get().leftHandDriving;
 			params.fast = getSettings().FAST_ROUTE_MODE.getModeValue(mode);
 			params.mode = mode;
@@ -419,6 +462,19 @@ class RouteRecalculationHelper {
 			}
 			RouteCalculationResult prev = routingHelper.getRoute();
 			OsmandApplication app = routingHelper.getApplication();
+			// Closes the span opened at dispatch. `queue+search` here minus `setup+search` in
+			// CD_ROUTE_TIMING is the time spent NOT searching - waiting for the single-threaded
+			// executor, and running at a deliberately lowered thread priority. If that difference
+			// turns out to be large, the fix is scheduling, not the router, and the router is where
+			// six hypotheses have already been spent.
+			long dispatchedAt = params.cairoDriveDispatchedAt;
+			if (dispatchedAt > 0) {
+				CairoDriveLogger.getInstance().log("CD_REROUTE", "finished"
+						+ " totalMs=" + (System.currentTimeMillis() - dispatchedAt)
+						+ " calculated=" + res.isCalculated()
+						+ " missingMaps=" + res.hasMissingMaps()
+						+ " cancelled=" + params.calculationProgress.isCancelled);
+			}
 			if (res.isCalculated() || res.hasMissingMaps()) {
 				if (params.alternateResultListener != null) {
 					params.alternateResultListener.onRouteCalculated(res);

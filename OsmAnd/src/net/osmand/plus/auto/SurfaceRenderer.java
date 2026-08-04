@@ -55,7 +55,18 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 
 	private static final double VISIBLE_AREA_Y_MIN_DETECTION_SIZE = 1.025;
 	private static final int MAP_RENDER_MESSAGE = OsmAndConstants.UI_HANDLER_MAP_VIEW + 7;
+	/**
+	 * Frame cap for the offscreen-and-blit path. Left at 20 deliberately: the 2026-08-04 drive
+	 * measured 46.9 ms per frame, so the budget for 20 fps (50 ms) was already all but spent and
+	 * 13.1% of frames missed it. Raising the cap on that path asks for frames that cannot be
+	 * delivered - it does not produce more of them, it just queues work and burns battery.
+	 */
 	private static final int MAX_FRAME_RATE = 20;
+	/**
+	 * Frame cap for the presentation path, where the readback and the blit do not exist. There the
+	 * cap really is the limiter, and Android Auto's own video path runs at 30.
+	 */
+	private static final int MAX_FRAME_RATE_PRESENTATION = 30;
 	/** Fill shown while the offscreen renderer is not ready - matches OsmAnd's map background. */
 	private static final int EMPTY_FRAME_DAY_COLOR = 0xFFF1EEE8;
 	private static final int EMPTY_FRAME_NIGHT_COLOR = 0xFF1B1B1B;
@@ -68,6 +79,19 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 
 	@Nullable
 	private AtlasMapRendererView offscreenMapRendererView;
+	/**
+	 * The VirtualDisplay + Presentation path. Non-null and active means this class no longer draws
+	 * frames at all - see {@link CairoDriveCarPresentation}. Null, or present but inactive, means
+	 * the offscreen-and-blit path below is in charge exactly as before.
+	 */
+	@Nullable
+	private CairoDriveCarPresentation presentation;
+	/**
+	 * Latched after the presentation has failed once. Retrying it per surface event would mean
+	 * rebuilding a GL context mid-drive on a head unit that has already refused it once, which is a
+	 * far worse failure than the frame cost it was trying to avoid.
+	 */
+	private boolean presentationFailed;
 	@Nullable
 	private Surface surface;
 	@Nullable
@@ -453,6 +477,9 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 
 	public synchronized void setupOffscreenRenderer() {
 		Log.i(TAG, "setupOffscreenRenderer");
+		if (setupPresentation()) {
+			return;
+		}
 		if (getApp().useOpenGlRenderer()) {
 			if (surface != null && surface.isValid()) {
 				if (offscreenMapRendererView != null) {
@@ -565,12 +592,83 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 	}
 
 	public boolean hasOffscreenRenderer() {
-		return offscreenMapRendererView != null;
+		return offscreenMapRendererView != null || isPresenting();
+	}
+
+	private boolean isPresenting() {
+		CairoDriveCarPresentation p = presentation;
+		return p != null && p.isActive();
+	}
+
+	/**
+	 * Tries the VirtualDisplay + Presentation path. Returns true only when it is showing and owns
+	 * the map, in which case the caller must not build the offscreen renderer.
+	 *
+	 * <p>Requires the GL core: the presentation hosts an {@link AtlasMapRendererView}, which is the
+	 * OpenGL renderer. On a build or device where {@code useOpenGlRenderer()} is false there is
+	 * nothing to put on the display, so this declines and the legacy path runs.
+	 */
+	private boolean setupPresentation() {
+		if (!BuildConfig.CAIRODRIVE_PRESENTATION || presentationFailed) {
+			return false;
+		}
+		if (isPresenting()) {
+			return true;
+		}
+		if (!getApp().useOpenGlRenderer()) {
+			presentationFailed = true;
+			CairoDriveLogger.getInstance().log("CD_PRESENT",
+					"skipped - OpenGL renderer is off, there is nothing to present");
+			return false;
+		}
+		Surface surface = this.surface;
+		OsmandMapTileView mapView = this.mapView;
+		if (surface == null || !surface.isValid() || mapView == null) {
+			// Not a failure - the surface simply has not arrived yet. Deliberately NOT latched, so
+			// the next onSurfaceAvailable tries again.
+			return false;
+		}
+		if (presentation == null) {
+			presentation = new CairoDriveCarPresentation();
+		}
+		// Raw container size, not scaled(): overscan and renderScale exist only to move fewer
+		// pixels through the readback and the blit, and this path has neither.
+		int width = surfaceContainer != null ? surfaceContainer.getWidth() : getWidth();
+		int height = surfaceContainer != null ? surfaceContainer.getHeight() : getHeight();
+		float elevationAngle = mapView.normalizeElevationAngle(
+				getApp().getSettings().getLastKnownMapElevation());
+		mapView.setMinAllowedElevationAngle(MIN_ALLOWED_ELEVATION_ANGLE_AA);
+		boolean ok = presentation.attach(getApp(), carContext, surface, width, height, getDpi(),
+				mapView, MAX_FRAME_RATE_PRESENTATION, getApp().getSettings().ENABLE_MSAA.get(),
+				getApp().getSettings().SPHERICAL_MAP.get(), elevationAngle,
+				mapView.getMinZoom(), mapView.getMaxZoom(), SYMBOLS_UPDATE_INTERVAL);
+		if (ok) {
+			mapView.addElevationListener(this);
+			getApp().getOsmandMap().getMapLayers().updateMapSource(mapView, null);
+			PluginsHelper.refreshLayers(getApp(), null);
+			mapView.getAnimatedDraggingThread().toggleAnimations();
+			if (cachedVisibleArea != null) {
+				changeVisibleArea(cachedVisibleArea);
+			}
+			return true;
+		}
+		presentationFailed = true;
+		presentation = null;
+		return false;
 	}
 
 	public void renderFrame() {
 		if (mapView == null || surface == null || !surface.isValid()) {
 			// Surface is not available, or has been destroyed, skip this frame.
+			return;
+		}
+		if (isPresenting()) {
+			// The presentation renders itself: the GL map runs off the core's own frame loop and
+			// the overlays are a View on a hardware-accelerated window. There is no canvas to lock,
+			// nothing to read back and nothing to blit - every call this method makes would be
+			// drawing into a surface the virtual display now owns. All this path still owes the map
+			// is a redraw request for the overlay view.
+			presentation.invalidateOverlays();
 			return;
 		}
 		// Dark mode is read once here and the DrawSettings built from it is the one actually
@@ -588,6 +686,12 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 	public void renderFrame(RotatedTileBox tileBox, DrawSettings drawSettings) {
 		if (mapView == null || surface == null || !surface.isValid()) {
 			// Surface is not available, or has been destroyed, skip this frame.
+			return;
+		}
+		if (isPresenting()) {
+			// Same reason as the overload above. This one is reached directly from
+			// OsmandMapTileView's refresh path, so it needs the guard independently.
+			presentation.invalidateOverlays();
 			return;
 		}
 		// This whole method runs on the main looper, so its wall time is exactly the head-unit

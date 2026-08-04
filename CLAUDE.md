@@ -101,7 +101,9 @@ masquerading as a Play build has wasted a drive before.
 |---|---|---|
 | `CAIRODRIVE_RENDER_SCALE` | `1.0` | Full sharpness. Below 1.0 buys frame rate by pushing fewer pixels through the GPU readback and the software blit, at the cost of label legibility - `0.75` = 44% fewer, `0.85` = 28%. Kept at native because the right fix is removing those two copies, not shrinking them |
 | `CAIRODRIVE_SURFACE_OVERSCAN` | `0.0` | Upstream renders 50% extra width every frame and crops it |
-| `CAIRODRIVE_OFFROUTE_HYSTERESIS` | `false` | Delayed a genuine wrong turn for kilometres on a real drive |
+| `CAIRODRIVE_OFFROUTE_HYSTERESIS` | `true` | Was `false` because it delayed a genuine wrong turn for kilometres. Back on 2026-08-04 after fixing all three compounding rules (evidence cleared only by two *consecutive* on-route fixes, debounce checked after the evidence test, hard 12 s timeout). Six fix patterns simulated before the flip |
+| `CAIRODRIVE_HW_CANVAS` | `true` | Draws the car frame with `lockHardwareCanvas()`. Targets `blit` **and** `over` — both are paid on the same software canvas, together 76% of a frame. Latches back to software if the head unit refuses; `CD_FRAME hwCanvas=` says which actually ran |
+| `CAIRODRIVE_PRESENTATION` | `true` | B1. VirtualDisplay + `Presentation` instead of offscreen-render-and-copy. Removes `read`, `blit` and the software canvas outright. Falls back to the offscreen path on any failure, latched, with the reason in `CD_PRESENT`. Makes `RENDER_SCALE` and `SURFACE_OVERSCAN` inert |
 | `CAIRODRIVE_DRIVING_VIEW` | `true` | Starts navigation tilted. Upstream only applies `AUTO_ZOOM_3D_ANGLE` when the map is ALREADY tilted, so a user who never tilted by hand never got the 3D view at all. **Watch `over` and `avgMs` on the next log** — a tilted camera sees further, so more tiles are drawn per frame |
 | `CAIRODRIVE_FULL_LOGGING` | `true` | Both build types — a Play build must log or a drive produces nothing |
 | ABI | `arm64` | The only test device is a POCO C85 (`arm64-v8a`). Switch to `fat` before any wide rollout, or Play rejects it for stranding existing installs |

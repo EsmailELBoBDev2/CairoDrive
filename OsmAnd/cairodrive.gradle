@@ -149,6 +149,43 @@ def surfaceOverscan = overscanEnv?.trim() ? overscanEnv.trim() : "0.0"
 def hwCanvasEnv = System.getenv("CAIRODRIVE_HW_CANVAS")
 def hwCanvas = hwCanvasEnv?.trim() ? hwCanvasEnv.trim() : "true"
 
+// Draw the Android Auto map through a VirtualDisplay + Presentation instead of rendering offscreen
+// and copying the result onto the car surface every frame. This is "B1".
+//
+// The offscreen path does three copies per frame - render offscreen, read the pixels back out of
+// the GPU, blit them onto a lockCanvas() canvas - and then draws every overlay onto that same
+// software canvas. The 2026-08-04 drive priced it over 32,200 frames:
+//
+//     over 25.9ms (61%) | blit 9.2 (22%) | read 4.5 (11%) | lock 1.6 | post 1.0 | wdgt 0.1
+//
+// A Presentation on a virtual display backed by the car's own Surface removes all three copies at
+// once, because none of them is a step in the ordinary Android view pipeline - and it carries the
+// overlays onto the GPU with it, because OsmAndMapLayersView is a plain View. It is not a new
+// architecture: it is the SAME view stack the phone already uses (MapViewWithLayers = an
+// AtlasMapRendererView with an OsmAndMapLayersView on top), pointed at a different display.
+//
+// ON by default, because the point is to measure it, and because the fallback is real rather than
+// theoretical: CairoDriveCarPresentation.attach() wraps every step in try/catch, returns false on
+// any failure with the reason logged as CD_PRESENT, releases everything it created, and
+// SurfaceRenderer then builds the offscreen renderer exactly as it does today. The failure latches
+// for the session rather than retrying, since rebuilding a GL context mid-drive on a head unit
+// that has already refused one is worse than the frame cost being avoided.
+//
+// Needs no permission: the display is created OWN_CONTENT_ONLY, so it is private, so the window is
+// typed TYPE_PRIVATE_PRESENTATION, which PhoneWindowManager admits without SYSTEM_ALERT_WINDOW.
+//
+// CAIRODRIVE_SURFACE_OVERSCAN and CAIRODRIVE_RENDER_SCALE do not apply on this path and are not
+// read by it. Both exist only to move fewer pixels through the readback and the blit.
+//
+// What to check on the log: CD_PRESENT says `attached` or `FAILED <reason>`; CD_FRAME then carries
+// `renderMode=presentation` with `avgOver` against 25.9 and `avgMs` against 46.9, plus `hwAccel=`,
+// which must be true - false would mean the window fell back to software and the overlays are
+// still on the CPU. What to check on the SCREEN: that the map appears at all, and that touch,
+// panning and zoom still work from the head unit.
+// Set CAIRODRIVE_PRESENTATION=false to build the offscreen path.
+def presentationEnv = System.getenv("CAIRODRIVE_PRESENTATION")
+def presentation = presentationEnv?.trim() ? presentationEnv.trim() : "true"
+
 def renderScaleEnv = System.getenv("CAIRODRIVE_RENDER_SCALE")
 def renderScale = renderScaleEnv?.trim() ? renderScaleEnv.trim() : "1.0"
 
@@ -227,6 +264,7 @@ android {
 			buildConfigField "float", "CAIRODRIVE_SURFACE_OVERSCAN", surfaceOverscan + "f"
 			buildConfigField "float", "CAIRODRIVE_RENDER_SCALE", renderScale + "f"
 			buildConfigField "boolean", "CAIRODRIVE_HW_CANVAS", hwCanvas
+			buildConfigField "boolean", "CAIRODRIVE_PRESENTATION", presentation
 		}
 		release {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
@@ -238,6 +276,7 @@ android {
 			buildConfigField "float", "CAIRODRIVE_SURFACE_OVERSCAN", surfaceOverscan + "f"
 			buildConfigField "float", "CAIRODRIVE_RENDER_SCALE", renderScale + "f"
 			buildConfigField "boolean", "CAIRODRIVE_HW_CANVAS", hwCanvas
+			buildConfigField "boolean", "CAIRODRIVE_PRESENTATION", presentation
 		}
 	}
 }
