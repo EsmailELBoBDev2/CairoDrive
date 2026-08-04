@@ -37,7 +37,7 @@ multi-day question, so compute it every time:
 |---|---|---|
 | `read` / `blit` | GPU readback + a **software** blit (a `lockCanvas` canvas is never hardware accelerated) | 1. Hours: rebuild with `CAIRODRIVE_RENDER_SCALE=0.75` → ~44% fewer pixels through both. 2. ~3–5 days: VirtualDisplay + `Presentation` removes both steps outright |
 | `lock` / `post` | The head unit is not taking frames back | **Stop.** No app-side change helps — not scaling, not the rewrite |
-| `over` | OsmAnd's own Java drawing | The nine deferred perf findings become worth doing (per-fix bitmaps in `TripHelper`, boxed ints in `RouteGeometryWay`, per-frame `getModeValue`) |
+| `over` | OsmAnd's own Java drawing — `mapView.drawOverMap`, i.e. the ~23 map layers | **This is what the 2026-08-04 drive measured: 25.9 ms, 61% of a 46.9 ms frame.** Read `CD_LAYER`, which names the worst layers per 200-frame window. Do **not** reach for the nine deferred perf findings — they were measured statically at **0.2–0.4% of a frame combined** and are not the explanation. Note also that `over` is drawn onto the same canvas as `blit`, so on the offscreen path both are paid in software |
 | `wdgt` | Speedometer/alarm widgets | Already gated to rebuild only on a new fix; if still large the cost is drawing, not computing |
 
 `wdgt` exists because the timing mark used to sit *before* the widget callback, so that work
@@ -104,7 +104,7 @@ masquerading as a Play build has wasted a drive before.
 | `CAIRODRIVE_OFFROUTE_HYSTERESIS` | `true` | Was `false` because it delayed a genuine wrong turn for kilometres. Back on 2026-08-04 after fixing all three compounding rules (evidence cleared only by two *consecutive* on-route fixes, debounce checked after the evidence test, hard 12 s timeout). Six fix patterns simulated before the flip |
 | `CAIRODRIVE_HW_CANVAS` | `true` | Draws the car frame with `lockHardwareCanvas()`. Targets `blit` **and** `over` — both are paid on the same software canvas, together 76% of a frame. Latches back to software if the head unit refuses; `CD_FRAME hwCanvas=` says which actually ran |
 | `CAIRODRIVE_PRESENTATION` | `true` | B1. VirtualDisplay + `Presentation` instead of offscreen-render-and-copy. Removes `read`, `blit` and the software canvas outright. Falls back to the offscreen path on any failure, latched, with the reason in `CD_PRESENT`. Makes `RENDER_SCALE` and `SURFACE_OVERSCAN` inert |
-| `CAIRODRIVE_DRIVING_VIEW` | `true` | Starts navigation tilted. Upstream only applies `AUTO_ZOOM_3D_ANGLE` when the map is ALREADY tilted, so a user who never tilted by hand never got the 3D view at all. **Watch `over` and `avgMs` on the next log** — a tilted camera sees further, so more tiles are drawn per frame |
+| `CAIRODRIVE_DRIVING_VIEW` | `true` | Starts navigation tilted. Upstream only applies `AUTO_ZOOM_3D_ANGLE` when the map is ALREADY tilted, so a user who never tilted by hand never got the 3D view at all. **Watch `avgMs`, not `over`** — a tilted camera sees further, so more is drawn per frame, but on the OpenGL build the map tiles are drawn by the GL core and never appear in `over`. `over` is the Java overlay layers only |
 | `CAIRODRIVE_FULL_LOGGING` | `true` | Both build types — a Play build must log or a drive produces nothing |
 | ABI | `arm64` | The only test device is a POCO C85 (`arm64-v8a`). Switch to `fat` before any wide rollout, or Play rejects it for stranding existing installs |
 

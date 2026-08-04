@@ -71,6 +71,28 @@ verified. A compile failure there is the expected failure mode.**
 | 7 | Enable the alternatives switch that already exists in the tree but is off (`HHRoutingConfig.CALC_ALTERNATIVES`) | Would be a third render/routing variable in a drive already testing B1 and the card change. One at a time |
 | — | Raise the car frame cap 20 → 30 | **Done on the B1 path only.** On the offscreen path a frame costs 46.9 ms, so a 33 ms budget cannot be met — asking for more frames queues work that cannot be delivered. The cap was never the limiter there |
 
+## Also not done — found while auditing, not part of the four above
+
+Listed separately because these are not gated on the next drive. They are simply open.
+
+| Item | Why it is still open |
+|---|---|
+| **`osmand.api://` has no caller validation** | `ExternalApiHelper` does not check which app is calling, and `get_info` returns precise location and destination. Any app on the phone can ask. **Found and described, never fixed.** The only genuine security hole still open in this tree |
+| `evalWaitInterval` is only measured, not fixed | It grows ×1.5 up to **120 s**, and while it is running a deviation is refused silently with nothing retrying. `CD_REROUTE dropped` now records it; the behaviour is unchanged. Fixing it means deciding what the cap should be, which wants one drive's data first |
+| Arrow un-snaps on **any** recalculation | `RoutingHelper:544` gates the projection on `inRecalc`, which is true for a target change or a settings change too — not only a genuine deviation. Correct when off-route, misleading otherwise. Narrow fix, moderate risk |
+| Voice is silent for the whole recalculation | Prompts are interrupted while `inRecalc`. Same window as the blank card, and the card fix does not address it |
+| No reroute result cache | A driver oscillating at a junction re-asks a question answered seconds earlier. Free to a system with no marginal query cost. Needs the warm-signature discipline (`RouteProvider:306-336`) to avoid serving a stale route |
+| `RouteProvider:708-714` index-space bug | Upstream slices a segment-indexed list with a location index. Inert today because the HH branch discards the result anyway — but it stops being inert if anything changes at `RoutePlannerFrontEnd:460`. Fix on its own commit |
+
+## Item codes that could not be mapped
+
+The original planning table used codes `S3, C9, P9, C2, C3, C7, C8, N2–N8, B2, B3, B5`. That
+table lived in a chat and was never committed, and the mapping is no longer recoverable with
+confidence. Rather than guess, they are recorded here as unknown. Everything in the Done
+sections above was verified by reading the tree, not from memory.
+
+**This file exists so that does not happen again.**
+
 ## Dropped
 
 | Item | Why |
