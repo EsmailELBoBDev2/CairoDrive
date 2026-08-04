@@ -81,11 +81,44 @@ DROP_SOURCES = [
     "fonts/60_NotoSansTibetan-Bold.ttf",
 ]
 
+# Fonts that ship in the resources checkout but are NOT in upstream's manifest, so the
+# extractor never unpacks them and the renderer - which only ever reads FONT_INDEX_DIR,
+# populated from the manifest - cannot see them. Estedad is an Arabic/Latin screen sans; its
+# 03/04 filenames put it ahead of Noto Sans in the fallback order the renderer walks.
+#
+# Without this, the ONLY Arabic-script font the renderer has is 65_NotoSansNastaliqUrdu, and
+# Nastaliq is the Perso-Urdu calligraphic style: steep diagonal baselines, deep vertical
+# stacking, long descenders. Egyptian road signage is Naskh. Every street label in Cairo was
+# being set in the wrong script style, on a tilted map, at glance speed.
+#
+# Nastaliq deliberately stays in REQUIRED_SOURCES below: it is 100% of the Arabic coverage
+# today, and if Estedad turns out to be missing a glyph that appears in an Egyptian name:ar
+# value, the fallback chain needs somewhere to land other than an empty box.
+ADD_FILES = [
+    "rendering_styles/fonts/03_Estedad-Regular.ttf",
+    "rendering_styles/fonts/04_Estedad-Bold.ttf",
+]
+
+ADD_ENTRIES = [
+    {
+        "source": "fonts/03_Estedad-Regular.ttf",
+        "destination": "fonts/03_Estedad-Regular.ttf",
+        "mode": "alwaysOverwriteOrCopy",
+    },
+    {
+        "source": "fonts/04_Estedad-Bold.ttf",
+        "destination": "fonts/04_Estedad-Bold.ttf",
+        "mode": "alwaysOverwriteOrCopy",
+    },
+]
+
 # Must survive. Asserted after the edit, not assumed - see the note above about Arabic.
 REQUIRED_SOURCES = [
     "fonts/65_NotoSansNastaliqUrdu-Regular.ttf",
     "fonts/05_NotoSans-Regular.ttf",
     "fonts/10_NotoSans-Bold.ttf",
+    "fonts/03_Estedad-Regular.ttf",
+    "fonts/04_Estedad-Bold.ttf",
 ]
 
 
@@ -114,12 +147,13 @@ def main():
 
     present = {entry.get("source") for entry in entries}
 
-    already = not any(source in present for source in DROP_SOURCES)
-    if already:
+    drops_pending = any(source in present for source in DROP_SOURCES)
+    adds_pending = any(entry["source"] not in present for entry in ADD_ENTRIES)
+    if not drops_pending and not adds_pending:
         print("cairodrive_trim_assets: already applied, nothing to do")
         return
 
-    missing = [source for source in DROP_SOURCES if source not in present]
+    missing = [source for source in DROP_SOURCES if source not in present] if drops_pending else []
     if missing:
         # Partially applied, or upstream renamed something. Either way the file/manifest
         # pairing can no longer be guaranteed, and guessing is how the app ends up with no
@@ -130,14 +164,21 @@ def main():
 
     kept = [entry for entry in entries if entry.get("source") not in DROP_SOURCES]
     removed = len(entries) - len(kept)
-    if removed != len(DROP_SOURCES):
+    if drops_pending and removed != len(DROP_SOURCES):
         fail("expected to remove %d entries, removed %d" % (len(DROP_SOURCES), removed))
+
+    # Add before the required-sources assert, so the assert covers the additions too.
+    added = 0
+    for entry in ADD_ENTRIES:
+        if entry["source"] not in {kept_entry.get("source") for kept_entry in kept}:
+            kept.append(dict(entry))
+            added += 1
 
     kept_sources = {entry.get("source") for entry in kept}
     for source in REQUIRED_SOURCES:
         if source not in kept_sources:
-            fail("%s is no longer in the manifest. Arabic labels depend on the Nastaliq "
-                 "font; refusing to produce a build without it." % source)
+            fail("%s is no longer in the manifest. Cairo street labels depend on these fonts; "
+                 "refusing to produce a build without it." % source)
 
     # Validate EVERY file before touching anything. Writing the manifest first and discovering
     # a missing file afterwards would leave exactly the half-applied state this script exists
@@ -150,6 +191,19 @@ def main():
             fail("%s is missing from the checkout, but its manifest entry was present. "
                  "Refusing to continue with a half-applied trim." % relative)
         freed += os.path.getsize(path)
+
+    # Same discipline in the other direction: never add a manifest entry for a file that is not
+    # there. CheckAssetsTask now catches per entry rather than aborting the whole pass, but a
+    # manifest that promises a font the APK does not carry is still a build that renders boxes.
+    add_bytes = 0
+    for relative in ADD_FILES:
+        path = os.path.join(root, relative)
+        if not os.path.isfile(path):
+            fail("%s is not in the checkout, so it cannot be added to the manifest. Upstream may "
+                 "have renamed or dropped the Estedad fonts - re-check this script against "
+                 "rendering_styles/fonts/ rather than shipping a manifest that promises a missing "
+                 "font." % relative)
+        add_bytes += os.path.getsize(path)
 
     manifest["assets"] = kept
     try:
@@ -164,6 +218,10 @@ def main():
 
     print("cairodrive_trim_assets: removed %d assets and %d manifest entries, %.1f MB"
           % (len(DROP_FILES), removed, freed / 1e6))
+    if added:
+        print("cairodrive_trim_assets: added %d manifest entries (%.0f KB) so the renderer can "
+              "actually use them: %s"
+              % (added, add_bytes / 1e3, ", ".join(e["source"] for e in ADD_ENTRIES)))
     print("cairodrive_trim_assets: kept %s" % ", ".join(REQUIRED_SOURCES))
 
 

@@ -243,6 +243,15 @@ public class CairoDriveLogger {
 			"SurfaceRenderer:V",
 			"AndroidRuntime:E",
 			"System.err:W",
+			// System.out at INFO, because two numbers we actually want are printed with
+			// System.out.println and were being dropped by the "*:W" floor below:
+			//   OsmandApplication  "Time to start application ... ms. Should be less < 800 ms"
+			//   OsmandApplication  "Time to init plugins ... ms. Should be less < 800 ms"
+			// AppInitializer's per-stage "Initialized <EVENT> in N ms" and its
+			// "Startup service <class> took too long N ms" go to System.err and were already
+			// captured - so with this line the whole startup breakdown is readable from a drive log
+			// without attaching a debugger.
+			"System.out:I",
 			"*:W",
 	};
 

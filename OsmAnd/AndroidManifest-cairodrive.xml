@@ -23,5 +23,24 @@
 			android:name="androidx.core.content.FileProvider"
 			android:authorities="com.cairodrive.app.fileprovider"
 			tools:replace="android:authorities"/>
+
+		<!--
+			Upstream exports both AIDL services with no android:permission, unlike
+			NavigationService and DownloadService which are protected by the signature-level
+			${applicationId}.SERVICE_PERMISSION. That is deliberate upstream design - the AIDL
+			API exists for third-party apps to drive OsmAnd - and the in-code check
+			(getNameForUid(Binder.getCallingUid()), default-deny for unknown packages) is the
+			real control.
+
+			CairoDrive is a single-user fork with no third-party integrations, so the whole
+			surface is removed rather than merely gated. This is the companion to the
+			OsmandAidlApi change that stopped registering its ~24 broadcast receivers as
+			exported: that one closed the hole, this one removes the door. Either alone is
+			sufficient; together there is nothing left to reach.
+
+			If a third-party OsmAnd API app is ever wanted here, delete this block first.
+		-->
+		<service android:name="net.osmand.aidl.OsmandAidlService" tools:node="remove"/>
+		<service android:name="net.osmand.aidl.OsmandAidlServiceV2" tools:node="remove"/>
 	</application>
 </manifest>

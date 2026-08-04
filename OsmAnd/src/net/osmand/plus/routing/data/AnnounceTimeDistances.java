@@ -183,23 +183,6 @@ public class AnnounceTimeDistances {
 	}
 
 	/**
-	 * Whether a turn that needs the driver to be on a particular side of the road is close enough
-	 * to announce, given how many lanes they may still have to cross to get there.
-	 *
-	 * <p>Unlike {@link #isTurnStateActive} this does not take a fixed state: the lead distance is
-	 * derived from the work the driver actually has left to do. Two lanes on a side street and six
-	 * lanes on an arterial are not the same instruction, and warning about both at the same moment
-	 * means one of them is wrong.
-	 *
-	 * <p>Bounded at both ends. It can never fire later than the ordinary turn-in prompt, so no turn
-	 * is ever announced later than it is today; and it can never reach back past the end of the
-	 * prepare prompt's window or past the distance at which the lane arrows themselves appear, so
-	 * it cannot crowd the announcement before it or talk about arrows that are not on screen yet.
-	 *
-	 * @param laneCrossings worst-case number of lanes between the driver and a usable lane - that
-	 *                      is, assuming they are currently on the far side of the road.
-	 */
-	/**
 	 * Whether the early "prepare" prompt - the one carrying the calm "stay on the right side" - is
 	 * due, given how many lanes may still have to be crossed.
 	 *
@@ -229,23 +212,13 @@ public class AnnounceTimeDistances {
 		return dist <= Math.min(needed, PREPARE_LONG_DISTANCE) + currentSpeed * voicePromptDelayTimeSec;
 	}
 
-	public boolean isLaneChangeDue(float currentSpeed, double dist, int laneCrossings) {
-		// Floor: never later than the ordinary turn-in prompt, so no turn is ever announced later
-		// than it would have been without any of this.
-		if (isTurnStateActive(currentSpeed, dist, STATE_TURN_IN)) {
-			return true;
-		}
-		double lead = laneCrossings * SECONDS_PER_LANE_CHANGE * DEFAULT_SPEED;
-		// Scaled by real speed the same way every other lead distance is: the driver needs a fixed
-		// amount of TIME to change lanes, so the distance that buys it grows with how fast they are
-		// travelling.
-		lead = Math.max(lead, currentSpeed / DEFAULT_SPEED * lead);
-		// Ceiling, two reasons, whichever binds first. Past the end of the prepare prompt's window
-		// this would start treading on the announcement before it, and past the distance at which
-		// the lane arrows appear the words would arrive with no picture to match them.
-		lead = Math.min(lead, Math.min(PREPARE_DISTANCE_END, LANES_MAX_METERS_SPOKEN_TURN));
-		return dist <= lead + currentSpeed * voicePromptDelayTimeSec;
-	}
+	// isLaneChangeDue was removed here. It had no callers - it was the trigger for the reverted
+	// "lane-aware turn-in" change, whose failure is recorded in CLAUDE.md: each rung of the prompt
+	// ladder fires exactly once (VoiceRouter.nextStatusAfter makes statusNotPassed permanently
+	// false), so moving a trigger earlier MOVES the prompt rather than adding one. A 4-lane turn at
+	// 60 km/h ended up with roughly 40 seconds of silence before it. Anything in this area has to be
+	// ADDITIVE - a new rung - never a moved threshold. Leaving a dead method with a javadoc that
+	// reads like a working feature is how that gets rewired by mistake.
 
 	public boolean isTurnStateNotPassed(float currentSpeed, double dist, int turnType) {
 		switch (turnType) {

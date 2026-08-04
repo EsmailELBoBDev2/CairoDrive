@@ -7,6 +7,7 @@ import android.content.Intent;
 import android.media.AudioAttributes;
 import android.os.Build;
 import android.speech.tts.TextToSpeech;
+import android.speech.tts.Voice;
 import android.speech.tts.TextToSpeech.OnUtteranceCompletedListener;
 
 import androidx.annotation.NonNull;
@@ -14,6 +15,7 @@ import androidx.annotation.Nullable;
 
 import net.osmand.PlatformUtil;
 import net.osmand.plus.OsmandApplication;
+import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.R;
 import net.osmand.plus.api.AudioFocusHelperImpl;
 import net.osmand.plus.routing.VoiceRouter;
@@ -162,6 +164,81 @@ public class JsTtsCommandPlayer extends CommandPlayer {
 					ttsVoiceUsed = getVoiceUsed();
 					break;
 			}
+			logVoiceState(locale);
+		}
+	}
+
+	/**
+	 * CD_VOICE. Until this existed, CLAUDE.md carried a rule keyed on seeing LANG_MISSING_DATA in a
+	 * drive log - and that could never happen: the status only ever landed in the private static
+	 * ttsVoiceStatus, which nothing but the Development plugin's test screen reads, and no AOSP code
+	 * prints that string either. The rule was undiagnosable by construction.
+	 * <p>
+	 * The rule's description was also backwards. speechAllowed is set to true BEFORE the
+	 * availability switch above, and the two failure arms break without calling setLanguage(), so
+	 * prompts are not silent - they are spoken by whatever locale the engine defaulted to. An Arabic
+	 * street name read by an English voice is noise, not silence.
+	 * <p>
+	 * network= is the other thing worth having: AOSP documents LATENCY_HIGH as "network based,
+	 * around 200 ms" and VERY_HIGH as ">200 ms". If the Arabic voice turns out to be a network voice,
+	 * that alone explains late prompts on Cairo mobile data with no code change at all.
+	 */
+	private void logVoiceState(@NonNull Locale locale) {
+		try {
+			TextToSpeech tts = JsTtsCommandPlayer.mTts;
+			if (tts == null) {
+				return;
+			}
+			int availability = tts.isLanguageAvailable(locale);
+			StringBuilder sb = new StringBuilder();
+			sb.append("provider=").append(app.getSettings().VOICE_PROVIDER.get())
+					.append(" locale=").append(locale)
+					.append(" availability=").append(availabilityName(availability))
+					.append(" speechAllowed=").append(speechAllowed)
+					.append(" engine=").append(tts.getDefaultEngine());
+			Voice voice = null;
+			try {
+				voice = tts.getVoice();
+			} catch (Exception ignored) {
+				// some engines throw here before they are fully ready
+			}
+			if (voice != null) {
+				sb.append(" voice=").append(voice.getName())
+						.append(" latency=").append(voice.getLatency())
+						.append(" network=").append(voice.isNetworkConnectionRequired())
+						.append(" quality=").append(voice.getQuality());
+			} else {
+				sb.append(" voice=null");
+			}
+			int stream = app.getSettings().AUDIO_MANAGER_STREAM.get();
+			sb.append(" stream=").append(stream);
+			if (stream >= 0 && stream < app.getSettings().AUDIO_USAGE.length
+					&& app.getSettings().AUDIO_USAGE[stream] != null) {
+				sb.append(" usage=").append(app.getSettings().AUDIO_USAGE[stream].get());
+			}
+			sb.append(" promptDelaySec=").append(app.getSettings().VOICE_PROMPT_DELAY[stream] != null
+					? app.getSettings().VOICE_PROMPT_DELAY[stream].get() : -1);
+			CairoDriveLogger.getInstance().log("CD_VOICE", sb.toString());
+		} catch (Exception e) {
+			log.error("CD_VOICE logging failed", e);
+		}
+	}
+
+	@NonNull
+	private static String availabilityName(int availability) {
+		switch (availability) {
+			case TextToSpeech.LANG_NOT_SUPPORTED:
+				return "LANG_NOT_SUPPORTED";
+			case TextToSpeech.LANG_MISSING_DATA:
+				return "LANG_MISSING_DATA";
+			case TextToSpeech.LANG_AVAILABLE:
+				return "LANG_AVAILABLE";
+			case TextToSpeech.LANG_COUNTRY_AVAILABLE:
+				return "LANG_COUNTRY_AVAILABLE";
+			case TextToSpeech.LANG_COUNTRY_VAR_AVAILABLE:
+				return "LANG_COUNTRY_VAR_AVAILABLE";
+			default:
+				return "UNKNOWN(" + availability + ")";
 		}
 	}
 

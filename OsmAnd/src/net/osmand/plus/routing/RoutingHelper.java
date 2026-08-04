@@ -13,6 +13,7 @@ import net.osmand.plus.NavigationService;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.auto.NavigationSession;
+import net.osmand.plus.cairodrive.CairoDriveEta;
 import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.cairodrive.CairoDriveOffRoute;
 import net.osmand.plus.helpers.TargetPointsHelper;
@@ -57,6 +58,7 @@ public class RoutingHelper {
 	private static final int MAX_POSSIBLE_SPEED = 340; // ~ 1 Mach
 	private static final boolean ENABLE_LOG_POS_PROCESSED = false;
 	private static final int STOP_NAVIGATION_ON_AA_DISCONNECT_DISTANCE_THRESHOLD = 100;
+	private static final long ETA_LOG_INTERVAL_MS = 30_000;
 	private static final int PAUSE_NAVIGATION_ON_AA_DISCONNECT_SPEED_THRESHOLD = 1;
 
 	private List<WeakReference<IRouteInformationListener>> listeners = new LinkedList<>();
@@ -85,6 +87,8 @@ public class RoutingHelper {
 	private List<LatLon> intermediatePoints;
 	private Location lastProjection;
 	private Location lastFixedLocation;
+	private final CairoDriveEta etaCalibrator = new CairoDriveEta();
+	private long lastEtaLogTime;
 	private Location lastGoodRouteLocation;
 	private boolean routeWasFinished;
 	private ApplicationMode mode;
@@ -129,6 +133,10 @@ public class RoutingHelper {
 		this.route = route;
 		// Evidence of deviating from the previous route says nothing about this one.
 		offRouteHysteresis.reset();
+		// The speed ratio is deliberately NOT reset here. A reroute mid-trip is the same driver on
+		// the same roads a minute later, and throwing the ratio away would put the estimate back to
+		// the modelled speed exactly when the driver is most likely to be looking at it. It is only
+		// reset when navigation stops - see clearCurrentRoute.
 	}
 
 	long getDeviateFromRouteDetected() {
@@ -252,6 +260,11 @@ public class RoutingHelper {
 		routeWasFinished = false; // Prevent stale "arrived" state from leaking into the next navigation session
 		route = new RouteCalculationResult("");
 		isDeviatedFromRoute = false;
+		// New trip, new conditions. The observed/modelled speed ratio from the last drive is not
+		// evidence about this one - a morning commute and a 2am airport run are different roads at
+		// different speeds even when the map data is identical.
+		etaCalibrator.reset();
+		lastEtaLogTime = 0;
 		routeRecalculationHelper.resetEvalWaitInterval();
 		app.getWaypointHelper().setNewRoute(route);
 		app.runInUIThread(() -> {
@@ -554,6 +567,12 @@ public class RoutingHelper {
 			lastProjection = locationProjection;
 			if (!route.isEmpty()) {
 				lastGoodRouteLocation = currentLocation;
+				// Feed the ETA calibrator the modelled speed the router expects for the segment
+				// being driven, alongside what the driver is actually doing. See CairoDriveEta.
+				RouteDirectionInfo currentDirection = route.getCurrentDirection();
+				if (currentDirection != null) {
+					etaCalibrator.registerFix(currentLocation, currentDirection.getAverageSpeed());
+				}
 			}
 		}
 
@@ -853,7 +872,23 @@ public class RoutingHelper {
 	}
 
 	public int getLeftTime() {
-		return route.getLeftTime(lastFixedLocation);
+		int staticSeconds = route.getLeftTime(lastFixedLocation);
+		int corrected = etaCalibrator.correct(staticSeconds);
+		if (corrected != staticSeconds && CairoDriveLogger.isEnabled()) {
+			long now = System.currentTimeMillis();
+			if (now - lastEtaLogTime > ETA_LOG_INTERVAL_MS) {
+				lastEtaLogTime = now;
+				CairoDriveLogger.getInstance().log("CD_ETA",
+						etaCalibrator.describe(staticSeconds, corrected)
+								+ " leftM=" + getLeftDistance());
+			}
+		}
+		return corrected;
+	}
+
+	@NonNull
+	public CairoDriveEta getEtaCalibrator() {
+		return etaCalibrator;
 	}
 
 	public int getLeftTimeNextTurn() {
