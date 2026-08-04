@@ -530,7 +530,12 @@ public class RoutingHelper {
 				// Do not update in route planning mode
 				boolean inRecalc = (calculateRoute || isRouteBeingCalculated());
 				if (isFollowingMode) {
-					if (!inRecalc && !wrongMovementDirection) {
+					// Same reasoning as the projection gate below: keep guiding while the driver is
+					// still on the route and only the app is busy. A settings change or a target
+					// change should not silence the next turn instruction for 4-8 s. A genuine
+					// deviation still stops prompts, on the branch below.
+					boolean silenceForDeviation = inRecalc && isDeviatedFromRoute;
+					if (!silenceForDeviation && !wrongMovementDirection) {
 						voiceRouter.updateStatus(currentLocation, false);
 						voiceRouterStopped = false;
 					} else if (isDeviatedFromRoute && !voiceRouterStopped) {
@@ -541,7 +546,20 @@ public class RoutingHelper {
 				}
 
 				// calculate projection of current location
-				if (currentRoute > 0 && !inRecalc) {
+				// N2. Suppressed only when the recalculation is happening BECAUSE the driver
+				// deviated - not for every recalculation.
+				//
+				// inRecalc is also true for a target change, a settings change and a
+				// wrong-direction trigger. In all of those the driver is still ON the route, so
+				// dropping the projection throws the arrow off the polyline onto raw GPS for the
+				// whole 4-8 s search, for no reason. Combined with the blanked manoeuvre card and
+				// the silent voice over the same window, that is what made a reroute read as the
+				// app having lost the car.
+				//
+				// When the driver HAS genuinely left the route, projecting onto it would be a lie,
+				// so that case still suppresses exactly as before.
+				boolean suppressProjection = inRecalc && isDeviatedFromRoute;
+				if (currentRoute > 0 && !suppressProjection) {
 					Location previousRouteLocation = routeNodes.get(currentRoute - 1);
 					Location currentRouteLocation = routeNodes.get(currentRoute);
 					locationProjection = RoutingHelperUtils.getProject(currentLocation, previousRouteLocation,

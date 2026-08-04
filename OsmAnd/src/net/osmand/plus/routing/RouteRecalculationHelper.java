@@ -44,6 +44,8 @@ class RouteRecalculationHelper {
 	private static final int RECALCULATE_THRESHOLD_COUNT_CAUSING_FULL_RECALCULATE = 3;
 	private static final int RECALCULATE_THRESHOLD_CAUSING_FULL_RECALCULATE_INTERVAL = 2 * 60 * 1000;
 	private static final long SUGGEST_MAPS_ONLINE_SEARCH_WAITING_TIME = 60000;
+	/** See the two call sites. Upstream's ceiling is 120000 and it is far too long to be silent. */
+	static final int MAX_EVAL_WAIT_MS = 15000;
 
 	private final OsmandApplication app;
 	private final RoutingHelper routingHelper;
@@ -178,7 +180,14 @@ class RouteRecalculationHelper {
 						evalWaitInterval = 3000;
 					} else {
 						evalWaitInterval = Math.max(3000, evalWaitInterval * 3 / 2);
-						evalWaitInterval = Math.min(evalWaitInterval, 120000);
+						// Capped at 15 s, not 120 s. Upstream's ceiling means a driver can be
+						// refused a recalculation for TWO MINUTES with nothing retrying and no
+						// indication - which from the seat is indistinguishable from the app
+						// having given up. The growth is still there, it just stops somewhere a
+						// human would tolerate. 15 s is longer than the off-route hysteresis
+						// window (12 s), so it cannot mask a deviation that has already been
+						// confirmed.
+						evalWaitInterval = Math.min(evalWaitInterval, MAX_EVAL_WAIT_MS);
 					}
 
 				}
@@ -605,7 +614,9 @@ class RouteRecalculationHelper {
 				}
 			} else {
 				evalWaitInterval = Math.max(3000, routingThreadHelper.evalWaitInterval * 3 / 2); // for Issue #3899
-				evalWaitInterval = Math.min(evalWaitInterval, 120000);
+				// Same cap as above. This is the failure path - the route could not be calculated
+				// at all - and it is the one that escalates fastest.
+				evalWaitInterval = Math.min(evalWaitInterval, MAX_EVAL_WAIT_MS);
 				if (onlineSourceWithoutInternet) {
 					routeCalcError = app.getString(R.string.error_calculating_route)
 							+ ":\n" + app.getString(R.string.internet_connection_required_for_online_route);

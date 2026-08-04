@@ -201,6 +201,22 @@ def hwCanvas = hwCanvasEnv?.trim() ? hwCanvasEnv.trim() : "true"
 //
 // A refusal is logged as CD_SEC with the calling package, so a legitimate integration that breaks
 // says exactly what to allowlist instead of failing mysteriously.
+// Ask the HH engine for alternative routes alongside the main one. Item 7.
+//
+// The implementation is complete and already in the tree (HHRoutingConfig.calcAlternative,
+// HHRoutePlanner.calcAlternativeRoute); upstream simply never enables it. It is worth trying
+// because HHRoutingConfig is handed STRAIGHT into the JNI call, so alternatives may fall out of
+// the SAME search at marginal cost rather than costing a second one - and Google's own docs say
+// alternative routes are not available offline, so this is a place a personal offline fork can
+// actually be ahead rather than catching up.
+//
+// OFF by default, deliberately. The cost is unmeasured and it lands on the search path - the
+// exact path the next drive exists to measure for B1, the repair probe and pre=. Adding an
+// unmeasured cost to the thing being measured is how a drive produces numbers nobody can read.
+// Flip it for the drive AFTER this one. CD_ROUTE_TIMING reports alt= either way.
+def routeAlternativesEnv = System.getenv("CAIRODRIVE_ROUTE_ALTERNATIVES")
+def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim() : "false"
+
 def lockExternalApiEnv = System.getenv("CAIRODRIVE_LOCK_EXTERNAL_API")
 def lockExternalApi = lockExternalApiEnv?.trim() ? lockExternalApiEnv.trim() : "true"
 
@@ -287,6 +303,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_HW_CANVAS", hwCanvas
 			buildConfigField "boolean", "CAIRODRIVE_PRESENTATION", presentation
 			buildConfigField "boolean", "CAIRODRIVE_LOCK_EXTERNAL_API", lockExternalApi
+			buildConfigField "boolean", "CAIRODRIVE_ROUTE_ALTERNATIVES", routeAlternatives
 		}
 		release {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
@@ -300,6 +317,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_HW_CANVAS", hwCanvas
 			buildConfigField "boolean", "CAIRODRIVE_PRESENTATION", presentation
 			buildConfigField "boolean", "CAIRODRIVE_LOCK_EXTERNAL_API", lockExternalApi
+			buildConfigField "boolean", "CAIRODRIVE_ROUTE_ALTERNATIVES", routeAlternatives
 		}
 	}
 }

@@ -292,6 +292,10 @@ public class OsmandApplication extends MultiDexApplication {
 			CairoDriveDataSaver.noteTileVeto(allow);
 			return allow;
 		});
+		// Item 7. Static on RoutePlannerFrontEnd because defaultHHConfig() is static and is read
+		// on every route calculation; set once here, before anything can calculate a route.
+		net.osmand.router.RoutePlannerFrontEnd.CALCULATE_ALTERNATIVES =
+				BuildConfig.CAIRODRIVE_ROUTE_ALTERNATIVES;
 		appInitializer.initVariables();
 		if (appInitializer.isAppVersionChanged() && appInitializer.getPrevAppVersion() < AppVersionUpgradeOnInit.VERSION_2_3) {
 			settings.freezeExternalStorageDirectory();

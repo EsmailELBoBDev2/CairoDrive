@@ -50,9 +50,29 @@ public class RoutePlannerFrontEnd {
 	public RoutePlannerFrontEnd() {
 	}
 	
+	/**
+	 * Ask the HH engine for alternative routes as well as the main one.
+	 *
+	 * <p>Fork-specific and OFF by default. The implementation is complete and already in the tree
+	 * (HHRoutingConfig.calcAlternative, HHRoutePlanner.calcAlternativeRoute) - upstream simply
+	 * never enables it. Worth trying because HHRoutingConfig is handed STRAIGHT into the JNI call,
+	 * so alternatives may fall out of the same search at marginal cost rather than costing a
+	 * second one. Google's own documentation says alternative routes are NOT available offline.
+	 *
+	 * <p>Left off by default because the cost is unmeasured, and an unmeasured cost on the search
+	 * path is exactly what a drive testing B1 must not also be carrying. Set
+	 * CAIRODRIVE_ROUTE_ALTERNATIVES=true to build it on; CD_ROUTE_TIMING reports alt= either way.
+	 */
+	public static boolean CALCULATE_ALTERNATIVES = false;
+
 	public static HHRoutingConfig defaultHHConfig() {
-		return HHRoutingConfig.astar(0).calcDetailed(HHRoutingConfig.CALCULATE_ALL_DETAILED)
+		HHRoutingConfig config = HHRoutingConfig.astar(0)
+				.calcDetailed(HHRoutingConfig.CALCULATE_ALL_DETAILED)
 				.applyCalculateMissingMaps(RoutePlannerFrontEnd.CALCULATE_MISSING_MAPS);
+		if (CALCULATE_ALTERNATIVES) {
+			config = config.calcAlternative();
+		}
+		return config;
 	}
 	
 	public enum RouteCalculationMode {
