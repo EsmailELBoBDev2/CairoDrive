@@ -66,14 +66,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * {@code CAIRODRIVE_MAP_MATCHING}. Nothing is constructed, no thread is started and no routing
  * environment is built until the first fix arrives with the flag on.
  *
- * <h3>Display only - deliberately not wired to anything yet</h3>
+ * <h3>Display only</h3>
  *
- * This service computes and logs. It changes no behaviour. That is the same order
- * {@link CairoDriveStationary} used, and for the same reason: {@code CD_MATCH} carries
- * {@code disagree=} on every fix, so the next drive answers "how often would this have moved the
- * car onto a different road, and was it right" BEFORE anything depends on the answer. Consuming
- * {@link #getLastMatch()} for the displayed position is a separate change, to be made once the
- * disagreement rate and the confidence distribution have been read off a real log.
+ * {@link #getLastMatch()} has exactly one consumer, {@link CairoDriveMatchedPosition}, and it
+ * corrects only the position that is DRAWN. Routing is handed the raw fix before the correction
+ * is applied and never sees a matched position - see that class for the gates, the staleness
+ * bounds and the simulation behind both. {@code CD_MATCH} still carries {@code disagree=} on
+ * every fix, and now {@code applied=} beside it, so a drive log answers both halves: how often
+ * the matcher would move the car onto a different road, and how often it was trusted enough to.
  */
 public class CairoDriveMapMatchService {
 
@@ -172,21 +172,41 @@ public class CairoDriveMapMatchService {
 		long ageMs = now - lastMatchFixTime;
 		double movedM = MapUtils.getDistance(lastMatchLat, lastMatchLon,
 				location.getLatitude(), location.getLongitude());
-		if (ageMs > MAX_MATCH_AGE_MS) {
+		if (ageMs > CairoDriveMapMatching.MAX_MATCH_AGE_MS) {
 			reject = "stale ageMs=" + ageMs;
-		} else if (movedM > MAX_SOURCE_DRIFT_M) {
+		} else if (movedM > CairoDriveMapMatching.MAX_SOURCE_DRIFT_M) {
 			// The car has moved on since the fix this match was computed from. Applying it now
 			// would drag the arrow backwards toward a road chosen for a position already left.
 			reject = "drifted movedM=" + Math.round(movedM);
-		} else if (match.settledDepth < MIN_SETTLED_DEPTH) {
-			// settledDepth, not confidence. The posterior can be high while the surviving
-			// hypotheses still disagree about where the car has BEEN - and on a flyover that
-			// disagreement is precisely the question. Convergence depth is the honest signal.
+		} else if (match.settledDepth != CairoDriveMapMatching.MAX_SETTLED_DEPTH) {
+			// settledDepth is "steps back at which every surviving hypothesis agrees, or -1 if
+			// none within the window" - so SMALLER is better and 0 means fully converged. An
+			// earlier version of this gate had the comparison the wrong way round and would have
+			// rejected exactly the converged matches while accepting the unconverged ones.
+			//
+			// settled, not confidence: the posterior is normalised over the SURVIVORS, and the
+			// survivors were selected by that same likelihood. When pruning leaves one candidate
+			// the posterior is 1.0 whether or not the road is right - confidently wrong precisely
+			// in the case that matters, a run of degraded fixes all agreeing on the wrong road.
+			//
+			// Why exactly 0 rather than a looser depth: mean error alone argues for no gate at
+			// all, because even a wrong match usually lands nearer the truth than a 25 m network
+			// fix. Mean error is the wrong criterion. "Arrow hop" - consecutive applied fixes
+			// where the displayed road changes family while the car does not - is what a driver
+			// sees, and it goes 0.01% at settled=0 to 4.75% ungated. One applied fix in twenty
+			// hopping between the flyover and the street beneath it is a visible flicker several
+			// times a minute, and a driver who sees that stops believing the map. Half of every
+			// fix is still corrected, for a 3-4 m mean gain.
 			reject = "unsettled depth=" + match.settledDepth;
-		} else if (match.offsetM > MAX_CORRECTION_M) {
-			// A correction this large is not a lane, it is a different road. If the matcher is
-			// right the driver will see it on the next fix anyway; if it is wrong this would be a
-			// visible jump. Refuse rather than teleport.
+		} else if (match.offsetM > CairoDriveMapMatching.MAX_CORRECTION_M) {
+			// A sanity stop, not a tuning knob: CANDIDATE_RADIUS_MAX_M is 120 m, so without a cap
+			// one confident match on a huge network fix could throw the arrow 120 m sideways.
+			//
+			// The swept direction is the opposite of the intuition, and an earlier 35 m guess sat
+			// on the wrong side of it: a TIGHTER cap is worse in the wrong-match case, because
+			// small corrections happen on GOOD fixes where the raw position was already close and
+			// a mistake costs more than it saves. At 20 m the correction is a net loss when wrong;
+			// from 60 m up it is a net gain and apply% has saturated.
 			reject = "tooFar offsetM=" + Math.round(match.offsetM);
 		}
 		if (reject != null) {
@@ -200,14 +220,11 @@ public class CairoDriveMapMatchService {
 		return corrected;
 	}
 
-	/** A match older than this describes a position the car has left. */
-	private static final long MAX_MATCH_AGE_MS = 2_500;
-	/** ...and so does one whose source fix is this far behind the current one. */
-	private static final double MAX_SOURCE_DRIFT_M = 40.0;
-	/** Viterbi convergence depth required before the match is trusted to move the arrow. */
-	private static final int MIN_SETTLED_DEPTH = 3;
-	/** Beyond this a "correction" is a different road, not a lane. */
-	private static final double MAX_CORRECTION_M = 35.0;
+	// All four gates live in CairoDriveMapMatching, where each carries the sweep that chose it.
+	// They were guessed here first; the swept values replaced them, and two of the four moved -
+	// MAX_SOURCE_DRIFT_M from 40 to 20 (the matcher refuses to process a fix until the car has
+	// moved MIN_STEP_M = 12 m, so in steady state the source fix is 0-12 m behind and 20 is that
+	// floor plus noise) and MAX_CORRECTION_M from 35 to 60.
 
 	private long lastAppliedLogAt;
 	private int appliedCount;
@@ -220,7 +237,7 @@ public class CairoDriveMapMatchService {
 			rejectedCount++;
 		}
 		long now = System.currentTimeMillis();
-		if (now - lastAppliedLogAt < 10_000) {
+		if (now - lastAppliedLogAt < CairoDriveMapMatching.APPLY_LOG_INTERVAL_MS) {
 			return;
 		}
 		lastAppliedLogAt = now;

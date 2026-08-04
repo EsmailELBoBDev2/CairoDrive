@@ -143,10 +143,37 @@ public class CairoDriveMapMatcher {
 		/** Steps back at which every surviving hypothesis agrees, or -1 if none within the window. */
 		public final int settledDepth;
 
+		/**
+		 * 31-coordinates of the RAW fix this match was computed from, and its timestamp.
+		 *
+		 * <p>These exist for {@link CairoDriveMapMatchService#applyToDisplay}, not for the log. The service is
+		 * asynchronous and DROPS fixes while the worker is busy, so by the time a consumer reads
+		 * {@link CairoDriveMapMatchService#getLastMatch()} the car has already moved. Without the
+		 * source fix there is no way to ask how far, and a match is only meaningful near the
+		 * position that produced it.
+		 */
+		public final int fixX31;
+		public final int fixY31;
+		public final long fixTime;
+
+		/**
+		 * 31-coordinates of the two ends of the matched road segment.
+		 *
+		 * <p>Also for {@link CairoDriveMapMatchService#applyToDisplay}. Carrying the SEGMENT rather than only the
+		 * matched point is what lets a later fix be re-projected onto the same road instead of
+		 * being teleported back to where the car was when the match was computed. That difference
+		 * is the whole of the along-track staleness error - see the class javadoc there.
+		 */
+		public final int segAX31;
+		public final int segAY31;
+		public final int segBX31;
+		public final int segBY31;
+
 		Match(long roadId, String roadName, String highway, double lat, double lon, double offsetM,
 		      double confidence, int candidateCount, long nearestRoadId, double nearestOffsetM,
 		      double sigmaM, double betaM, boolean degraded, double greatCircleM, double routeM,
-		      int settledDepth) {
+		      int settledDepth, int fixX31, int fixY31, long fixTime,
+		      int segAX31, int segAY31, int segBX31, int segBY31) {
 			this.roadId = roadId;
 			this.roadName = roadName;
 			this.highway = highway;
@@ -164,6 +191,13 @@ public class CairoDriveMapMatcher {
 			this.greatCircleM = greatCircleM;
 			this.routeM = routeM;
 			this.settledDepth = settledDepth;
+			this.fixX31 = fixX31;
+			this.fixY31 = fixY31;
+			this.fixTime = fixTime;
+			this.segAX31 = segAX31;
+			this.segAY31 = segAY31;
+			this.segBX31 = segBX31;
+			this.segBY31 = segBY31;
 		}
 	}
 
@@ -345,7 +379,10 @@ public class CairoDriveMapMatcher {
 				MapUtils.get31LatitudeY(best.y31), MapUtils.get31LongitudeX(best.x31),
 				best.offsetM, confidence, survivors.size(),
 				nearest.road.getId(), nearest.offsetM,
-				sigma, beta, degraded, greatCircle, chosenRouteDist, settled);
+				sigma, beta, degraded, greatCircle, chosenRouteDist, settled,
+				x31, y31, timeMs,
+				best.road.getPoint31XTile(best.segIdx), best.road.getPoint31YTile(best.segIdx),
+				best.road.getPoint31XTile(best.segIdx + 1), best.road.getPoint31YTile(best.segIdx + 1));
 	}
 
 	// ------------------------------------------------------------------ emission

@@ -522,20 +522,51 @@ public class OsmAndLocationProvider implements SensorEventListener {
 	}
 
 	private void updateLocation(net.osmand.Location location) {
-		// N6. Offline HMM map matching. OFF unless the build defines CAIRODRIVE_MAP_MATCHING;
-		// when off this is a volatile boolean read and nothing else. This is the single funnel
-		// both setLocation() and setLocationFromService() pass through, so it sees the raw fix
-		// stream once - which is what the matcher needs, and why it is not hooked further down
-		// where CairoDriveStationary has already suppressed the stationary fixes.
-		// Everything past this call happens on the matcher's own background thread; see
-		// CairoDriveMapMatchService.
-		if (net.osmand.plus.cairodrive.CairoDriveMapMatching.isEnabled()) {
-			net.osmand.plus.cairodrive.CairoDriveMapMatchService
-					.getInstance(app).onLocation(location);
-		}
+		// N6 note: the matcher is NOT fed from here any more. It is fed the raw fix by
+		// feedMapMatcher() before the correction is applied, because this method now receives
+		// the possibly-corrected position and feeding a matcher its own output would let one
+		// wrong road reinforce itself indefinitely. See CairoDriveMatchedPosition.
 		for (OsmAndLocationListener listener : locationListeners) {
 			listener.updateLocation(location);
 		}
+	}
+
+	/**
+	 * N6. Offline HMM map matching. OFF unless the build defines CAIRODRIVE_MAP_MATCHING; when
+	 * off this is a volatile boolean read and nothing else.
+	 * <p>
+	 * Must be given the RAW fix - never {@code this.location}, which may already have been
+	 * corrected by the matcher itself or snapped to the route by RoutingHelper. It is also
+	 * deliberately not hooked further down, where CairoDriveStationary has already suppressed
+	 * the stationary fixes: the matcher wants the whole stream.
+	 * <p>
+	 * Everything past this call happens on the matcher's own background thread; see
+	 * CairoDriveMapMatchService.
+	 */
+	private void feedMapMatcher(@Nullable net.osmand.Location rawFix) {
+		if (net.osmand.plus.cairodrive.CairoDriveMapMatching.isEnabled()) {
+			net.osmand.plus.cairodrive.CairoDriveMapMatchService
+					.getInstance(app).onLocation(rawFix);
+		}
+	}
+
+	/**
+	 * N6. Corrects only what is DISPLAYED.
+	 * <p>
+	 * Called after {@code setLocationForRouting} has already handed the untouched fix to
+	 * RoutingHelper, so off-route detection, the ETA and route recalculation never see a matched
+	 * position. That ordering is the whole safety argument: a wrong match must be able to cost a
+	 * slightly misplaced arrow and nothing more. Returns {@code displayLocation} itself when no
+	 * correction is applied. See CairoDriveMatchedPosition for the gates and the simulation.
+	 */
+	@Nullable
+	private net.osmand.Location applyMatchedPosition(@Nullable net.osmand.Location rawFix,
+	                                                 @Nullable net.osmand.Location displayLocation) {
+		if (!net.osmand.plus.cairodrive.CairoDriveMapMatching.isEnabled()) {
+			return displayLocation;
+		}
+		return net.osmand.plus.cairodrive.CairoDriveMatchedPosition
+				.getInstance(app).apply(rawFix, displayLocation);
 	}
 
 	private boolean useOnlyGPS() {
@@ -718,10 +749,12 @@ public class OsmAndLocationProvider implements SensorEventListener {
 
 		net.osmand.Location updatedLocation = setLocationForRouting(location, routingHelper);
 		app.getWaypointHelper().locationChanged(location);
+		// N6: raw fix in, display-only correction out. Routing above already has the raw one.
+		feedMapMatcher(location);
 		NavigationSession carNavigationSession = app.getCarNavigationSession();
 		if (carNavigationSession != null && carNavigationSession.hasStarted()) {
 			carNavigationSession.updateLocation(location);
-			this.location = updatedLocation;
+			this.location = applyMatchedPosition(location, updatedLocation);
 			updateLocation(this.location);
 		}
 	}
@@ -762,7 +795,12 @@ public class OsmAndLocationProvider implements SensorEventListener {
 		// 2. routing
 		net.osmand.Location updatedLocation = setLocationForRouting(location, routingHelper);
 		app.getWaypointHelper().locationChanged(location);
-		this.location = updatedLocation;
+
+		// 2b. N6 map matching. Order is the safety property, twice over: routing above has
+		// already consumed the raw fix, so nothing here can cause a reroute; and the matcher is
+		// fed `location`, not `this.location`, so its output can never become its own input.
+		feedMapMatcher(location);
+		this.location = applyMatchedPosition(location, updatedLocation);
 
 		// Update information
 		updateLocation(this.location);
