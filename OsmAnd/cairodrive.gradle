@@ -95,16 +95,20 @@ def surfaceOverscan = overscanEnv?.trim() ? overscanEnv.trim() : "0.0"
 // copies scale with pixel count, not with scene complexity. At 0.75 they each move 44% fewer
 // pixels; at 0.85, 28% fewer.
 //
-// It costs sharpness, which is why it is not on by default: that is a judgement about how the
-// map LOOKS and belongs to whoever is driving, not to a build script. Set
-// CAIRODRIVE_RENDER_SCALE=0.75 to trade some for frame rate. The value is recorded in every
-// CD_FRAME summary line, so a log always says which setting produced it.
+// 0.75 as of the owner's decision to trade sharpness for frame rate. What that actually costs:
+// roads and shapes are large smooth areas and upscale almost invisibly, but STREET NAME LABELS
+// are thin glyphs and thin glyphs are exactly what interpolation blurs. Expect labels to read
+// slightly soft rather than crisp. If that is too much, 0.85 gives 28% instead of 44% and is a
+// one-line change; 1.0 restores native rendering exactly.
+//
+// The value is recorded in every CD_FRAME summary line and in the SESSION flags line, so a log
+// always says which setting produced it.
 //
 // The real fix is not to copy at all - render into the car Surface through a VirtualDisplay,
 // which needs no core change - but that needs proving on a real head unit first. This is the
 // thing worth having in the meantime, and the fallback if that does not pan out.
 def renderScaleEnv = System.getenv("CAIRODRIVE_RENDER_SCALE")
-def renderScale = renderScaleEnv?.trim() ? renderScaleEnv.trim() : "1.0"
+def renderScale = renderScaleEnv?.trim() ? renderScaleEnv.trim() : "0.75"
 
 // Keep bulk transfers off a metered connection unless the user asks for them explicitly.
 // This fork is driven on Egyptian mobile data, where an unattended download is a bill rather
