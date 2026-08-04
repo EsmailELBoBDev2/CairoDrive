@@ -475,7 +475,12 @@ public class CairoDriveMapMatchService {
 				+ " avgConf=" + fmt(confSum / Math.max(1, matched))
 				+ " avgOffM=" + fmt(offsetSum / Math.max(1, matched))
 				+ " avgMs=" + fmt((double) msSum / Math.max(1, fixes))
-				+ " maxMs=" + msMax);
+				+ " maxMs=" + msMax
+				// Graph cache. A low hit rate here means the road set is churning every fix and
+				// the cache is paying its key cost for nothing - which is worth SEEING rather
+				// than assuming, since the whole point of it was to stop the largest repeated
+				// allocation on this path from landing in CD_FRAME's maxMs as a GC pause.
+				+ " graphCache=" + (matcher == null ? "-" : matcher.graphCacheStats()));
 		fixes = 0;
 		matched = 0;
 		noCandidate = 0;

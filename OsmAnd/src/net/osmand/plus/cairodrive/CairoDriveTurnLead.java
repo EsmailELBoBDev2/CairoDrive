@@ -133,6 +133,8 @@ public class CairoDriveTurnLead implements OsmAndLocationProvider.OsmAndLocation
 	private int estimatedFullChars;
 	private String cueTurnParam;
 	private boolean cueIsUTurn;
+	/** Roundabouts are the worst case for late guidance, not a case to skip - see buildCue. */
+	private boolean cueIsRoundabout;
 
 	private CairoDriveTurnLead(@NonNull OsmandApplication app) {
 		this.app = app;
@@ -286,23 +288,29 @@ public class CairoDriveTurnLead implements OsmAndLocationProvider.OsmAndLocation
 		cueTurnParam = turnParam(turnType);
 		cueIsUTurn = cueTurnParam == null
 				&& (turnType.getValue() == TurnType.TU || turnType.getValue() == TurnType.TRU);
-		if (cueTurnParam == null && !cueIsUTurn) {
-			// Roundabouts and go-aheads deliberately excluded. A roundabout's short form is "take
-			// the second exit", which is neither short nor safe to say twice; a go-ahead is not
-			// spoken at all.
+		cueIsRoundabout = cueTurnParam == null && !cueIsUTurn && turnType.isRoundAbout();
+		if (cueTurnParam == null && !cueIsUTurn && !cueIsRoundabout) {
+			// Go-aheads stay excluded: they are not spoken at all, so there is nothing to be late.
 			return false;
 		}
 
 		// Mirrors VoiceRouter.playMakeTurn: the manoeuvre with the full street name, plus the
-		// "then ..." clause when the turn after this one is close enough to be tacked on. The
-		// arrival clause is not modelled, so the final turn of a route is under-estimated - which
-		// under-fires, and under-firing is the safe direction.
+		// "then ..." clause when the turn after this one is close enough to be tacked on, plus the
+		// arrival clause on the final manoeuvre of a route.
 		CommandBuilder full = player.newCommandBuilder();
 		StreetName streetName = speakableStreetName(next.directionInfo, settings);
 		if (cueTurnParam != null) {
 			full.turn(cueTurnParam, streetName);
-		} else {
+		} else if (cueIsUTurn) {
 			full.makeUT(streetName);
+		} else {
+			// ROUNDABOUTS, previously excluded on the grounds that "take the second exit" is
+			// neither short nor safe to say twice. The first half is true and the second is the
+			// part that was wrong: nothing here says it twice. This measures how long the FULL
+			// phrase takes and, when that would still be talking at the junction, fires an
+			// earlier one. Roundabouts are the WORST case for late guidance, not a case to skip -
+			// the exit count is unusable once you are already committed to a lane.
+			full.roundAbout(turnType.getTurnAngle(), turnType.getExitOut(), streetName);
 		}
 		NextDirectionInfo after = routingHelper.getNextRouteDirectionInfoAfter(next, new NextDirectionInfo(), true);
 		if (after != null && after.directionInfo != null && after.directionInfo.getTurnType() != null
@@ -312,6 +320,24 @@ public class CairoDriveTurnLead implements OsmAndLocationProvider.OsmAndLocation
 				full.then();
 				full.turn(afterParam, after.distanceTo, new StreetName());
 			}
+		} else if (after == null || after.directionInfo == null) {
+			// ARRIVAL CLAUSE, previously not modelled.
+			//
+			// When nothing follows this manoeuvre it IS the last one, and VoiceRouter appends
+			// "and arrive at your destination" to it. That clause is long - and in Arabic longer
+			// still - so leaving it out under-estimated the final turn of every route by roughly
+			// a second of speech.
+			//
+			// Under-estimating under-fires, which is the safe direction and is why this was
+			// acceptable to defer. But the final manoeuvre is the one a driver is least able to
+			// recover from: miss it and you are not one block out, you are past the destination
+			// looking for somewhere to turn around. Modelling it is worth a line.
+			net.osmand.plus.helpers.TargetPoint target =
+					routingHelper.getApplication().getTargetPointsHelper().getPointToNavigate();
+			// Only the LENGTH of this matters here - the cue is timed, never spoken - so the raw
+			// name is enough and no speakable-name transformation is needed.
+			String destName = target == null ? null : target.getOnlyName();
+			full.arrivedAtDestination(destName == null ? "" : destName);
 		}
 		String fullText = joinText(full.execute());
 

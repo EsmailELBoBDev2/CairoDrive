@@ -300,6 +300,27 @@ public class CairoDriveMapMatcher {
 					&& c.road.getOneway() != 0 && disagreesWithHeading(c, bearingDeg)) {
 				c.logProb -= CairoDriveMapMatching.HEADING_PENALTY_NATS;
 			}
+			// SPEED CONSISTENCY, in the only form that survives Cairo.
+			//
+			// The tempting version - "a car doing 80 is on the motorway, not the service road" -
+			// was rejected while designing this, and rightly: Cairo flyovers jam, so a slow car on
+			// a trunk road is completely ordinary and penalising it would be exactly the
+			// optimising-blind this fork's notes warn against.
+			//
+			// The reverse implication does NOT have that problem, because it is a physical bound
+			// rather than a behavioural guess: a car cannot travel much faster than a road allows.
+			// 80 km/h on a residential street is not a slow driver on a fast road, it is the wrong
+			// road. And it is asymmetric in exactly the way traffic is not - congestion makes cars
+			// slower than the limit, never faster.
+			//
+			// Only applied ABOVE the limit, only with a generous tolerance, and only when the road
+			// actually declares one. Anything below the limit is left alone entirely.
+			if (hasSpeed && speedMs > CairoDriveMapMatching.SPEED_CHECK_MIN_MS) {
+				float limit = c.road.getMaximumSpeed(c.road.getOneway() >= 0);
+				if (limit > 0 && speedMs > limit * CairoDriveMapMatching.SPEED_OVER_LIMIT_FACTOR) {
+					c.logProb -= CairoDriveMapMatching.SPEED_PENALTY_NATS;
+				}
+			}
 			c.back = -1;
 		}
 
@@ -573,9 +594,80 @@ public class CairoDriveMapMatcher {
 		return (((long) x31) << 32) | (y31 & 0xffffffffL);
 	}
 
+	/**
+	 * Cached across fixes on the identity of the roads that go into it.
+	 *
+	 * <p>At the 12 m decimation step the road set barely changes from one fix to the next - the
+	 * car is still on the same street with the same neighbours - yet the graph was rebuilt every
+	 * time: every RouteDataObject re-walked, every point re-keyed, every adjacency re-derived.
+	 * That is the largest repeated allocation on this path, and GC pauses are process-wide, so on
+	 * a device already at 46.9 ms/frame it lands in CD_FRAME's maxMs rather than in the matcher's
+	 * own latency.
+	 *
+	 * <p>Keyed on the SET OF ROAD IDENTITIES, not on position. A cell key would be wrong at a
+	 * boundary and subtly wrong on a long straight; the roads are what the graph is actually made
+	 * of, so if they are the same the graph is the same. Cheap to compute: the ids are already in
+	 * hand.
+	 */
+	private long cachedGraphKey;
+	private LocalGraph cachedGraph;
+	private int graphHits;
+	private int graphMisses;
+
+	/**
+	 * hits/total, reported in the CD_MATCH summary so the saving is observed rather than assumed.
+	 *
+	 * <p>Resets on read, matching every other counter in that summary. A lifetime ratio would go
+	 * flat within minutes and stop showing the thing worth watching, which is whether the hit rate
+	 * COLLAPSES in dense junctions - exactly where the allocation hurts most.
+	 */
+	String graphCacheStats() {
+		int total = graphHits + graphMisses;
+		String s = graphHits + "/" + total;
+		graphHits = 0;
+		graphMisses = 0;
+		return s;
+	}
+
+	private static long graphKey(List<RouteDataObject> a, List<RouteDataObject> b,
+	                             List<Candidate> prevColumn, List<Candidate> curCandidates) {
+		// Order-independent so a reshuffled road list is still a hit. XOR of a mixed id is enough
+		// here: a collision costs a stale graph for one fix, and the graph is a superset used only
+		// to answer reachability, so the failure mode is a slightly wrong transition cost - not a
+		// wrong road. It is not a security boundary.
+		long k = 0;
+		for (RouteDataObject r : a) {
+			k ^= mix(r.getId());
+		}
+		for (RouteDataObject r : b) {
+			k ^= mix(r.getId());
+		}
+		for (Candidate c : prevColumn) {
+			k ^= mix(c.road.getId()) * 31;
+		}
+		for (Candidate c : curCandidates) {
+			k ^= mix(c.road.getId()) * 131;
+		}
+		return k;
+	}
+
+	private static long mix(long v) {
+		v ^= v >>> 33;
+		v *= 0xff51afd7ed558ccdL;
+		v ^= v >>> 33;
+		return v;
+	}
+
 	private LocalGraph buildGraph(List<RouteDataObject> prevRoads, List<RouteDataObject> curRoads,
 	                              List<Candidate> prevColumn, List<Candidate> curCandidates,
 	                              int midX31, int midY31) {
+		long key = graphKey(prevRoads, curRoads, prevColumn, curCandidates);
+		LocalGraph cached = cachedGraph;
+		if (cached != null && key == cachedGraphKey) {
+			graphHits++;
+			return cached;
+		}
+		graphMisses++;
 		LocalGraph graph = new LocalGraph();
 		// Candidate roads first and unconditionally - a candidate that is not in the graph can
 		// never be reached, which would silently convert it into an unreachable transition.
@@ -587,6 +679,8 @@ public class CairoDriveMapMatcher {
 		}
 		addNearby(graph, prevRoads, midX31, midY31);
 		addNearby(graph, curRoads, midX31, midY31);
+		cachedGraph = graph;
+		cachedGraphKey = key;
 		return graph;
 	}
 

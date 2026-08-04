@@ -175,6 +175,32 @@ public final class CairoDriveMapMatching {
 	 * break a tie without being able to override a strong geometric or topological signal.
 	 */
 	public static final double HEADING_PENALTY_NATS = 1.0;
+
+	/**
+	 * Speed consistency, applied only ABOVE a road's declared limit.
+	 *
+	 * <p>The obvious form - fast car implies fast road - is wrong here and was rejected: Cairo
+	 * flyovers jam, so a slow car on a trunk road is ordinary and penalising it would be a
+	 * behavioural guess dressed as physics.
+	 *
+	 * <p>The reverse is a genuine bound. A car cannot travel much faster than a road allows, and
+	 * the error is asymmetric in exactly the way traffic is not: congestion makes cars slower than
+	 * the limit, never faster. 80 km/h on a residential street is not a slow driver on a fast
+	 * road, it is the wrong road.
+	 */
+	/** Below this, speed is noise and says nothing about which road. ~25 km/h. */
+	public static final double SPEED_CHECK_MIN_MS = 7.0;
+	/**
+	 * How far over the declared limit before it counts as evidence. 1.6 is deliberately generous:
+	 * Egyptian maxspeed tagging is sparse and often conservative, and the cost of being wrong here
+	 * is a suppressed correct road.
+	 */
+	public static final double SPEED_OVER_LIMIT_FACTOR = 1.6;
+	/**
+	 * Softer than the heading penalty, on purpose. Heading on a one-way is close to categorical;
+	 * this rests on a maxspeed tag that may be missing, stale or simply optimistic.
+	 */
+	public static final double SPEED_PENALTY_NATS = 0.7;
 	public static final float HEADING_MIN_SPEED_MS = 3.0f;
 
 	// ---------------------------------------------------------------- transition model
