@@ -240,7 +240,24 @@ public class MapViewTrackingUtilities implements OsmAndLocationListener, IMapLoc
 	}
 
 	@Override
+	private final net.osmand.plus.cairodrive.CairoDriveStationary stationary =
+			new net.osmand.plus.cairodrive.CairoDriveStationary();
+
 	public void updateLocation(Location location) {
+		// N3. Do not move the map while the car is genuinely stopped.
+		//
+		// DISPLAY ONLY - this returns before myLocation is updated, so routing, the off-route
+		// logic and the ETA all still see every fix exactly as before. Only the map stops
+		// following. That is the split Mapbox describes as two streams: raw for logic, matched
+		// for display.
+		//
+		// The thresholds are simulated rather than picked - see CairoDriveStationary. The obvious
+		// "freeze below 2 km/h" was tested and rejected: it froze the arrow on 13.4% of fixes from
+		// a car actually moving at 3 km/h, which in Cairo traffic is most of a journey.
+		if (location != null && stationary.isStationary(location,
+				net.osmand.plus.cairodrive.CairoDriveLogger.getInstance().isGnssDegraded())) {
+			return;
+		}
 		Location prevLocation = myLocation;
 		long prevLocationTime = myLocationTime;
 

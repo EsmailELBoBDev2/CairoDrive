@@ -1558,4 +1558,16 @@ public class CairoDriveLogger {
 
 	private final GnssHealth gnssHealth = new GnssHealth();
 
+	/**
+	 * Whether the last GNSS sample said the fix is network-derived rather than satellite-derived.
+	 *
+	 * <p>Exposed because CairoDriveStationary needs it: the simulation behind that class shows a
+	 * speed-based stop detector suppresses ~48% of parked drift on a real satellite fix and only
+	 * ~0.8% on a network one, so the fix quality is what says whether its result means anything.
+	 * The hysteresis lives in GnssHealth, so this does not flap.
+	 */
+	public boolean isGnssDegraded() {
+		return !gnssHealth.healthy;
+	}
+
 }
