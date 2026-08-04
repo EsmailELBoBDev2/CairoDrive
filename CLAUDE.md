@@ -99,7 +99,7 @@ masquerading as a Play build has wasted a drive before.
 
 | Flag | Default | Note |
 |---|---|---|
-| `CAIRODRIVE_RENDER_SCALE` | `0.75` | 44% fewer pixels through the GPU readback AND the software blit - the two heaviest per-frame steps. Costs label sharpness (thin glyphs blur under upscaling; roads do not). `0.85` = 28% and gentler, `1.0` = native |
+| `CAIRODRIVE_RENDER_SCALE` | `1.0` | Full sharpness. Below 1.0 buys frame rate by pushing fewer pixels through the GPU readback and the software blit, at the cost of label legibility - `0.75` = 44% fewer, `0.85` = 28%. Kept at native because the right fix is removing those two copies, not shrinking them |
 | `CAIRODRIVE_SURFACE_OVERSCAN` | `0.0` | Upstream renders 50% extra width every frame and crops it |
 | `CAIRODRIVE_OFFROUTE_HYSTERESIS` | `false` | Delayed a genuine wrong turn for kilometres on a real drive |
 | `CAIRODRIVE_DRIVING_VIEW` | `true` | Starts navigation tilted. Upstream only applies `AUTO_ZOOM_3D_ANGLE` when the map is ALREADY tilted, so a user who never tilted by hand never got the 3D view at all. **Watch `over` and `avgMs` on the next log** — a tilted camera sees further, so more tiles are drawn per frame |

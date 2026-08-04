@@ -95,11 +95,14 @@ def surfaceOverscan = overscanEnv?.trim() ? overscanEnv.trim() : "0.0"
 // copies scale with pixel count, not with scene complexity. At 0.75 they each move 44% fewer
 // pixels; at 0.85, 28% fewer.
 //
-// 0.75 as of the owner's decision to trade sharpness for frame rate. What that actually costs:
-// roads and shapes are large smooth areas and upscale almost invisibly, but STREET NAME LABELS
-// are thin glyphs and thin glyphs are exactly what interpolation blurs. Expect labels to read
-// slightly soft rather than crisp. If that is too much, 0.85 gives 28% instead of 44% and is a
-// one-line change; 1.0 restores native rendering exactly.
+// Back to 1.0 - full sharpness. It was set to 0.75 and reverted before ever being driven, once
+// it was clear the right fix is to remove the two copies entirely rather than shrink them:
+// render into the car Surface through a VirtualDisplay, which is what Google documents and what
+// every other navigation app does. Trading sharpness is the discount version of that.
+//
+// The mechanism stays wired and costs nothing at 1.0 (SurfaceRenderer skips the stretched blit
+// entirely on that path). Set CAIRODRIVE_RENDER_SCALE=0.85 or 0.75 if the direct-render route
+// does not pan out and frame rate has to be bought with sharpness after all.
 //
 // The value is recorded in every CD_FRAME summary line and in the SESSION flags line, so a log
 // always says which setting produced it.
@@ -108,7 +111,7 @@ def surfaceOverscan = overscanEnv?.trim() ? overscanEnv.trim() : "0.0"
 // which needs no core change - but that needs proving on a real head unit first. This is the
 // thing worth having in the meantime, and the fallback if that does not pan out.
 def renderScaleEnv = System.getenv("CAIRODRIVE_RENDER_SCALE")
-def renderScale = renderScaleEnv?.trim() ? renderScaleEnv.trim() : "0.75"
+def renderScale = renderScaleEnv?.trim() ? renderScaleEnv.trim() : "1.0"
 
 // Keep bulk transfers off a metered connection unless the user asks for them explicitly.
 // This fork is driven on Egyptian mobile data, where an unattended download is a bill rather
