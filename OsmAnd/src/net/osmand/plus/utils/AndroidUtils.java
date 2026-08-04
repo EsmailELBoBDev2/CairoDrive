@@ -6,8 +6,6 @@ import static android.Manifest.permission.BLUETOOTH;
 import static android.Manifest.permission.BLUETOOTH_ADMIN;
 import static android.Manifest.permission.BLUETOOTH_CONNECT;
 import static android.Manifest.permission.BLUETOOTH_SCAN;
-import static android.content.Context.RECEIVER_EXPORTED;
-import static android.content.Context.RECEIVER_NOT_EXPORTED;
 import static android.graphics.Paint.ANTI_ALIAS_FLAG;
 import static android.graphics.Paint.FILTER_BITMAP_FLAG;
 import static android.util.TypedValue.COMPLEX_UNIT_DIP;
@@ -1557,10 +1555,17 @@ public class AndroidUtils {
 	}
 
 	public static Intent registerBroadcastReceiver(@NonNull Context context, @NonNull String action, @Nullable BroadcastReceiver receiver, boolean export) {
-		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-			return context.registerReceiver(receiver, new IntentFilter(action), export ? RECEIVER_EXPORTED : RECEIVER_NOT_EXPORTED);
-		}
-		return context.registerReceiver(receiver, new IntentFilter(action));
+		// ContextCompat rather than a hand-rolled SDK_INT branch. The version this replaced applied
+		// the flag only on API 33+ and fell through to the 2-arg registerReceiver below that, which
+		// silently DISCARDS the caller's intent and registers a world-reachable receiver. minSdk here
+		// is 24, so "export = false" was a no-op across API 24-32 - exactly the range the flag was
+		// introduced to protect, and exactly the receivers in OsmandAidlApi that most needed it.
+		//
+		// ContextCompat.registerReceiver emulates RECEIVER_NOT_EXPORTED on older releases by
+		// registering with a generated signature-level permission, so the guarantee holds all the
+		// way down instead of only on the newest devices.
+		return ContextCompat.registerReceiver(context, receiver, new IntentFilter(action),
+				export ? ContextCompat.RECEIVER_EXPORTED : ContextCompat.RECEIVER_NOT_EXPORTED);
 	}
 
 	public static int getBatteryLevel(@NonNull Context context) {

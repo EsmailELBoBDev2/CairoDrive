@@ -35,8 +35,23 @@
 			CairoDrive is a single-user fork with no third-party integrations, so the whole
 			surface is removed rather than merely gated. This is the companion to the
 			OsmandAidlApi change that stopped registering its ~24 broadcast receivers as
-			exported: that one closed the hole, this one removes the door. Either alone is
-			sufficient; together there is nothing left to reach.
+			exported.
+
+			The two are NOT redundant, and an earlier version of this comment wrongly claimed
+			they were. An attacker never needed the service: the receivers are registered
+			dynamically, so sendBroadcast("aidl_set_location") reaches them directly. Removing
+			the service closes the bind path; the receiver flag closes the broadcast path. Both
+			are needed, and the receiver flag only became real across API 24-32 once
+			AndroidUtils.registerBroadcastReceiver was routed through ContextCompat - before
+			that it silently dropped the flag below API 33 and this fork's minSdk is 24.
+
+			STILL OPEN, deliberately, and tracked rather than fixed here: the osmand.api:// URI
+			path through IntentHelper -> ExternalApiHelper.processApiRequest performs no caller
+			validation at all, and offers the same capabilities plus get_info, which RETURNS the
+			user's precise location and destination to the caller. MapActivity is necessarily
+			exported (it is the launcher), so an explicit ComponentName intent reaches it. That
+			is a larger behavioural decision than removing an unused service and is not bundled
+			in with it.
 
 			If a third-party OsmAnd API app is ever wanted here, delete this block first.
 		-->

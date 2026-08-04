@@ -62,7 +62,7 @@ public class GpxNotification extends OsmandNotification {
 				}
 			}
 		};
-		AndroidUtils.registerBroadcastReceiver(app, OSMAND_SAVE_GPX_SERVICE_ACTION, saveTrackReceiver, true);
+		AndroidUtils.registerBroadcastReceiver(app, OSMAND_SAVE_GPX_SERVICE_ACTION, saveTrackReceiver, false);
 
 		BroadcastReceiver stopGpxRecReceiver = new BroadcastReceiver() {
 			@Override
@@ -74,7 +74,7 @@ public class GpxNotification extends OsmandNotification {
 				}
 			}
 		};
-		AndroidUtils.registerBroadcastReceiver(app, OSMAND_STOP_GPX_SERVICE_ACTION, stopGpxRecReceiver, true);
+		AndroidUtils.registerBroadcastReceiver(app, OSMAND_STOP_GPX_SERVICE_ACTION, stopGpxRecReceiver, false);
 	}
 
 	@Override
@@ -157,11 +157,13 @@ public class GpxNotification extends OsmandNotification {
 
 		State prevState = state;
 		Intent saveIntent = new Intent(OSMAND_SAVE_GPX_SERVICE_ACTION);
+		saveIntent.setPackage(app.getPackageName());
 		PendingIntent savePendingIntent = PendingIntent.getBroadcast(app, 0, saveIntent,
 				PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 		if (isGpxRecording) {
 			state = State.RECORDING;
 			Intent stopIntent = new Intent(OSMAND_STOP_GPX_SERVICE_ACTION);
+		stopIntent.setPackage(app.getPackageName());
 			PendingIntent stopPendingIntent = PendingIntent.getBroadcast(app, 0, stopIntent,
 					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 			if (app.getSavingTrackHelper().getTrkPoints() > 0) {

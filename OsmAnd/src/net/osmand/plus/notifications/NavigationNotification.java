@@ -73,7 +73,7 @@ public class NavigationNotification extends OsmandNotification {
 				app.getRoutingHelper().pauseNavigation();
 			}
 		};
-		AndroidUtils.registerBroadcastReceiver(app, OSMAND_PAUSE_NAVIGATION_SERVICE_ACTION, pauseReceiver, true);
+		AndroidUtils.registerBroadcastReceiver(app, OSMAND_PAUSE_NAVIGATION_SERVICE_ACTION, pauseReceiver, false);
 
 		BroadcastReceiver resumeReceiver = new BroadcastReceiver() {
 			@Override
@@ -81,7 +81,7 @@ public class NavigationNotification extends OsmandNotification {
 				app.getRoutingHelper().resumeNavigation();
 			}
 		};
-		AndroidUtils.registerBroadcastReceiver(app, OSMAND_RESUME_NAVIGATION_SERVICE_ACTION, resumeReceiver, true);
+		AndroidUtils.registerBroadcastReceiver(app, OSMAND_RESUME_NAVIGATION_SERVICE_ACTION, resumeReceiver, false);
 
 		BroadcastReceiver stopReceiver = new BroadcastReceiver() {
 			@Override
@@ -89,7 +89,7 @@ public class NavigationNotification extends OsmandNotification {
 				app.stopNavigation();
 			}
 		};
-		AndroidUtils.registerBroadcastReceiver(app, OSMAND_STOP_NAVIGATION_SERVICE_ACTION, stopReceiver, true);
+		AndroidUtils.registerBroadcastReceiver(app, OSMAND_STOP_NAVIGATION_SERVICE_ACTION, stopReceiver, false);
 	}
 
 	@Override
@@ -242,6 +242,7 @@ public class NavigationNotification extends OsmandNotification {
 		}
 
 		Intent stopIntent = new Intent(OSMAND_STOP_NAVIGATION_SERVICE_ACTION);
+		stopIntent.setPackage(app.getPackageName());
 		PendingIntent stopPendingIntent = PendingIntent.getBroadcast(app, 0, stopIntent,
 				PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 		notificationBuilder.addAction(R.drawable.ic_notification_remove,
@@ -249,12 +250,14 @@ public class NavigationNotification extends OsmandNotification {
 
 		if (routingHelper.isRouteCalculated() && routingHelper.isFollowingMode()) {
 			Intent pauseIntent = new Intent(OSMAND_PAUSE_NAVIGATION_SERVICE_ACTION);
+		pauseIntent.setPackage(app.getPackageName());
 			PendingIntent pausePendingIntent = PendingIntent.getBroadcast(app, 0, pauseIntent,
 					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 			notificationBuilder.addAction(R.drawable.ic_notification_pause,
 					app.getString(R.string.shared_string_pause), pausePendingIntent);
 		} else if (routingHelper.isRouteCalculated() && routingHelper.isPauseNavigation()) {
 			Intent resumeIntent = new Intent(OSMAND_RESUME_NAVIGATION_SERVICE_ACTION);
+		resumeIntent.setPackage(app.getPackageName());
 			PendingIntent resumePendingIntent = PendingIntent.getBroadcast(app, 0, resumeIntent,
 					PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 			notificationBuilder.addAction(R.drawable.ic_notification_play,
