@@ -310,7 +310,16 @@ def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim
 //     into as you slow down. The maxzoom cap is an artifact, not the judgement;
 //   - house numbers off in car mode (1 rule). Dozens of numbers per frame in mapped Cairo blocks;
 //   - POI label ink collapsed to one grey pair at z15+ (24 groups). The text section carries 119
-//     distinct label colours as a category code. Useful when browsing, useless at 60 km/h.
+//     distinct label colours as a category code. Useful when browsing, useless at 60 km/h;
+//   - the long tail of shop, amenity, barrier and pole ICONS off in car mode at z15+ (943 icon
+//     assignments across 3 upstream hideIcons groups). Icons are bitmaps and no render-style
+//     output can tint one - the property set has icon, iconOrder, iconVisibleSize and collision
+//     controls, and not a single colour - so the colour comes out by REMOVING them, which cuts
+//     draw cost at the same time. Safe without an exception list because <point> is an ordered
+//     if/else chain and the car profile's own block is evaluated FIRST: fuel, speed cameras,
+//     hazards, metro and tram stops are claimed there and never reach this rule. It also makes
+//     the car profile's stated policy actually hold - upstream already gates traffic signals,
+//     crossings and barriers behind moreDetailed, then hands them back through the fall-through.
 //
 // OFF BY DEFAULT AND IT MUST STAY OFF FOR THE B1 DRIVE. A style change and a render-path change
 // move the same CD_FRAME numbers and cannot be separated in one log.

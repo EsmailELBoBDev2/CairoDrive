@@ -154,11 +154,19 @@ WHAT IS CHANGED, AND WHY EACH
        policy actually hold. Ticking "More details" restores everything, exactly as upstream
        intends.
 
-       WHAT IS DELIBERATELY LEFT DRAWING: hazards (slippery road, falling rocks, flood - a
-       driver can act on those), railway and metro stations, tram stops and halts (landmarks,
-       and Cairo Metro stations are how people navigate the city), favourites, waypoints and the
-       location dots. Each is a separate hideIcons group and each is listed in ICON_GROUPS below
-       with its reason, so the decision is reviewable rather than implicit.
+       WHAT IS DELIBERATELY LEFT DRAWING. Three of the seven hideIcons groups are KEPT, each
+       listed in ICON_GROUPS below with its reason so the decision is reviewable rather than
+       implicit: hazards (slippery road, falling rocks, flood - a driver can act on every one),
+       railway and metro stations, and tram stops and halts (landmarks, and Cairo Metro stations
+       are how the city is described). Favourites, waypoints and the location dots are not
+       hideIcons groups at all and are never in scope here.
+
+       MEASURED, not asserted. The rule engine was emulated over the patched <point> section -
+       registerTopLevel's flattening, registerGlobalRule's document-order re-chaining and
+       visitRule's break-on-first-match - for 20 object classes typical of a Cairo frame. At
+       z19 in car mode 13 of the 20 lose their icon and the other 7 (fuel, speed camera, mini
+       roundabout, car wash, hazard, metro station, tram stop) are untouched. At z14, in the
+       pedestrian profile, and with "More details" on, 0 of the 20 change.
 
        LABELS ARE NOT REMOVED, and that is deliberate rather than an oversight. A coloured glyph
        on a coloured disc is what grabs the eye; the grey word beside it is what a driver can
@@ -281,6 +289,77 @@ POI_INK_RULE = (
     '%s</apply_if>'
 )
 
+# --- Change 4 -----------------------------------------------------------------------------
+# The icon half. Targets are the groups in <point> that carry upstream's own hideIcons="false"
+# marker AND sit at the top of the section, i.e. are direct children of its outer <switch>.
+#
+# "Direct child" is computed by counting nesting depth, NOT by indentation, and it is what keeps
+# the car profile's own icons safe: the car block at the head of the section wraps its rules in
+# their own <switch hideIcons="false">, one level deeper, so it can never be selected here. If it
+# ever were, this patch would delete fuel stations and speed cameras from a driving style.
+POINT_ICON_GROUP = re.compile(
+    r'(?m)^([ \t]*)<switch\b(?=[^<>]*\bhideIcons="false")[^<>]*[^/]>[ \t]*$')
+
+# Every top-level hideIcons group in <point>, each with a REVIEWED decision and the reason for
+# it. Groups are matched by a tag/value that occurs exactly once in the whole <point> section, so
+# a row can only ever bind to the group it was written for; attribute order in the opening tag,
+# which is what an upstream reformat would churn, is irrelevant. The pedestrian group is the one
+# exception: it is identified by its own opening tag, because baseAppMode is precisely why it is
+# irrelevant here.
+#
+# The script requires a 1:1 match between this table and what is actually in the file. An
+# upstream sync that adds a group, removes one, or renames the marker tag FAILS THE BUILD with
+# the offending tag printed, which forces a human to make the same judgement again rather than
+# letting a new class of icon silently inherit a decision nobody made about it.
+#
+#     (name, marker, suppress, reason)
+ICON_GROUPS = (
+    ("pedestrian priority icons", 'OPENING TAG baseAppMode="pedestrian"', False,
+     "profile-specific and cannot co-occur with baseAppMode=car; a rule here would never fire"),
+    ("long tail (shops, amenities, tourism, sport, nature, health)",
+     'tag="shop" value="supermarket"', True,
+     "upstream's own 'Icons that can be hidden using hideIcons option' block - 886 icons, and "
+     "the bulk of what covers a Cairo frame at navigation zoom"),
+    ("barriers", 'tag="barrier" value="bump_gate"', True,
+     "upstream's car block already gates barriers behind moreDetailed=true; this group is the "
+     "fall-through that hands them back regardless, so suppressing it restores that policy"),
+    ("hazards", 'tag="hazard_map" value="yes"', False,
+     "KEPT. Slippery road, falling rocks, flood, minefield - a driver can act on every one"),
+    ("power and utility poles", 'tag="power" value="pole"', True,
+     "one black dot per pole from z16 along every mapped street; pure furniture, no action"),
+    ("railway halts, tram stops, aerialway stations",
+     'tag="railway" value="tram_stop"', False,
+     "KEPT. Landmarks a driver navigates by, and few enough not to crowd a frame"),
+    ("railway and metro stations", 'tag="railway" value="yard"', False,
+     "KEPT. Cairo Metro stations are how the city is described; suppressing them would remove "
+     "the most useful non-road feature on the map"),
+)
+
+# Today: 886 + 55 + 2. The floor exists because a marker that still matches after upstream guts
+# a group would leave this change reporting success while doing nothing. Well under today's 943
+# so a normal sync does not fail a build; far enough above zero to catch a gutting.
+MIN_SUPPRESSED_ICONS = 600
+
+ICON_ASSIGNMENT = re.compile(r'\bicon="[^"]+"')
+
+# minzoom 15 is change 3's boundary, deliberately. Both halves of the glance style switch on at
+# the same zoom, so one drive log window describes one screen rather than two overlapping ones.
+# Below z15 a driver is looking at the route, not the junction, and an aerodrome or a prominent
+# peak is a landmark there rather than clutter.
+#
+# Only `icon` is cleared. That is exactly upstream's idiom - see the 18 existing
+# `<apply_if baseAppMode="car" moreDetailed="false" maxzoom="17" icon=""/>` rules, several of
+# which sit in groups that also set icon_2 access overlays and a shield. Neither an overlay nor a
+# shield is drawn without a base icon, in either renderer, and clearing attributes upstream never
+# clears would be a new combination nothing has tested.
+ICON_SUPPRESS_RULE = (
+    '%s<!-- CairoDrive: icon half of the glance style. A render style cannot TINT an icon, so\n'
+    '%s     the colour comes out by removing it. This is a hideIcons group the car profile block\n'
+    '%s     did not claim - everything a driver acts on is claimed there and short-circuits\n'
+    '%s     before this rule. "More details" brings it all back. Appended last so it wins. -->\n'
+    '%s<apply_if %s="true" baseAppMode="car" moreDetailed="false" minzoom="15" icon=""/>'
+)
+
 # Sections that must exist before anything is touched. Their absence means this is not the file
 # this script was written against.
 REQUIRED_SECTIONS = ("<order>", "</order>", "<text>", "</text>", "<point>", "</point>")
@@ -316,6 +395,32 @@ def find_close(xml, open_start, open_end, name):
                 return match.start()
         elif not tag.endswith("/>"):
             depth += 1
+    return None
+
+
+def element_depth(xml, start, offset):
+    """Nesting depth of the element opening at `offset`, counted from `start`.
+
+    `start` must be just AFTER a section's opening tag, so depth 1 is that section's outermost
+    element and depth 2 is a direct child of it. Used to tell a direct child of the <point>
+    section's outer <switch> from a group nested inside one of its branches - the difference
+    between "the long tail of shop icons" and "the car profile's own fuel and speed camera
+    icons", which is not a difference this script may get wrong. Returns None if `offset` is not
+    the start of an opening tag in the scanned range.
+    """
+    depth = 0
+    for match in TAG_OR_COMMENT.finditer(xml, start):
+        if match.start() > offset:
+            break
+        tag = match.group(0)
+        if tag.startswith("<!--") or tag.startswith("<?") or tag.endswith("/>"):
+            continue
+        if tag.startswith("</"):
+            depth -= 1
+            continue
+        depth += 1
+        if match.start() == offset:
+            return depth
     return None
 
 
@@ -428,9 +533,85 @@ def main():
              "written). Upstream has restructured the text section; re-check this script against "
              "it." % (groups, MIN_POI_LABEL_GROUPS))
 
+    # 5. The icon half: suppress the top-level hideIcons groups the car block did not claim.
+    if xml.count("<point>") != 1 or xml.count("</point>") != 1:
+        fail("expected exactly one <point> section, found %d opening and %d closing tags."
+             % (xml.count("<point>"), xml.count("</point>")))
+    point_body = xml.index("<point>") + len("<point>")
+    point_close = xml.index("</point>")
+
+    # Collect the candidates first and decide about ALL of them before planning a single edit, so
+    # that an unrecognised group aborts the run rather than being skipped quietly.
+    found = []
+    for match in POINT_ICON_GROUP.finditer(xml, point_body, point_close):
+        # match.end(1) is the '<' - match.start() is the start of the line's indent.
+        if element_depth(xml, point_body, match.end(1)) != 2:
+            continue  # nested inside a branch - the car profile's own group lands here
+        close = find_close(xml, match.start(), match.end(), "switch")
+        if close is None:
+            fail("a top-level hideIcons group opened at line %d never closes with </switch>. The "
+                 "point section is not nested the way this script expects; refusing to insert "
+                 "into it." % (xml.count("\n", 0, match.start()) + 1))
+        found.append((match, close))
+
+    # Bind the table to the file 1:1. Every row must claim exactly one group and every group must
+    # be claimed by exactly one row; anything else means a marker has drifted onto the wrong
+    # element, which would put a suppression rule into a group nobody reviewed.
+    suppressed_icons = 0
+    suppressed_names = []
+    for name, marker, suppress, _reason in ICON_GROUPS:
+        if marker.startswith("OPENING TAG "):
+            needle = marker[len("OPENING TAG "):]
+            claimed = [item for item in found
+                       if needle in xml[item[0].start():item[0].end()]]
+        else:
+            claimed = [item for item in found if marker in xml[item[0].start():item[1]]]
+        if len(claimed) != 1:
+            fail('the hideIcons group "%s" matched %d groups, expected exactly 1. Its marker %r '
+                 "no longer identifies it uniquely - re-check ICON_GROUPS against "
+                 "default.render.xml rather than shipping a rule aimed at the wrong icons."
+                 % (name, len(claimed), marker))
+        match, close = claimed[0]
+        found.remove(claimed[0])
+        if not suppress:
+            continue
+        body = xml[match.start():close]
+        suppressed_icons += len(ICON_ASSIGNMENT.findall(body))
+        suppressed_names.append(name)
+        indent = match.group(1)
+        inner = indent + "\t"
+        line_start = close
+        while line_start > 0 and xml[line_start - 1] in " \t":
+            line_start -= 1
+        edits.append((line_start, close, ICON_SUPPRESS_RULE % (
+            inner, inner, inner, inner, inner, PROPERTY) + "\n" + indent))
+
+    if found:
+        fail("%d top-level hideIcons group(s) in <point> matched no row in ICON_GROUPS, the first "
+             "at line %d: %s. A new class of map icon needs a reviewed decision, not a default."
+             % (len(found), xml.count("\n", 0, found[0][0].start()) + 1,
+                found[0][0].group(0).strip()))
+
+    if suppressed_icons < MIN_SUPPRESSED_ICONS:
+        fail("the hideIcons groups selected for suppression carry only %d icon assignments, "
+             "expected at least %d (943 when this script was written). Upstream has moved the "
+             "icons out from under these markers; re-check ICON_GROUPS rather than shipping a "
+             "change that reports success and hides almost nothing." % (
+                 suppressed_icons, MIN_SUPPRESSED_ICONS))
+
+    # Nothing above may plan two edits over the same bytes. The splice loop below applies edits
+    # back-to-front and would silently corrupt the file if two overlapped, so prove they do not.
+    ordered = sorted(edits, key=lambda item: item[0], reverse=True)
+    previous_start = len(xml) + 1
+    for start, end, _text in ordered:
+        if end > previous_start:
+            fail("internal error: planned edits overlap at offset %d. NOTHING WAS WRITTEN - %s "
+                 "is unchanged. This is a bug in this script." % (start, path))
+        previous_start = start
+
     # Apply from the end backwards so earlier offsets stay valid.
     patched = xml
-    for start, end, text in sorted(edits, key=lambda item: item[0], reverse=True):
+    for start, end, text in ordered:
         patched = patched[:start] + text + patched[end:]
 
     # Re-parse before writing. This is the guarantee that a bug in the offset arithmetic above
@@ -451,6 +632,10 @@ def main():
     print("cairodrive_driving_style: declared '%s' (OFF by default)" % PROPERTY)
     print("cairodrive_driving_style: uncapped %d car POI suppression rules, disabled house "
           "numbers, collapsed POI label ink across %d groups" % (uncapped, groups))
+    print("cairodrive_driving_style: suppressed %d icon assignments in car mode at z15+ across "
+          "%d hideIcons groups (%s); every icon the car profile block claims is untouched, and "
+          "More details restores all of them"
+          % (suppressed_icons, len(suppressed_names), ", ".join(suppressed_names)))
     print("cairodrive_driving_style: the style is INERT until the switch is turned on in "
           "Configure map - do not turn it on during a drive that is measuring B1")
 
