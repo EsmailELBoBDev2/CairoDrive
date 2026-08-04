@@ -370,6 +370,20 @@ def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim
 // Cost containment is hard rather than hopeful: one fix in flight at a time and the next is
 // DROPPED rather than queued, a dedicated background thread, its own RoutingContext, and a
 // watchdog that latches the whole feature off for the process after 5 fixes over 150 ms.
+// Reroute result cache. A driver oscillating at a junction re-asks a question answered seconds
+// ago - and upstream makes it worse on purpose, discarding the previous route after three
+// recalculations in two minutes so the fourth is a full cold search. The 2026-08-04 drive
+// produced exactly that pattern.
+//
+// Free to a system with no marginal query cost, which is the same asymmetry item 6 exploits and
+// the reason Google would not do it: it bills per query and wants fresh traffic.
+//
+// The only real risk is serving a STALE route, so it borrows the warm-environment cache's
+// discipline: keyed on start cell + destination + profile, dropped whenever the loaded map set
+// changes, expired after 90 s. CD_REROUTE reports `cache HIT ageMs=`.
+def rerouteCacheEnv = System.getenv("CAIRODRIVE_REROUTE_CACHE")
+def rerouteCache = rerouteCacheEnv?.trim() ? rerouteCacheEnv.trim() : "true"
+
 def mapMatchingEnv = System.getenv("CAIRODRIVE_MAP_MATCHING")
 def mapMatching = mapMatchingEnv?.trim() ? mapMatchingEnv.trim() : "false"
 
@@ -487,6 +501,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_PLACE_DETAILS", placeDetails
 			buildConfigField "boolean", "CAIRODRIVE_SPEECH_LEAD", speechLead
 			buildConfigField "boolean", "CAIRODRIVE_MAP_MATCHING", mapMatching
+			buildConfigField "boolean", "CAIRODRIVE_REROUTE_CACHE", rerouteCache
 		}
 		release {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
@@ -507,6 +522,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_PLACE_DETAILS", placeDetails
 			buildConfigField "boolean", "CAIRODRIVE_SPEECH_LEAD", speechLead
 			buildConfigField "boolean", "CAIRODRIVE_MAP_MATCHING", mapMatching
+			buildConfigField "boolean", "CAIRODRIVE_REROUTE_CACHE", rerouteCache
 		}
 	}
 }

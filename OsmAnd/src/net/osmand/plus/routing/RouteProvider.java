@@ -226,6 +226,9 @@ public class RouteProvider {
 			if (regions != null) {
 				regions.invalidateRegionPointCache();
 			}
+			// Same signal, same reason: a cached reroute computed over a map that has since been
+			// installed or removed is exactly the stale answer that cache must never serve.
+			settings.getContext().getRoutingHelper().invalidateRerouteCache();
 		} catch (Throwable ignored) {
 			// Diagnostics and caches must never be able to break a map-change callback.
 		}
@@ -722,10 +725,24 @@ public class RouteProvider {
 		ctx.startTransportStop = params.startTransportStop;
 		ctx.targetTransportStop = params.targetTransportStop;
 		if (params.previousToRecalculate != null && params.onlyStartPointChanged) {
+			// UPSTREAM INDEX-SPACE BUG, fixed here.
+			//
+			// getCurrentRoute() is a LOCATION index. getOriginalRoute() with no argument is
+			// getOriginalRoute(0) - the fully deduplicated SEGMENT list, whose size is the segment
+			// count. Slicing one with the other applies a location index to a segment-indexed list,
+			// so the "remaining route" handed to the router either starts far too late or, when the
+			// guard `currentRoute < originalRoute.size()` fails, is never set at all.
+			//
+			// The overload that takes a location index and deduplicates forward from it already
+			// exists and is exactly what was wanted.
+			//
+			// Inert today - the HH C++ branch discards previouslyCalculatedRoute anyway - which is
+			// why it has never been noticed. It stops being inert the moment anything changes at
+			// RoutePlannerFrontEnd:460, and a wrong tail there is a wrong ROUTE, not a slow one.
 			int currentRoute = params.previousToRecalculate.getCurrentRoute();
-			List<RouteSegmentResult> originalRoute = params.previousToRecalculate.getOriginalRoute();
-			if (originalRoute != null && currentRoute < originalRoute.size()) {
-				ctx.previouslyCalculatedRoute = originalRoute.subList(currentRoute, originalRoute.size());
+			List<RouteSegmentResult> remaining = params.previousToRecalculate.getOriginalRoute(currentRoute);
+			if (remaining != null && !remaining.isEmpty()) {
+				ctx.previouslyCalculatedRoute = remaining;
 			}
 		}
 		boolean complexPossible = !skipComplex && params.mode.isDerivedRoutingFrom(ApplicationMode.CAR)

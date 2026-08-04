@@ -539,6 +539,86 @@ class RouteRecalculationHelper {
 		return cached;
 	}
 
+	// REROUTE RESULT CACHE.
+	//
+	// The 2026-08-04 drive produced reroute after reroute while turning around, and upstream makes
+	// it worse on purpose: after three recalculations in two minutes it DISCARDS the previous
+	// route to break a reuse loop, so the fourth is a full cold search. A driver oscillating at a
+	// junction is asking a question that was answered seconds ago.
+	//
+	// Free to a system with no marginal query cost - which is the same asymmetry item 6 exploits,
+	// and the reason Google would not do this: it bills per query and wants fresh traffic.
+	//
+	// Correctness is entirely about not serving a STALE route, so it borrows the discipline the
+	// warm-environment cache already uses: keyed on start cell + destination + profile, dropped
+	// whenever the loaded map set changes, and expired by time. It is NOT keyed on the previous
+	// route, because the point is to answer a repeat of the same question.
+	private static final int CACHE_MAX = 4;
+	private static final long CACHE_TTL_MS = 90_000;
+	/** ~150 m. Two starts inside one cell get the same answer, which is the whole idea. */
+	private static final int CACHE_CELL_SHIFT = 12;
+
+	private final LinkedHashMap<String, Object[]> rerouteCache =
+			new LinkedHashMap<String, Object[]>(8, 0.75f, true) {
+				@Override
+				protected boolean removeEldestEntry(Map.Entry<String, Object[]> eldest) {
+					return size() > CACHE_MAX;
+				}
+			};
+
+	@Nullable
+	private String cacheKey(@NonNull RouteCalculationParams params) {
+		if (params.start == null || params.end == null || params.mode == null
+				|| params.gpxRoute != null
+				|| (params.intermediates != null && !params.intermediates.isEmpty())) {
+			return null;
+		}
+		int sx = MapUtils.get31TileNumberX(params.start.getLongitude()) >>> CACHE_CELL_SHIFT;
+		int sy = MapUtils.get31TileNumberY(params.start.getLatitude()) >>> CACHE_CELL_SHIFT;
+		return sx + ":" + sy + ":" + params.end.getLatitude() + ":" + params.end.getLongitude()
+				+ ":" + params.mode.getStringKey();
+	}
+
+	@Nullable
+	private synchronized RouteCalculationResult takeCachedRoute(@NonNull RouteCalculationParams params) {
+		if (!BuildConfig.CAIRODRIVE_REROUTE_CACHE) {
+			return null;
+		}
+		String key = cacheKey(params);
+		if (key == null) {
+			return null;
+		}
+		Object[] entry = rerouteCache.get(key);
+		if (entry == null) {
+			return null;
+		}
+		long at = (Long) entry[1];
+		if (System.currentTimeMillis() - at > CACHE_TTL_MS) {
+			rerouteCache.remove(key);
+			return null;
+		}
+		CairoDriveLogger.getInstance().log("CD_REROUTE",
+				"cache HIT ageMs=" + (System.currentTimeMillis() - at) + " - no search at all");
+		return (RouteCalculationResult) entry[0];
+	}
+
+	private synchronized void putCachedRoute(@NonNull RouteCalculationParams params,
+	                                         @NonNull RouteCalculationResult res) {
+		if (!BuildConfig.CAIRODRIVE_REROUTE_CACHE || !res.isCalculated()) {
+			return;
+		}
+		String key = cacheKey(params);
+		if (key != null) {
+			rerouteCache.put(key, new Object[] {res, System.currentTimeMillis()});
+		}
+	}
+
+	/** Dropped whenever the loaded map set changes - a cached route over a map that has since been
+	 *  installed or removed is exactly the stale answer this must never serve. */
+	synchronized void invalidateRerouteCache() {
+		rerouteCache.clear();
+	}
+
 	@Nullable
 	RouteCalculationResult tryRepairRoute(@NonNull RouteProvider provider,
 	                                      @NonNull RouteCalculationParams params) {
@@ -546,7 +626,12 @@ class RouteRecalculationHelper {
 			return null;
 		}
 		try {
-			// Item 6 first: if a route was already precomputed for roughly here, this reroute
+			// Cache first: an oscillating driver is re-asking a question answered seconds ago.
+			RouteCalculationResult cached = takeCachedRoute(params);
+			if (cached != null) {
+				return cached;
+			}
+			// Then item 6: if a route was already precomputed for roughly here, this reroute
 			// costs a lookup instead of a search.
 			if (params.start != null) {
 				RouteCalculationResult speculated = takeSpeculation(params.start);
@@ -919,6 +1004,7 @@ class RouteRecalculationHelper {
 					params.alternateResultListener.onRouteCalculated(res);
 				} else {
 					routingThreadHelper.setNewRoute(prev, res, params.start);
+					routingThreadHelper.putCachedRoute(params, res);
 					// AFTER the driver already has their route, never before.
 					routingThreadHelper.speculate(provider, params, res);
 					// Shadow probe only when the live repair did NOT run. Once the repair is real,

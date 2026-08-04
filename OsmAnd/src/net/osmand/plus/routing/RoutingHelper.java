@@ -121,6 +121,11 @@ public class RoutingHelper {
 		app.getAppCustomization().addListener(customizationListener);
 	}
 
+	/** Drops the reroute result cache - see RouteRecalculationHelper. Called on any map change. */
+	public void invalidateRerouteCache() {
+		routeRecalculationHelper.invalidateRerouteCache();
+	}
+
 	RouteProvider getProvider() {
 		return provider;
 	}
