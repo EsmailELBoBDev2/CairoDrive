@@ -150,10 +150,13 @@ public class WeatherPlugin extends OsmandPlugin {
 				// and listFiles() on the cache dir, and could kick off a full LocalIndexHelper
 				// directory scan, on every cold start. None of that is reachable by the user until
 				// the plugin is switched on.
-				if (!isEnabled()) {
-					return;
-				}
 				if (event == NATIVE_OPEN_GL_INITIALIZED) {
+					// Guard scoped to this arm only. Sitting above both arms also suppressed
+					// clearOutdatedCache below, so a user who enabled weather, cached forecast
+					// tiles, then disabled it kept that cache on disk forever.
+					if (!isEnabled()) {
+						return;
+					}
 					updateMapPresentationEnvironment();
 					updateLayers(app, null);
 

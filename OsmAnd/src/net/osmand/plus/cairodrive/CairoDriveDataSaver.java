@@ -67,6 +67,20 @@ public class CairoDriveDataSaver {
 		return isEnabled() && isMetered(ctx);
 	}
 
+	/** Memoised: isActiveNetworkMetered() is a binder call, and the tile path can ask per tile. */
+	private static volatile long meteredCheckedAt;
+	private static volatile boolean meteredCached = true;
+	private static final long METERED_CACHE_MS = 5000;
+
+	public static boolean isMeteredCached(@NonNull Context ctx) {
+		long now = System.currentTimeMillis();
+		if (now - meteredCheckedAt > METERED_CACHE_MS) {
+			meteredCached = isMetered(ctx);
+			meteredCheckedAt = now;
+		}
+		return meteredCached;
+	}
+
 	public static boolean isMetered(@NonNull Context ctx) {
 		try {
 			ConnectivityManager manager =

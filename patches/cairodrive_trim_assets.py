@@ -42,10 +42,13 @@ WHAT IS REMOVED, AND WHY EACH IS SAFE
         filename says "Urdu" would turn every street label in Cairo into empty boxes. Checked
         before writing this, and it is the single most important line in this file.
 
-        03/04_Estedad are Arabic/Persian and are NOT in the manifest, so they ship without
-        ever being extracted - 337 KB of genuine dead weight. Left alone anyway: unverified
-        whether anything reads them straight out of assets/, and 337 KB is not worth guessing
-        about when the failure mode is unreadable labels.
+WHAT IS ADDED
+
+    03/04_Estedad-Regular/Bold (337 KB)
+        Present in the resources checkout but absent from upstream's manifest, so the
+        extractor never unpacked them and the renderer - which reads only FONT_INDEX_DIR,
+        populated from the manifest - could not see them. They are ADDED here rather than
+        left alone: see the ADD_FILES block for why Naskh matters on an Egyptian map.
 
 USAGE
     python3 patches/cairodrive_trim_assets.py <path-to-resources-checkout>
@@ -127,6 +130,27 @@ def fail(msg):
     sys.exit(1)
 
 
+def sniff_format(raw):
+    """Return (indent, newline_at_eof) matching how the manifest is already written.
+
+    indent is what json.dump takes: an int for spaces, "\t" for tabs, or None for a single
+    compact line. Falls back to 2 only when the file gives us nothing to go on.
+    """
+    newline_at_eof = raw.endswith("\n")
+    for line in raw.splitlines()[1:]:
+        if not line.strip():
+            continue
+        prefix = line[:len(line) - len(line.lstrip())]
+        if prefix.startswith("\t"):
+            return "\t", newline_at_eof
+        if prefix:
+            return len(prefix), newline_at_eof
+        # First non-blank line after the opening brace carries no indent at all: the whole
+        # document is on one line, or upstream writes it unindented. Either way, compact.
+        return None, newline_at_eof
+    return 2, newline_at_eof
+
+
 def main():
     if len(sys.argv) != 2:
         fail("usage: cairodrive_trim_assets.py <resources-checkout>")
@@ -137,9 +161,17 @@ def main():
     manifest_path = os.path.join(root, "bundled_assets.json")
     try:
         with open(manifest_path, encoding="utf-8") as handle:
-            manifest = json.load(handle)
+            raw = handle.read()
+        manifest = json.loads(raw)
     except (OSError, ValueError) as exc:
         fail("cannot read %s: %s" % (manifest_path, exc))
+
+    # Rewrite with the indentation upstream already used, rather than forcing indent=2. This
+    # script edits a checkout of OsmAnd-resources, and a hardcoded indent reformats every line
+    # of a file we are only meant to touch a handful of entries in - which turns `git diff` in
+    # that checkout from "10 entries changed" into "the whole manifest changed", and hides a
+    # genuine upstream change behind whitespace on the next sync.
+    indent, newline_at_eof = sniff_format(raw)
 
     entries = manifest.get("assets")
     if not isinstance(entries, list):
@@ -184,13 +216,18 @@ def main():
     # a missing file afterwards would leave exactly the half-applied state this script exists
     # to prevent: a manifest that no longer lists an asset the APK still ships, or worse, the
     # reverse. Check first, then mutate.
+    # Only when there is actually a drop to make. When the drops already applied on a previous
+    # run and only the Estedad additions are pending, the files below are legitimately gone -
+    # demanding them here would abort a run whose remaining work is entirely additive, and the
+    # script would never become idempotent.
     freed = 0
-    for relative in DROP_FILES:
-        path = os.path.join(root, relative)
-        if not os.path.isfile(path):
-            fail("%s is missing from the checkout, but its manifest entry was present. "
-                 "Refusing to continue with a half-applied trim." % relative)
-        freed += os.path.getsize(path)
+    if drops_pending:
+        for relative in DROP_FILES:
+            path = os.path.join(root, relative)
+            if not os.path.isfile(path):
+                fail("%s is missing from the checkout, but its manifest entry was present. "
+                     "Refusing to continue with a half-applied trim." % relative)
+            freed += os.path.getsize(path)
 
     # Same discipline in the other direction: never add a manifest entry for a file that is not
     # there. CheckAssetsTask now catches per entry rather than aborting the whole pass, but a
@@ -208,16 +245,17 @@ def main():
     manifest["assets"] = kept
     try:
         with open(manifest_path, "w", encoding="utf-8") as handle:
-            json.dump(manifest, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
+            json.dump(manifest, handle, ensure_ascii=False, indent=indent)
+            if newline_at_eof:
+                handle.write("\n")
     except OSError as exc:
         fail("cannot write %s: %s" % (manifest_path, exc))
 
-    for relative in DROP_FILES:
-        os.remove(os.path.join(root, relative))
-
-    print("cairodrive_trim_assets: removed %d assets and %d manifest entries, %.1f MB"
-          % (len(DROP_FILES), removed, freed / 1e6))
+    if drops_pending:
+        for relative in DROP_FILES:
+            os.remove(os.path.join(root, relative))
+        print("cairodrive_trim_assets: removed %d assets and %d manifest entries, %.1f MB"
+              % (len(DROP_FILES), removed, freed / 1e6))
     if added:
         print("cairodrive_trim_assets: added %d manifest entries (%.0f KB) so the renderer can "
               "actually use them: %s"

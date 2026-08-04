@@ -278,7 +278,8 @@ public class OsmandApplication extends MultiDexApplication {
 		// MapTileDownloader is in OsmAnd-java and has no Context, so it cannot check metering
 		// itself - it was the only network path in the app with no data-saver gate at all. Install
 		// the veto here, once, before anything can request a tile.
-		MapTileDownloader.setDownloadGate(() -> !CairoDriveDataSaver.blocksBulkTransfer(this));
+		MapTileDownloader.setDownloadGate(() ->
+				!CairoDriveDataSaver.isEnabled() || !CairoDriveDataSaver.isMeteredCached(this));
 		appInitializer.initVariables();
 		if (appInitializer.isAppVersionChanged() && appInitializer.getPrevAppVersion() < AppVersionUpgradeOnInit.VERSION_2_3) {
 			settings.freezeExternalStorageDirectory();

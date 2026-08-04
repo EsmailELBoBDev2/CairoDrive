@@ -149,7 +149,12 @@ public class MapMarkersHelper {
 		// a read and a digest for a file that did not change. loadGroupsAndOrder above already
 		// writes the file itself when it is missing, so the unconditional save here was redundant
 		// even on a fresh install.
-		if (!Algorithms.isEmpty(mapMarkers) || !Algorithms.isEmpty(mapMarkersGroups)) {
+		// Also rewrite when the file failed to PARSE. ItineraryDataHelper.loadGPXFile returns early
+		// on a GpxFile error, leaving both lists empty - and the unconditional save this replaced
+		// was what silently repaired that. Skipping it for "no markers" is right; skipping it for
+		// "could not read the file" would let a corrupt itinerary.gpx persist across every start.
+		if (!Algorithms.isEmpty(mapMarkers) || !Algorithms.isEmpty(mapMarkersGroups)
+				|| dataHelper.hasLoadError()) {
 			saveGroups(false);
 		}
 		lookupAddressAll();

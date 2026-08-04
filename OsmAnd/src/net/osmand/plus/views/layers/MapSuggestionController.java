@@ -226,15 +226,23 @@ public class MapSuggestionController {
 		if (mapActivity == null) {
 			return;
 		}
+		// The null-check happens INSIDE the posted lambda, not before it. getTopToolbarController
+		// walks TopToolbarView's LinkedList, which is mutated from the UI thread with no
+		// synchronisation - and this method is reached from DownloadedRegionsLayer's
+		// onPrepareBufferImage, i.e. the rendering buffer thread. Reading it from there risks a
+		// ConcurrentModificationException on a background thread; keeping the read inside
+		// runInUIThread is the whole reason the post existed. The saving is the redundant
+		// hideTopToolbar call, not the post itself.
 		// Only post when there is actually a toolbar to hide. updateSuggestion runs from
 		// DownloadedRegionsLayer.onPrepareBufferImage at any zoom >= 3, and updateCachedMapPosition
 		// returns true whenever the map centre moved - i.e. on every frame while driving. The
 		// banner itself only exists between zoom 9 and 11, so at navigation zoom every one of those
 		// frames fell through to here and enqueued a capturing lambda onto the same main looper the
 		// frame was running on, to hide a toolbar that was not showing. ~20 no-op Messages a second.
-		if (mapActivity.getTopToolbarController(TopToolbarControllerType.SUGGEST_MAP) == null) {
-			return;
-		}
-		app.runInUIThread(() -> mapActivity.hideTopToolbar(TopToolbarControllerType.SUGGEST_MAP));
+		app.runInUIThread(() -> {
+			if (mapActivity.getTopToolbarController(TopToolbarControllerType.SUGGEST_MAP) != null) {
+				mapActivity.hideTopToolbar(TopToolbarControllerType.SUGGEST_MAP);
+			}
+		});
 	}
 }

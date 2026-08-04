@@ -874,7 +874,10 @@ public class RoutingHelper {
 	public int getLeftTime() {
 		int staticSeconds = route.getLeftTime(lastFixedLocation);
 		int corrected = etaCalibrator.correct(staticSeconds);
-		if (corrected != staticSeconds && CairoDriveLogger.isEnabled()) {
+		// Logged unconditionally, not only when the value changed. Before warm-up the two are equal
+		// by construction, so a drive where the calibrator never warmed up produced ZERO CD_ETA
+		// lines - indistinguishable in the log from the feature not being compiled in.
+		if (CairoDriveLogger.isEnabled()) {
 			long now = System.currentTimeMillis();
 			if (now - lastEtaLogTime > ETA_LOG_INTERVAL_MS) {
 				lastEtaLogTime = now;

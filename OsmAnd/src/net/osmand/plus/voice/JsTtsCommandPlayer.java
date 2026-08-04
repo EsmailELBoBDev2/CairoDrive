@@ -216,8 +216,14 @@ public class JsTtsCommandPlayer extends CommandPlayer {
 					&& app.getSettings().AUDIO_USAGE[stream] != null) {
 				sb.append(" usage=").append(app.getSettings().AUDIO_USAGE[stream].get());
 			}
-			sb.append(" promptDelaySec=").append(app.getSettings().VOICE_PROMPT_DELAY[stream] != null
-					? app.getSettings().VOICE_PROMPT_DELAY[stream].get() : -1);
+			// Milliseconds, not seconds - AnnounceTimeDistances divides this by 1000. Same bounds
+			// check as AUDIO_USAGE above: an out-of-range index would throw inside the try and the
+			// catch would then swallow the ENTIRE CD_VOICE line, losing the diagnostic precisely
+			// when the configuration is odd enough to be worth diagnosing.
+			if (stream >= 0 && stream < app.getSettings().VOICE_PROMPT_DELAY.length
+					&& app.getSettings().VOICE_PROMPT_DELAY[stream] != null) {
+				sb.append(" promptDelayMs=").append(app.getSettings().VOICE_PROMPT_DELAY[stream].get());
+			}
 			CairoDriveLogger.getInstance().log("CD_VOICE", sb.toString());
 		} catch (Exception e) {
 			log.error("CD_VOICE logging failed", e);

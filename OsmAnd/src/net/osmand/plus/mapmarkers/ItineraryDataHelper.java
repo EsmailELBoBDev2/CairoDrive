@@ -50,6 +50,12 @@ public class ItineraryDataHelper {
 	private final OsmandApplication app;
 	private final MapMarkersHelper mapMarkersHelper;
 
+	// True when the LAST loadGroupsAndOrder() found itinerary.gpx present but unparseable.
+	// Distinct from "no markers": a missing file is not an error (loadGroupsAndOrder writes a fresh
+	// one), but a corrupt file leaves the in-memory lists empty and must still be rewritten, or the
+	// corruption survives every restart. MapMarkersHelper.syncAllGroups reads this to decide.
+	private volatile boolean lastLoadFailed;
+
 	public ItineraryDataHelper(OsmandApplication app, MapMarkersHelper mapMarkersHelper) {
 		this.app = app;
 		this.mapMarkersHelper = mapMarkersHelper;
@@ -92,13 +98,20 @@ public class ItineraryDataHelper {
 		return new Pair<>(groups, sortedMarkers);
 	}
 
+	public boolean hasLoadError() {
+		return lastLoadFailed;
+	}
+
 	private boolean loadGPXFile(File file, Map<String, MapMarkersGroup> groups, Map<String, MapMarker> sortedMarkers) {
+		lastLoadFailed = false;
 		if (!file.exists()) {
 			return false;
 		}
 		List<ItineraryGroupInfo> groupInfos = new ArrayList<>();
 		GpxFile gpxFile = loadGPXFile(file, groupInfos);
 		if (gpxFile.getError() != null) {
+			LOG.error("CD_ITINERARY parse failed for " + file.getName() + ": " + gpxFile.getError());
+			lastLoadFailed = true;
 			return false;
 		}
 		collectMarkersGroups(gpxFile, groups, groupInfos, sortedMarkers);

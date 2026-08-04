@@ -206,10 +206,6 @@ public class MapTileDownloader {
 	}
 
 	public void requestToDownload(DownloadRequest request) {
-		DownloadGate gate = downloadGate;
-		if (gate != null && !gate.allowDownload()) {
-			return;
-		}
 		long now = System.currentTimeMillis();
 		if ((int) (now - timeForErrorCounter) > TIMEOUT_AFTER_EXCEEDING_LIMIT_ERRORS) {
 			timeForErrorCounter = now;
@@ -225,6 +221,17 @@ public class MapTileDownloader {
 		}
 		if (!isFileCurrentlyDownloaded(request.fileToSave)
 				&& !isFilePendingToDownload(request.fileToSave)) {
+			// Gate checked HERE, after the dedupe bookkeeping, not on entry. Checking it first
+			// meant a vetoed tile never reached pendingToDownload, so isFilePendingToDownload
+			// stayed false and the caller re-requested it on every iteration of its retry loop -
+			// TileSourceProxyProvider spins for IMAGE_LOAD_TIMEOUT (30 s) waiting for a tile that
+			// can never arrive. Each of those iterations re-ran the gate, and the gate is a
+			// ConnectivityManager binder call. Hundreds of round trips a second, off the render
+			// path, on the one connection state (metered) this fork is always in.
+			DownloadGate gate = downloadGate;
+			if (gate != null && !gate.allowDownload()) {
+				return;
+			}
 			pendingToDownload.put(request.fileToSave, request);
 			threadPoolExecutor.execute(new DownloadMapWorker(request));
 		}
