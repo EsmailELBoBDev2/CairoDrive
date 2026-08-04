@@ -11,6 +11,7 @@ import androidx.core.content.ContextCompat;
 
 import net.osmand.IndexConstants;
 import net.osmand.PlatformUtil;
+import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.shared.SharedUtil;
 import net.osmand.data.FavouritePoint;
 import net.osmand.data.LatLon;
@@ -110,7 +111,11 @@ public class ItineraryDataHelper {
 		List<ItineraryGroupInfo> groupInfos = new ArrayList<>();
 		GpxFile gpxFile = loadGPXFile(file, groupInfos);
 		if (gpxFile.getError() != null) {
-			LOG.error("CD_ITINERARY parse failed for " + file.getName() + ": " + gpxFile.getError());
+			// Through the on-device logger, not commons-logging. A CD_ prefix promises the line is
+			// in the pulled log file; LOG.error only reaches logcat, which MIUI filters for
+			// third-party tags - so this would have been a tag that looks recorded and is not.
+			CairoDriveLogger.getInstance().log("CD_ITINERARY",
+					"parse failed for " + file.getName() + ": " + gpxFile.getError());
 			lastLoadFailed = true;
 			return false;
 		}

@@ -676,6 +676,16 @@ public class CairoDriveLogger {
 				+ " offRouteHysteresis=" + BuildConfig.CAIRODRIVE_OFFROUTE_HYSTERESIS
 				+ " surfaceOverscan=" + BuildConfig.CAIRODRIVE_SURFACE_OVERSCAN
 				+ " renderScale=" + BuildConfig.CAIRODRIVE_RENDER_SCALE
+				// The two biggest changes in this build were not recorded here, which is exactly
+				// the failure this header exists to prevent - a log whose frame numbers cannot be
+				// attributed to the settings that produced them. A stale sideload masquerading as
+				// the new build has cost a drive here before.
+				//
+				// Note these are what the build ASKED for. What actually ran is in CD_FRAME
+				// (hwCanvas=on|REFUSED|off, renderMode=) and CD_PRESENT, because the head unit gets
+				// a veto on both and a request is not a fact.
+				+ " hwCanvas=" + BuildConfig.CAIRODRIVE_HW_CANVAS
+				+ " presentation=" + BuildConfig.CAIRODRIVE_PRESENTATION
 				+ " fullLogging=" + BuildConfig.CAIRODRIVE_FULL_LOGGING
 				+ " unlockPro=" + BuildConfig.CAIRODRIVE_UNLOCK_PRO
 				+ " dataSaver=" + BuildConfig.CAIRODRIVE_DATA_SAVER);
