@@ -282,6 +282,55 @@ jobs:
           BUNDLE_TASK: ${{ steps.variant.outputs.bundle_task }}
         run: ./gradlew --no-daemon --stacktrace "${BUNDLE_TASK}"
 
+      # A failing :OsmAnd-java:test says only "There were failing tests, see the report at
+      # file:///home/runner/..." - a path on a runner that no longer exists by the time anyone
+      # reads it. The job log is ~20k lines and the NDK output alone overruns the tail window
+      # the API will return, so the one line naming the broken test is unreachable. That turned
+      # a red build into an unanswerable question rather than a fix.
+      #
+      # This prints the failure text straight into the log, and keeps the HTML report as an
+      # artifact. `if: always()` because the interesting case is precisely the one where the
+      # step above exited non-zero. It cannot itself fail the job.
+      - name: Show failing tests
+        if: always()
+        working-directory: android
+        run: |
+          set +e
+          found=0
+          for xml in $(find . -path '*/build/test-results/*' -name 'TEST-*.xml' 2>/dev/null); do
+            if grep -q '<failure\|<error' "$xml"; then
+              found=1
+              echo "::group::$(basename "$xml")"
+              # The message= attribute and the stack trace body are what identify it.
+              python3 - "$xml" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          tree = ET.parse(sys.argv[1])
+          for case in tree.iter('testcase'):
+              for bad in list(case.findall('failure')) + list(case.findall('error')):
+                  print("FAILED: %s.%s" % (case.get('classname'), case.get('name')))
+                  print("  %s" % (bad.get('message') or bad.get('type') or '').strip()[:2000])
+                  body = (bad.text or '').strip()
+                  if body:
+                      print('\n'.join('  ' + l for l in body.splitlines()[:40]))
+                  print()
+          PY
+              echo "::endgroup::"
+            fi
+          done
+          [ "$found" = 0 ] && echo "No failing test XML found (tests passed, or never ran)."
+          exit 0
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ github.run_number }}
+          path: |
+            android/*/build/reports/tests/
+            android/*/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
       # The debug APK step was removed. Its stated reason was that only a debug build carried
       # the full diagnostic log - but cairodrive.gradle now sets CAIRODRIVE_FULL_LOGGING=true
       # for the release build type as well, precisely so that a Play-installed build (which
@@ -636,6 +685,37 @@ jobs:
           CAIRODRIVE_KEY_PASSWORD: ${{ secrets.CAIRODRIVE_KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD }}
           BUNDLE_TASK: ${{ steps.variant.outputs.bundle_task }}
         run: ./gradlew --no-daemon --stacktrace "${BUNDLE_TASK}"
+
+      # Same reasoning as the build job's copy - and it matters more here, because this job is
+      # behind the `production` reviewer gate. A test failure with no named test costs an
+      # approval AND leaves nothing to act on.
+      - name: Show failing tests
+        if: always()
+        working-directory: android
+        run: |
+          set +e
+          found=0
+          for xml in $(find . -path '*/build/test-results/*' -name 'TEST-*.xml' 2>/dev/null); do
+            if grep -q '<failure\|<error' "$xml"; then
+              found=1
+              echo "::group::$(basename "$xml")"
+              python3 - "$xml" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          tree = ET.parse(sys.argv[1])
+          for case in tree.iter('testcase'):
+              for bad in list(case.findall('failure')) + list(case.findall('error')):
+                  print("FAILED: %s.%s" % (case.get('classname'), case.get('name')))
+                  print("  %s" % (bad.get('message') or bad.get('type') or '').strip()[:2000])
+                  body = (bad.text or '').strip()
+                  if body:
+                      print('\n'.join('  ' + l for l in body.splitlines()[:40]))
+                  print()
+          PY
+              echo "::endgroup::"
+            fi
+          done
+          [ "$found" = 0 ] && echo "No failing test XML found (tests passed, or never ran)."
+          exit 0
 
       # Release-signed APK of the same code that goes into the bundle, for sideload
       # testing of the exact shipping build (the AAB itself cannot be installed directly).
