@@ -6,19 +6,42 @@ a settled question or re-derive a falsified one.
 
 Update this file in the same commit that changes an item's state.
 
-Last updated: 2026-08-04, branch `dev`.
+Last updated: 2026-08-04, branch `dev`, at `04303c3` (run 125, green).
 
 ---
 
-## Everything below is IN the tree. None of it has compiled.
+## Everything below is IN the tree, and as of `04303c3` it COMPILES.
 
-29 commits since the last green build (`351d535`). Every CI run since was cancelled by
-concurrency — commits landed faster than a ~19 minute build.
+Run 125 on `04303c3` is green end to end: release AAB, release APK, `libosmand.so` present at
+8,673,520 bytes for `arm64-v8a`, all 19 steps success. That is the first green build since
+`351d535` and it covers every commit on this branch.
 
-**One definite compile error was found and fixed by accident, not by CI**: `@Override` had been
-left annotating a *field* in `MapViewTrackingUtilities` when the N3 filter's field was inserted
-between the annotation and the method it belonged to. That would have failed every build. It was
-caught in an agent's report. There may be more of the same kind.
+Getting there took two rounds of finding what the cancelled builds had been hiding.
+
+**Round 1 — found by accident, not by CI.** `@Override` had been left annotating a *field* in
+`MapViewTrackingUtilities` when the N3 filter's field was inserted between the annotation and the
+method it belonged to. Caught in an agent's report.
+
+**Round 2 — found by reading the last build that actually finished.** Every run after `144867c`
+was cancelled by concurrency, so nobody looked at `144867c` itself: it had **failed**, and four
+`javac` errors then sat unseen in `RouteProvider.java` for ten commits. Two of them were worse
+than a missing import — `PlatformUtil.getOsmandRegions()` returns a *different* `OsmandRegions`
+from the one routing queries, so the obvious fix would have compiled and then invalidated the
+wrong cache while still logging that it had dropped it.
+
+**The lesson worth keeping is about the checking, not the errors.** The ad-hoc brace-balance
+checks used while this work landed stripped char literals *before* comments, so an apostrophe in
+prose — `OsmAnd's` — opened a fake char literal that swallowed every line to the next apostrophe,
+deleting the broken code before it was ever examined. Those checks reported clean on a file with
+four compile errors in it. Any "balanced OK" recorded in this branch's history before `04303c3`
+was not evidence.
+
+`tools/cd-typecheck.py` replaces them. It resolves capitalised names in type positions against
+imports, wildcards, static wildcards, own package and java.\*, needs no Android SDK, and is
+validated both ways: it flags exactly the two missing types on the pre-fix file and reports zero
+across every file changed since the last green build. It is **not** a compiler — it cannot see an
+out-of-scope *variable*, which is what one of the four errors was. Kept in `tools/`, never
+`patches/`, because CI executes python from `patches/`.
 
 ---
 
@@ -101,6 +124,12 @@ the font manifest · `CD_LAYER` per-layer timing · metered tile gate with `CD_D
 
 The Arabic strings in B2 are an agent's, not a translator's — `الاتجاهات` for Navigate.
 
+Checked before leaving it: `context_menu_item_directions_to` ("الاتجاهات إلى") is dead — no Java
+references it — and `shared_string_navigation` ("الملاحة") reads as a menu heading rather than a
+button. `الاتجاهات` is also what Google Maps Arabic puts on this exact control, and Google Maps is
+the bar this fork is measured against. So it stays until a native speaker says otherwise in the
+car; the alternative was churn, not an improvement.
+
 ---
 
 ## Dropped
@@ -133,6 +162,7 @@ The Arabic strings in B2 are an agent's, not a translator's — `الاتجاه�
 | `CD_FRAME` | `renderMode`, `hwAccel`, `avgOver` vs 25.9, `avgMs` vs 46.9 | Whether B1 worked |
 | `CD_LAYER` | worst layers | What is actually eating `over` |
 | `CD_MATCH` | `disagree=`, `applied=` | Whether map matching would have moved the car, and was right |
+| `CD_MATCH` | `graphCache=` | Whether the local-graph cache hits. If it collapses in junctions it is paying its key cost for nothing |
 | `CD_STATIONARY` | `frozen=`, `frozenWhileDegraded=` | Whether N3's simulation held on real GPS |
 | `CD_FIXRATE` | `hz=` | Whether N4 is worth doing |
 | `CD_TRIP`, `CD_AUTO`, `CD_SEC` | present at all | Card kept, pane opened, API refusals |
