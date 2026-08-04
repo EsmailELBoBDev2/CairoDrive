@@ -21,6 +21,9 @@
 	<string name="lane_hint_left_side_now">get on the left side now</string>
 	<string name="lane_hint_right_side_now">get on the right side now</string>
 	<string name="lane_hint_middle_now">get in the middle now</string>
+	<!-- CairoDrive B2: the Android Auto place-detail pane (PlaceDetailsScreen). -->
+	<string name="auto_place_details_navigate">Navigate</string>
+	<string name="auto_place_details_no_address">Address unavailable</string>
     <string name="release_5_4">
         • New spatial search — find places and search around a place\n\n
         • Refreshed search UI: sorting, category filters, cleaner look\n\n

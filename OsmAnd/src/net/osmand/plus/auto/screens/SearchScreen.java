@@ -229,7 +229,15 @@ public final class SearchScreen extends BaseSearchScreen implements DefaultLifec
 
 	private void showResult(SearchResult sr) {
 		showResult = false;
-		openRoutePreview(settingsAction, sr);
+		// B2 - a tapped place gets its detail pane first; see the same branch in
+		// SearchResultsScreen. ObjectType.ROUTE reaches here too (the "previous route" card built
+		// by reloadHistoryInternal) and is deliberately excluded by PlaceDetailsScreen.canShow:
+		// that card is a one-tap resume, and a confirmation pane in front of it is a regression.
+		if (PlaceDetailsScreen.canShow(sr)) {
+			getScreenManager().push(new PlaceDetailsScreen(getCarContext(), settingsAction, sr));
+		} else {
+			openRoutePreview(settingsAction, sr);
+		}
 	}
 
 	@Override

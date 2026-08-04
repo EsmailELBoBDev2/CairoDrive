@@ -686,6 +686,10 @@ public class CairoDriveLogger {
 				// a veto on both and a request is not a fact.
 				+ " hwCanvas=" + BuildConfig.CAIRODRIVE_HW_CANVAS
 				+ " presentation=" + BuildConfig.CAIRODRIVE_PRESENTATION
+				+ " routeRepair=" + BuildConfig.CAIRODRIVE_ROUTE_REPAIR
+				+ " speculate=" + BuildConfig.CAIRODRIVE_SPECULATE
+				+ " placeDetails=" + BuildConfig.CAIRODRIVE_PLACE_DETAILS
+				+ " altAB=" + BuildConfig.CAIRODRIVE_ALTERNATE_ALTERNATIVES
 				+ " fullLogging=" + BuildConfig.CAIRODRIVE_FULL_LOGGING
 				+ " unlockPro=" + BuildConfig.CAIRODRIVE_UNLOCK_PRO
 				+ " dataSaver=" + BuildConfig.CAIRODRIVE_DATA_SAVER);

@@ -282,6 +282,23 @@ def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim
 //
 // CD_SPECULATE reports `precomputed`, `HIT` (a reroute served with no search at all), `discarded
 // stale` or `discarded missM=`.
+// B2. Place-detail pane on Android Auto.
+//
+// There was no place-detail view on the head unit AT ALL - tapping a search result went straight
+// to route preview, so a place's address, category and distance had nowhere to appear. That also
+// blocks the deferred Google Places fields (hours, phone, rating, photos): they have nowhere to
+// render until this exists.
+//
+// Built inside MapWithContentTemplate rather than a bare PaneTemplate, because a bare pane inside
+// a navigation session tears down the map surface. The camera is deliberately not moved, so there
+// is no tilt reset and no restore animation per dismissal. Exactly two secondary lines, which is
+// the Android Auto cap while driving.
+//
+// CD_AUTO reports which address fallback won. Cairo OSM frequently has no addr:* tags, so a drive
+// full of addr=coords says the DATA is thin rather than the screen being broken.
+def placeDetailsEnv = System.getenv("CAIRODRIVE_PLACE_DETAILS")
+def placeDetails = placeDetailsEnv?.trim() ? placeDetailsEnv.trim() : "true"
+
 def speculateEnv = System.getenv("CAIRODRIVE_SPECULATE")
 def speculate = speculateEnv?.trim() ? speculateEnv.trim() : "true"
 
@@ -384,6 +401,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_ALTERNATE_ALTERNATIVES", alternateAlternatives
 			buildConfigField "boolean", "CAIRODRIVE_ROUTE_REPAIR", routeRepair
 			buildConfigField "boolean", "CAIRODRIVE_SPECULATE", speculate
+			buildConfigField "boolean", "CAIRODRIVE_PLACE_DETAILS", placeDetails
 		}
 		release {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
@@ -401,6 +419,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_ALTERNATE_ALTERNATIVES", alternateAlternatives
 			buildConfigField "boolean", "CAIRODRIVE_ROUTE_REPAIR", routeRepair
 			buildConfigField "boolean", "CAIRODRIVE_SPECULATE", speculate
+			buildConfigField "boolean", "CAIRODRIVE_PLACE_DETAILS", placeDetails
 		}
 	}
 }

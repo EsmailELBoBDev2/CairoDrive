@@ -119,7 +119,16 @@ public final class SearchResultsScreen extends BaseSearchScreen implements Defau
 
 	private void showResult(SearchResult sr) {
 		showResult = false;
-		openRoutePreview(settingsAction, sr);
+		// B2 - a tapped place gets its detail pane first. Before this the tap went straight to
+		// route preview, so there was nowhere on the head unit to see an address, a category or
+		// how far away the place was, and nowhere for the deferred Google Places fields to land.
+		// Anything the pane cannot describe (a track, a resumed route, a result with no position)
+		// still takes the old direct path - see PlaceDetailsScreen.canShow.
+		if (PlaceDetailsScreen.canShow(sr)) {
+			getScreenManager().push(new PlaceDetailsScreen(getCarContext(), settingsAction, sr));
+		} else {
+			openRoutePreview(settingsAction, sr);
+		}
 	}
 
 	@Override
