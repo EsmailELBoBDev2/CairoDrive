@@ -21,7 +21,17 @@ import java.util.Collections;
 public class DownloadValidationManager {
 
 	public static final int MAXIMUM_AVAILABLE_FREE_DOWNLOADS = 7;
-	private static boolean DOWNLOAD_MOBILE_INTERNET_CONFIRMED;
+	// Was a bare process-wide static: one "yes" silenced the prompt for every later download until
+	// the app was killed, so agreeing to a small file also silently agreed to the next 200 MB map.
+	// Time-boxed instead, so a deliberate download session still works without asking repeatedly
+	// but the consent expires rather than lasting the process lifetime.
+	private static long mobileInternetConfirmedAt;
+	private static final long MOBILE_CONFIRM_VALID_MS = 10 * 60 * 1000L;
+
+	private static boolean isMobileInternetConfirmed() {
+		return mobileInternetConfirmedAt > 0
+				&& System.currentTimeMillis() - mobileInternetConfirmedAt < MOBILE_CONFIRM_VALID_MS;
+	}
 
 	private final OsmandApplication app;
 	private final OsmandSettings settings;
@@ -137,13 +147,13 @@ public class DownloadValidationManager {
 		if (settings.isWifiConnected()) {
 			downloadFilesCheck_3_ValidateSpace(context, items, callback);
 		} else if (settings.isInternetConnectionAvailable()) {
-			if (DOWNLOAD_MOBILE_INTERNET_CONFIRMED) {
+			if (isMobileInternetConfirmed()) {
 				downloadFilesCheck_3_ValidateSpace(context, items, callback);
 			} else {
 				AlertDialog.Builder builder = new AlertDialog.Builder(context);
 				builder.setMessage(context.getString(R.string.download_using_mobile_internet));
 				builder.setPositiveButton(R.string.shared_string_yes, (dialog, which) -> {
-					DOWNLOAD_MOBILE_INTERNET_CONFIRMED = true;
+					mobileInternetConfirmedAt = System.currentTimeMillis();
 					downloadFilesCheck_3_ValidateSpace(context, items, callback);
 				});
 				builder.setNegativeButton(R.string.shared_string_no, null);

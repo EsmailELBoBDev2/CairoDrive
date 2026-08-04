@@ -65,9 +65,15 @@ def drivingView = drivingViewEnv?.trim() ? drivingViewEnv.trim() : "true"
 // the 50 m / 3 s debounce is checked before the counter advances, not after. Together they can
 // suppress a reroute indefinitely, which is far worse than the spurious reroute they prevent -
 // a driver who has gone the wrong way needs to be told immediately.
-// Set CAIRODRIVE_OFFROUTE_HYSTERESIS=true to re-enable it for testing.
+// ON again as of 2026-08-04, after all three of those rules were fixed and a hard 12 s timeout
+// was added as a backstop. The 2026-08-04 drive produced exactly the failure this exists to
+// prevent - reroute after reroute after reroute while trying to turn around - so the cost of
+// leaving it off is now observed rather than theoretical. Evidence is cleared by two consecutive
+// ON-route fixes rather than one, the debounce is checked after the evidence test rather than
+// before, and no combination of rules can now delay a genuine reroute past 12 s. Six fix patterns
+// were simulated against the new logic before this default was flipped.
 def offRouteEnv = System.getenv("CAIRODRIVE_OFFROUTE_HYSTERESIS")
-def offRouteHysteresis = offRouteEnv?.trim() ? offRouteEnv.trim() : "false"
+def offRouteHysteresis = offRouteEnv?.trim() ? offRouteEnv.trim() : "true"
 
 // How much WIDER than the head unit's screen the offscreen map is rendered, as a fraction.
 // Upstream uses 0.5 - half a screen of extra width, rendered every frame and then cropped.
@@ -110,6 +116,22 @@ def surfaceOverscan = overscanEnv?.trim() ? overscanEnv.trim() : "0.0"
 // The real fix is not to copy at all - render into the car Surface through a VirtualDisplay,
 // which needs no core change - but that needs proving on a real head unit first. This is the
 // thing worth having in the meantime, and the fallback if that does not pan out.
+// Draw the car frame with a HARDWARE canvas instead of the software one.
+//
+// surface.lockCanvas() is never hardware accelerated - that is AOSP's documented behaviour, not a
+// quirk - so the per-frame blit runs on the CPU through Skia. The 2026-08-04 drive measured that
+// blit at 9.2 ms, 22% of a 46.9 ms frame, second only to OsmAnd's own overlay drawing.
+// lockHardwareCanvas() moves it to the GPU and is a five-line change against what would otherwise
+// be a multi-day rewrite.
+//
+// OFF by default because the head unit, not this app, allocates the buffer, and if it lacks the
+// GPU usage flags the hardware path needs the lock fails outright. SurfaceRenderer falls back to
+// the software canvas and latches that decision for the session, so the failure mode is "no
+// improvement", never a black screen - but it should still be proven on a real drive before it
+// becomes the default.
+def hwCanvasEnv = System.getenv("CAIRODRIVE_HW_CANVAS")
+def hwCanvas = hwCanvasEnv?.trim() ? hwCanvasEnv.trim() : "false"
+
 def renderScaleEnv = System.getenv("CAIRODRIVE_RENDER_SCALE")
 def renderScale = renderScaleEnv?.trim() ? renderScaleEnv.trim() : "1.0"
 
@@ -187,6 +209,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_DATA_SAVER", dataSaver
 			buildConfigField "float", "CAIRODRIVE_SURFACE_OVERSCAN", surfaceOverscan + "f"
 			buildConfigField "float", "CAIRODRIVE_RENDER_SCALE", renderScale + "f"
+			buildConfigField "boolean", "CAIRODRIVE_HW_CANVAS", hwCanvas
 		}
 		release {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
@@ -197,6 +220,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_DATA_SAVER", dataSaver
 			buildConfigField "float", "CAIRODRIVE_SURFACE_OVERSCAN", surfaceOverscan + "f"
 			buildConfigField "float", "CAIRODRIVE_RENDER_SCALE", renderScale + "f"
+			buildConfigField "boolean", "CAIRODRIVE_HW_CANVAS", hwCanvas
 		}
 	}
 }

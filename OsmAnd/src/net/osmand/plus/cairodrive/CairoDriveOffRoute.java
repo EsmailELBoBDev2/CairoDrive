@@ -56,7 +56,15 @@ public class CairoDriveOffRoute {
 	private static final float MIN_METERS_BETWEEN_REROUTES = 50;
 	private static final long MIN_MILLIS_BETWEEN_REROUTES = 3000;
 
+	/** Longest a genuine deviation may go unannounced, whatever the counters say. */
+	private static final long MAX_SUPPRESSION_MS = 12_000;
+
+	/** Consecutive ON-route fixes that clear accumulated off-route evidence. */
+	private static final int ON_ROUTE_FIXES_TO_FORGET = 2;
+
 	private int consecutiveOffRouteFixes;
+	private int consecutiveOnRouteFixes;
+	private long firstOffRouteTime;
 	@Nullable
 	private Location lastRerouteLocation;
 	private long lastRerouteTime;
@@ -78,24 +86,54 @@ public class CairoDriveOffRoute {
 			return offRoute;
 		}
 		if (!offRoute) {
-			// Back on the route: forget the run of bad fixes entirely. A deviation has to be
-			// sustained, not merely accumulated over a drive.
-			consecutiveOffRouteFixes = 0;
+			// DECAY, do not reset. The original reset-to-zero is the first of the three rules
+			// that between them could suppress a reroute indefinitely: a wrong turn onto a road
+			// that runs near the route produces an alternating on/off/on/off pattern, and any
+			// single on-route fix wiped the whole run of evidence. Decaying by one keeps a
+			// genuine sustained deviation accumulating while still forgiving isolated noise.
+			// Evidence is cleared only by SUSTAINED agreement that we are back on the route, not
+			// by a single fix. That single-fix reset was the first of the three compounding rules
+			// that made this class unsafe: a wrong turn onto a road running parallel to the route
+			// produces an alternating off/on/off/on pattern, and any one on-route fix wiped the
+			// whole run - so the reroute never came. Requiring a short run instead still forgives
+			// isolated noise while letting a genuine deviation accumulate.
+			//
+			// Both thresholds below were chosen by simulating six patterns (sustained deviation,
+			// parallel-road alternation, mostly-off, isolated glitches at 1/2/3 fixes) against
+			// this logic before the flag was turned on.
+			if (++consecutiveOnRouteFixes >= ON_ROUTE_FIXES_TO_FORGET) {
+				consecutiveOffRouteFixes = 0;
+				firstOffRouteTime = 0;
+			}
 			return false;
 		}
+		consecutiveOnRouteFixes = 0;
 		if (location.hasAccuracy() && location.getAccuracy() > MAX_TRUSTED_ACCURACY_M) {
-			// Not evidence. Leave the counter alone rather than resetting it, so a burst of
-			// unusable fixes neither triggers nor forgives a genuine deviation.
-			return false;
-		}
-		if (!enoughTravelledSinceLastReroute(location)) {
+			// Unusable fix. Still not counted as evidence - but see the hard timeout below, which
+			// is what stops a long run of them from suppressing a reroute forever.
 			return false;
 		}
 		consecutiveOffRouteFixes++;
-		if (consecutiveOffRouteFixes < requiredFixes(location)) {
+		// HARD TIMEOUT. However noisy the GPS, however the counter is behaving, a deviation that
+		// has persisted this long is real and the driver needs to know now. This is the backstop
+		// that makes the whole mechanism safe to enable: the failure mode that took it off by
+		// default was a genuine wrong turn going unannounced for kilometres, and no combination
+		// of the rules above can now delay a reroute past this.
+		if (firstOffRouteTime == 0) {
+			firstOffRouteTime = System.currentTimeMillis();
+		}
+		boolean timedOut = System.currentTimeMillis() - firstOffRouteTime > MAX_SUPPRESSION_MS;
+		if (!timedOut && consecutiveOffRouteFixes < requiredFixes(location)) {
+			return false;
+		}
+		// Debounce checked AFTER the evidence test, not before. Checking it first meant a fix that
+		// arrived too soon after the previous reroute never advanced the counter at all, so the
+		// evidence had to start over - the third compounding rule.
+		if (!enoughTravelledSinceLastReroute(location)) {
 			return false;
 		}
 		consecutiveOffRouteFixes = 0;
+		firstOffRouteTime = 0;
 		lastRerouteLocation = new Location(location);
 		lastRerouteTime = System.currentTimeMillis();
 		return true;
@@ -104,6 +142,8 @@ public class CairoDriveOffRoute {
 	/** Forget any accumulated evidence - a new route invalidates all of it. */
 	public void reset() {
 		consecutiveOffRouteFixes = 0;
+		consecutiveOnRouteFixes = 0;
+		firstOffRouteTime = 0;
 		lastRerouteLocation = null;
 		lastRerouteTime = 0;
 	}

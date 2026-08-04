@@ -847,7 +847,9 @@ public class CairoDriveLogger {
 			if (info != null) {
 				builder.append("satsFound=").append(info.foundSatellites)
 						.append(" satsUsed=").append(info.usedSatellites)
-						.append(" fixed=").append(info.fixed).append(' ');
+						.append(" fixed=").append(info.fixed)
+						.append(" gnss=").append(gnssHealth.update(info.usedSatellites))
+						.append(' ');
 			}
 			if (providerStateKnown) {
 				builder.append("gpsEnabled=").append(gpsProviderEnabled)
@@ -1511,4 +1513,39 @@ public class CairoDriveLogger {
 			this.longitude = longitude;
 		}
 	}
+
+	/**
+	 * GNSS health, with hysteresis, derived from used-in-fix satellite count.
+	 *
+	 * <p>The 2026-08-04 drive had {@code satsUsed=0} on 55% of fixes while still reporting 2.1-2.5 m
+	 * accuracy. Those are not GNSS positions - the fused provider is answering from Wi-Fi and cell,
+	 * and stamping a confident accuracy on it. Below four satellites there is no 3D solution at all,
+	 * so the count is the honest signal and the accuracy float is not.
+	 *
+	 * <p>This matters beyond the log: CairoDriveOffRoute gates its corroboration on accuracy, and an
+	 * over-confident accuracy on a non-GNSS fix is exactly the input that makes a deviation look
+	 * real. Recording the state first - one field on a line already being written - so the next
+	 * drive shows how the two correlate before anything starts acting on it.
+	 */
+	private static final class GnssHealth {
+		private static final int MIN_USED_FOR_FIX = 4;
+		private static final int SAMPLES_TO_SWITCH = 3;
+
+		private boolean healthy;
+		private int agreeing;
+
+		String update(int usedSatellites) {
+			boolean sample = usedSatellites >= MIN_USED_FOR_FIX;
+			if (sample == healthy) {
+				agreeing = 0;
+			} else if (++agreeing >= SAMPLES_TO_SWITCH) {
+				healthy = sample;
+				agreeing = 0;
+			}
+			return healthy ? "OK" : "DEGRADED";
+		}
+	}
+
+	private final GnssHealth gnssHealth = new GnssHealth();
+
 }

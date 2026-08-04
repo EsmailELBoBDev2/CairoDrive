@@ -30,6 +30,7 @@ import net.osmand.core.android.MapRendererView;
 import net.osmand.core.android.MapRendererView.MapRendererViewListener;
 import net.osmand.core.jni.ZoomLevel;
 import net.osmand.data.RotatedTileBox;
+import net.osmand.plus.AppInitEvents;
 import net.osmand.plus.AppInitializeListener;
 import net.osmand.plus.BuildConfig;
 import net.osmand.plus.AppInitializer;
@@ -115,6 +116,10 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 	 * which is why the default changes nothing.
 	 */
 	private static final float renderScale = BuildConfig.CAIRODRIVE_RENDER_SCALE;
+	/** See CAIRODRIVE_HW_CANVAS in cairodrive.gradle. */
+	private static final boolean useHardwareCanvas = BuildConfig.CAIRODRIVE_HW_CANVAS;
+	/** Latched once the head unit's buffer proves it cannot take a hardware canvas. */
+	private boolean hardwareCanvasFailed;
 	/** Reused; allocating a Paint per frame is what the widget path was just fixed for. */
 	private final Paint upscalePaint = new Paint(Paint.FILTER_BITMAP_FLAG);
 	private final Rect blitDst = new Rect();
@@ -411,11 +416,37 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 			mapView.setView(surfaceView);
 		}
 		if (getApp().isApplicationInitializing()) {
-			// addOnFinishListener, not addListener: it removes itself when it fires. setupRenderingView
-			// is reached from NavigationSession.onStart, onStop, onSurfaceAvailable and onPurchaseDone,
-			// so the raw addListener left one more anonymous listener holding this SurfaceRenderer
-			// behind on every call during init.
-			getApp().getAppInitializer().addOnFinishListener(init -> setupOffscreenRenderer());
+			// Fire as soon as the renderer's ACTUAL precondition is met, not at the end of init.
+			// setupOffscreenRenderer needs NativeCoreContext.getMapRendererContext() (ready at
+			// NATIVE_OPEN_GL_INITIALIZED) and map data to draw (MAPS_INITIALIZED). Everything after
+			// that in startApplicationBackground - region boundaries, favourites, the GPX database,
+			// GPX load AND save, marker sync, search-UI init, the live-update sweep, the BRouter
+			// bind, help articles - is irrelevant to putting a map on the head unit, yet the car
+			// waited for all of it, and then for a post to the main looper on top.
+			//
+			// The 2026-08-04 drive log put a number on it: INDEX_REGION_BOUNDARIES alone measured
+			// 1150-1300 ms, and it sits in that tail.
+			//
+			// The onFinish listener is deliberately KEPT as a safety net. setupOffscreenRenderer is
+			// idempotent (it re-checks the renderer context and its own null state on every call),
+			// so the worst case of firing twice is a wasted check - whereas the worst case of
+			// firing too early with no fallback is a permanently black car screen.
+			AppInitializer initializer = getApp().getAppInitializer();
+			initializer.addListener(new AppInitializeListener() {
+				@Override
+				public void onProgress(@NonNull AppInitializer init, @NonNull AppInitEvents event) {
+					if (event == AppInitEvents.MAPS_INITIALIZED) {
+						init.removeListener(this);
+						setupOffscreenRenderer();
+					}
+				}
+
+				@Override
+				public void onFinish(@NonNull AppInitializer init) {
+					init.removeListener(this);
+					setupOffscreenRenderer();
+				}
+			});
 		} else
 			setupOffscreenRenderer();
 	}
@@ -580,7 +611,34 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 		// One drive with this in the log settles it.
 		boolean timing = CairoDriveLogger.isEnabled();
 		long frameStartNanos = timing ? System.nanoTime() : 0;
-		Canvas canvas = surface.lockCanvas(null);
+		// lockHardwareCanvas() when CAIRODRIVE_HW_CANVAS is on. A lockCanvas() canvas is never
+		// hardware accelerated (AOSP), so the blit below runs on the CPU through Skia - and the
+		// 2026-08-04 drive measured blit at 9.2 ms, 22% of a 46.9 ms frame. Both preconditions the
+		// hardware path requires are already met here: this code fully repaints the surface every
+		// frame (no partial updates to preserve), and nothing ever puts a GLES or video surface on
+		// it - the offscreen renderer is a separate Pbuffer.
+		//
+		// Defaulted OFF, like CAIRODRIVE_RENDER_SCALE, because the AA host allocates this buffer
+		// and may not have set the GPU usage flags the hardware path needs. When that happens the
+		// lock throws or returns null rather than degrading, so the fallback below is mandatory
+		// rather than defensive - and once it falls back it stays fallen back for the session,
+		// because retrying a lock that has already failed once per frame is its own stall.
+		Canvas canvas = null;
+		if (useHardwareCanvas && !hardwareCanvasFailed) {
+			try {
+				canvas = surface.lockHardwareCanvas();
+			} catch (Throwable t) {
+				hardwareCanvasFailed = true;
+				Log.w(TAG, "lockHardwareCanvas unavailable on this head unit, using software canvas", t);
+			}
+			if (canvas == null && !hardwareCanvasFailed) {
+				hardwareCanvasFailed = true;
+				Log.w(TAG, "lockHardwareCanvas returned null, using software canvas");
+			}
+		}
+		if (canvas == null) {
+			canvas = surface.lockCanvas(null);
+		}
 		long lockDoneNanos = timing ? System.nanoTime() : 0;
 		long readDoneNanos = lockDoneNanos;
 		long blitDoneNanos = lockDoneNanos;

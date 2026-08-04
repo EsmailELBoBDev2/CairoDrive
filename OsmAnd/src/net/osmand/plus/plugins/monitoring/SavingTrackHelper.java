@@ -676,7 +676,7 @@ public class SavingTrackHelper extends SQLiteOpenHelper implements IRouteInforma
 		rowsMap.put(POINT_COL_ICON, iconName);
 		rowsMap.put(POINT_COL_BACKGROUND, backgroundName);
 
-		execWithClose(AndroidDbUtils.createDbInsertQuery(POINT_NAME, rowsMap.keySet()), rowsMap.values().toArray());
+		exec(AndroidDbUtils.createDbInsertQuery(POINT_NAME, rowsMap.keySet()), rowsMap.values().toArray());
 		return pt;
 	}
 
@@ -738,7 +738,7 @@ public class SavingTrackHelper extends SQLiteOpenHelper implements IRouteInforma
 			sb.append(" AND ").append(POINT_COL_CATEGORY).append(" IS NULL");
 		}
 
-		execWithClose(sb.toString(), params.toArray());
+		exec(sb.toString(), params.toArray());
 
 		wptPt.setLat(lat);
 		wptPt.setLon(lon);
@@ -797,21 +797,43 @@ public class SavingTrackHelper extends SQLiteOpenHelper implements IRouteInforma
 			sb.append(" AND ").append(POINT_COL_CATEGORY).append(" IS NULL");
 		}
 
-		execWithClose(sb.toString(), params.toArray());
+		exec(sb.toString(), params.toArray());
 	}
 
-	private synchronized void execWithClose(@NonNull String script, @NonNull Object[] objects) {
+	/**
+	 * Was execWithClose: it called db.close() after EVERY recorded point. SQLiteOpenHelper caches
+	 * the connection precisely so callers do not have to do that, and closing invalidates the
+	 * cache - so the next point paid a full reopen plus a WAL teardown. At the CAR profile's 3 s
+	 * interval that is a reopen every three seconds on the main thread, with no transaction, no
+	 * prepared statement, and the INSERT string rebuilt per row. Google's own SQLite guidance
+	 * describes this shape as "about 1000 times slower" than the batched form.
+	 * <p>
+	 * Durability drops from "survives power loss" to "survives a crash, may lose the last commits
+	 * on sudden power loss", which is the correct trade for a track log and is what
+	 * synchronous=NORMAL means. Nothing in this tree set any PRAGMA before now.
+	 */
+	private synchronized void exec(@NonNull String script, @NonNull Object[] objects) {
 		SQLiteDatabase db = getWritableDatabase();
-		if (db != null) {
-			try {
-				db.execSQL(script, objects);
-			} catch (RuntimeException e) {
-				log.error(e.getMessage(), e);
-			} finally {
-				db.close();
+		if (db == null) {
+			return;
+		}
+		try {
+			if (!pragmasApplied) {
+				pragmasApplied = true;
+				try {
+					db.enableWriteAheadLogging();
+					db.execSQL("PRAGMA synchronous = NORMAL");
+				} catch (RuntimeException e) {
+					log.error("Could not apply track-recording PRAGMAs", e);
+				}
 			}
+			db.execSQL(script, objects);
+		} catch (RuntimeException e) {
+			log.error(e.getMessage(), e);
 		}
 	}
+
+	private boolean pragmasApplied;
 
 	private void executeInsertTrackQuery(double lat, double lon, double alt, double speed, double hdop, long time, float heading, String pluginsInfo) {
 		Map<String, Object> rowsMap = new LinkedHashMap<>();
@@ -823,7 +845,7 @@ public class SavingTrackHelper extends SQLiteOpenHelper implements IRouteInforma
 		rowsMap.put(TRACK_COL_DATE, time);
 		rowsMap.put(TRACK_COL_HEADING, Float.isNaN(heading) ? null : heading);
 		rowsMap.put(TRACK_COL_PLUGINS_INFO, pluginsInfo);
-		execWithClose(AndroidDbUtils.createDbInsertQuery(TRACK_NAME, rowsMap.keySet()), rowsMap.values().toArray());
+		exec(AndroidDbUtils.createDbInsertQuery(TRACK_NAME, rowsMap.keySet()), rowsMap.values().toArray());
 	}
 
 	public void loadGpxFromDatabase() {
