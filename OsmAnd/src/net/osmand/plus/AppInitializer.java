@@ -35,6 +35,7 @@ import net.osmand.plus.backup.BackupHelper;
 import net.osmand.plus.backup.NetworkSettingsHelper;
 import net.osmand.plus.base.MapViewTrackingUtilities;
 import net.osmand.plus.cairodrive.CairoDriveDataSaver;
+import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.base.dialog.DialogManager;
 import net.osmand.plus.configmap.routes.RouteLayersHelper;
 import net.osmand.plus.configmap.tracks.TrackSortModesHelper;
@@ -567,7 +568,20 @@ public class AppInitializer implements IProgress {
 			notifyEvent(SEARCH_UI_CORE_INITIALIZED);
 			checkLiveUpdatesAlerts();
 			connectToBRouter();
-			app.helpArticlesHelper.loadArticles();
+			// D5. Help articles are fetched from the network on the initialiser thread -
+			// the same thread the first Android Auto frame waits on - and nothing about them is
+			// reachable while driving. Gated on the same data-saver check the catalogue fetch,
+			// weather tiles, live updates and cloud backup already use.
+			//
+			// The event still fires either way. Anything waiting on HELP_ARTICLES_INITIALIZED is
+			// waiting for the initialiser to have PASSED this point, not for articles to exist,
+			// and skipping the notify would hang whatever that is.
+			if (!CairoDriveDataSaver.blocksBulkTransfer(app)) {
+				app.helpArticlesHelper.loadArticles();
+			} else {
+				CairoDriveLogger.getInstance().log("CD_DATA",
+						"help articles skipped - metered connection");
+			}
 			notifyEvent(HELP_ARTICLES_INITIALIZED);
 		} catch (RuntimeException e) {
 			LOG.error(e);

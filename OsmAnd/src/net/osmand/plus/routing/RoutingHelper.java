@@ -839,12 +839,64 @@ public class RoutingHelper {
 		return currentRoute;
 	}
 
+	/**
+	 * N8. The deviation tolerance, now keyed on whether the fix is worth believing.
+	 *
+	 * <h3>Why this stopped needing a drive to decide</h3>
+	 *
+	 * N8 was "tighten 120 m towards Mapbox's 50 m", and it was correctly held: tightening blind
+	 * trades missed reroutes for spurious ones, and there was no way to tell which a given fix
+	 * deserved. That is no longer true. N1 already computes exactly the missing signal, and the
+	 * 2026-08-04 drive says how much it matters - 55% of fixes reported 2.1-2.5 m accuracy with
+	 * {@code satsUsed=0}, a Wi-Fi/cell position wearing a satellite fix's error bar.
+	 *
+	 * <p>So the honest reading of the old formula is that it was never too loose OR too tight - it
+	 * was uniform over two populations that deserve opposite treatment. On a real satellite fix
+	 * 120 m is far more slack than the error justifies, and a genuine wrong turn goes unnoticed for
+	 * a block. On a degraded fix the same 120 m is barely enough, and tightening it there is how
+	 * you manufacture the reroute storm this fork spent a drive fixing.
+	 *
+	 * <p>Healthy fixes therefore tighten toward what the industry uses; degraded fixes keep the
+	 * old behaviour exactly. Nothing here loosens anything.
+	 *
+	 * @param accuracy the reported accuracy, which on a degraded fix is not to be trusted
+	 */
 	public static float getPosTolerance(float accuracy) {
+		boolean degraded;
+		try {
+			degraded = CairoDriveLogger.getInstance().isGnssDegraded();
+		} catch (Throwable t) {
+			// Diagnostics must never change routing behaviour by failing. Unknown means "assume
+			// the worse case", which is the old formula.
+			degraded = true;
+		}
 		if (accuracy > 0) {
-			return POS_TOLERANCE / 2 + accuracy;
+			float legacy = POS_TOLERANCE / 2 + accuracy;
+			if (!degraded) {
+				// A satellite fix's accuracy figure is meaningful, so lean on it rather than on a
+				// fixed 30 m of slack on top.
+				//
+				// Capped at the legacy value, and that cap is not decoration: a simulation of this
+				// found that above ~20 m of reported accuracy, 2.5x OVERTAKES the old formula and
+				// this would have LOOSENED the tolerance - the exact opposite of what N8 is for,
+				// on the fixes where a wrong turn is easiest to miss. A healthy fix reporting 40 m
+				// is unusual but reachable (four satellites, poor geometry), and "unusual" is not
+				// a reason to ship a regression. This only ever tightens.
+				return Math.min(legacy,
+						Math.max(MIN_POS_TOLERANCE_GOOD_FIX, POS_TOLERANCE_GOOD_FIX_FACTOR * accuracy));
+			}
+			return legacy;
 		}
 		return POS_TOLERANCE;
 	}
+
+	/**
+	 * Floor for a healthy fix. Below this, lane changes and GPS jitter on a wide road start
+	 * reading as deviations - and a spurious reroute is worse than a late one.
+	 */
+	private static final float MIN_POS_TOLERANCE_GOOD_FIX = 25;
+	/** 2.5 sigma of a 68%-radius accuracy figure is ~99%: generous, without being uniform. */
+	private static final float POS_TOLERANCE_GOOD_FIX_FACTOR = 2.5f;
 
 	private static float getDefaultAllowedDeviation(OsmandSettings settings, ApplicationMode mode, float posTolerance) {
 		if (mode.getRouteService() == RouteService.DIRECT_TO) {
