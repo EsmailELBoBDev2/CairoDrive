@@ -57,6 +57,7 @@ import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.Version;
 import net.osmand.plus.auto.NavigationSession;
+import net.osmand.plus.cairodrive.CairoDriveFeatures;
 import net.osmand.plus.base.ContextMenuFragment;
 import net.osmand.plus.base.MapViewTrackingUtilities;
 import net.osmand.plus.chooseplan.ChoosePlanFragment;
@@ -883,7 +884,18 @@ public class MapActivity extends OsmandActionBarActivity implements DownloadEven
 	}
 
 	public boolean isInAppPurchaseAllowed() {
-		return true;
+		// With pro unlocked there is nothing for the inventory round trip to decide.
+		// InAppPurchaseUtils.isOsmAndProAvailable short-circuits on CairoDriveFeatures.isProUnlocked()
+		// before consulting any purchase state, so the result is ignored either way - but the request
+		// itself is not free, and it could not stop repeating: needRequestInventory() is
+		//     !inventoryRequested && ((isSubscribedToAny && tokensSent.isEmpty()) || now - lastCheck > 24h)
+		// where isSubscribedToAny is now permanently true, BILLING_PURCHASE_TOKENS_SENT is only
+		// written after a real purchase so it stays empty, and lastValidationCheckTime is declared
+		// and never assigned anywhere, so it is always 0. The only brake left was inventoryRequested,
+		// which is set only when the HTTP response body came back non-null - so on a drive with
+		// flaky Egyptian data it stayed false and the whole chain (osmand.net/api/subscriptions,
+		// then a fresh Play Billing connection, then the MOTD ad fetch) re-fired on every onResume.
+		return !CairoDriveFeatures.isProUnlocked();
 	}
 
 	@Override

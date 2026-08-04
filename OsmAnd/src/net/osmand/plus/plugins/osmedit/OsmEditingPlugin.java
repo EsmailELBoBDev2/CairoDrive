@@ -146,7 +146,13 @@ public class OsmEditingPlugin extends OsmandPlugin {
 		OSM_UPLOAD_VISIBILITY = registerEnumStringPreference("upload_visibility", UploadVisibility.getDefaultValue(), UploadVisibility.getAvailableValues(), UploadVisibility.class).makeGlobal().makeShared();
 
 		USER_OSM_BUG_NAME = registerStringPreference("user_osm_bug_name", "NoName/OsmAnd").makeGlobal().makeShared();
-		OSM_USER_PASSWORD = registerStringPreference("user_password", "").makeGlobal().makeShared();
+		// NOT makeShared(). isExportAvailableForPref() is `!isGlobal() || isShared()`, so makeShared
+		// is exactly what puts a global preference into settings exports and OsmAnd Cloud backups -
+		// and this one holds the legacy OSM account password in cleartext. The OAuth token pair
+		// below is correctly global-only for the same reason. This matters more in this fork than
+		// upstream because CAIRODRIVE_UNLOCK_PRO removes the paywall on Cloud backup, so the export
+		// path is reachable on a build where it otherwise would not have been.
+		OSM_USER_PASSWORD = registerStringPreference("user_password", "").makeGlobal();
 		OSM_USER_ACCESS_TOKEN = registerStringPreference("user_access_token", "").makeGlobal();
 		OSM_USER_ACCESS_TOKEN_SECRET = registerStringPreference("user_access_token_secret", "").makeGlobal();
 

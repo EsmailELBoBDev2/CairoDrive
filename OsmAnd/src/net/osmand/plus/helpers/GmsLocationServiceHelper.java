@@ -102,8 +102,14 @@ public class GmsLocationServiceHelper extends LocationServiceHelper {
 		LocationManager locationManager = (LocationManager) app.getSystemService(LOCATION_SERVICE);
 		List<String> providers = locationManager.getProviders(true);
 		for (String provider : providers) {
+			// PASSIVE_PROVIDER is excluded here for the same reason AndroidApiLocationServiceHelper
+			// excludes it (IGNORED_NETWORK_PROVIDERS): subscribing to it wakes this app on every
+			// OTHER app's location fix, for no fix of our own. The two helpers had drifted - the
+			// AOSP one listed all three providers, this one listed two - and the Play build uses
+			// this one, so the phone that actually drives was the one paying for it.
 			if (provider == null
 					|| provider.equals(LocationManager.GPS_PROVIDER)
+					|| provider.equals(LocationManager.PASSIVE_PROVIDER)
 					|| provider.equals(LocationManager.FUSED_PROVIDER)) {
 				continue;
 			}

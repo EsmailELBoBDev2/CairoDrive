@@ -187,7 +187,29 @@ public class MapTileDownloader {
 		pendingToDownload.clear();
 	}
 
+	/**
+	 * Optional veto on tile downloads, set by the Android app. This class lives in OsmAnd-java and
+	 * has no Context, so it cannot ask ConnectivityManager anything itself - which is why it was the
+	 * one network path in the app with no metered check of any kind. It is the shared route for
+	 * raster overlay/underlay tiles AND Mapillary vector tiles, and Mapillary's source runs from
+	 * zoom 13 up, i.e. continuously while driving. Latent while those plugins are off; uncapped the
+	 * moment either is switched on.
+	 */
+	public interface DownloadGate {
+		boolean allowDownload();
+	}
+
+	private static DownloadGate downloadGate;
+
+	public static void setDownloadGate(DownloadGate gate) {
+		downloadGate = gate;
+	}
+
 	public void requestToDownload(DownloadRequest request) {
+		DownloadGate gate = downloadGate;
+		if (gate != null && !gate.allowDownload()) {
+			return;
+		}
 		long now = System.currentTimeMillis();
 		if ((int) (now - timeForErrorCounter) > TIMEOUT_AFTER_EXCEEDING_LIMIT_ERRORS) {
 			timeForErrorCounter = now;

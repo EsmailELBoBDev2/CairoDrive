@@ -35,6 +35,7 @@ import androidx.multidex.MultiDexApplication;
 import net.osmand.PlatformUtil;
 import net.osmand.aidl.OsmandAidlApi;
 import net.osmand.data.LatLon;
+import net.osmand.map.MapTileDownloader;
 import net.osmand.map.OsmandRegions;
 import net.osmand.map.WorldRegion;
 import net.osmand.map.WorldRegion.RegionParams;
@@ -53,6 +54,7 @@ import net.osmand.plus.backup.BackupHelper;
 import net.osmand.plus.backup.NetworkSettingsHelper;
 import net.osmand.plus.base.MapViewTrackingUtilities;
 import net.osmand.plus.base.dialog.DialogManager;
+import net.osmand.plus.cairodrive.CairoDriveDataSaver;
 import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.configmap.routes.RouteLayersHelper;
 import net.osmand.plus.configmap.tracks.TrackSortModesHelper;
@@ -273,6 +275,10 @@ public class OsmandApplication extends MultiDexApplication {
 		appCustomization = new OsmAndAppCustomization();
 		appCustomization.setup(this);
 		settings = appCustomization.getOsmandSettings();
+		// MapTileDownloader is in OsmAnd-java and has no Context, so it cannot check metering
+		// itself - it was the only network path in the app with no data-saver gate at all. Install
+		// the veto here, once, before anything can request a tile.
+		MapTileDownloader.setDownloadGate(() -> !CairoDriveDataSaver.blocksBulkTransfer(this));
 		appInitializer.initVariables();
 		if (appInitializer.isAppVersionChanged() && appInitializer.getPrevAppVersion() < AppVersionUpgradeOnInit.VERSION_2_3) {
 			settings.freezeExternalStorageDirectory();

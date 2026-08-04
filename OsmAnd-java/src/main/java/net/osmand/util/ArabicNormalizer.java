@@ -19,12 +19,15 @@ public class ArabicNormalizer {
         if (text == null || text.isEmpty()) {
             return false;
         }
-        char first = text.charAt(0);
-        if (Character.UnicodeBlock.of(first) == Character.UnicodeBlock.ARABIC) {
-            for (char c : text.toCharArray()) {
-                if (isDiacritic(c) || isArabicDigit(c) || isNeedReplace(c)) {
-                    return true;
-                }
+        // Scan the whole string, not just charAt(0). A query that merely STARTS with something
+        // outside the Arabic block is still Arabic: "26 يوليو" - 26th of July St, one of Cairo's
+        // main roads - begins with an ASCII digit, so the old first-character gate returned false
+        // and hamza / ta-marbuta / alif-maqsura folding never ran for it. The failure was silent
+        // and partial, because diacritic stripping still happened by another path, which is why it
+        // read as "search is randomly unreliable" rather than as a bug.
+        for (char c : text.toCharArray()) {
+            if (isDiacritic(c) || isArabicDigit(c) || isNeedReplace(c)) {
+                return true;
             }
         }
         return false;
@@ -46,10 +49,11 @@ public class ArabicNormalizer {
 
     private static String replaceDigits(String text) {
         if (text == null || text.isEmpty()) {
-            return null;  // Handle null input
+            return text;
         }
-        char first = text.charAt(0);
-        if (Character.UnicodeBlock.of(first) != Character.UnicodeBlock.ARABIC) {
+        // Same first-character gate as isSpecialArabic had, same fix. Arabic-Indic digits are
+        // themselves in the ARABIC block, so "٢٦ يوليو" used to work while "26 يوليو" did not.
+        if (!containsArabicDigit(text)) {
             return text;
         }
 
@@ -77,6 +81,15 @@ public class ArabicNormalizer {
         String charAsString = String.valueOf(c);
         for (int i = 0; i < DIACRITIC_REPLACE.length; i += 2) {
             if (DIACRITIC_REPLACE[i].equals(charAsString)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsArabicDigit(String text) {
+        for (int i = 0; i < text.length(); i++) {
+            if (isArabicDigit(text.charAt(i))) {
                 return true;
             }
         }

@@ -142,7 +142,16 @@ public class MapMarkersHelper {
 		}
 		sortMarkersHistory();
 		sortGroups();
-		saveGroups(false);
+		// Only rewrite itinerary.gpx if there is something to write. syncAllGroups runs on every
+		// cold start from AppInitializer, on the thread the Android Auto first frame waits on, and
+		// saveFile does a full write of the GPX, then re-opens it and MD5s the whole file just to
+		// decide whether to restore the previous mtime. With no markers configured that is a write,
+		// a read and a digest for a file that did not change. loadGroupsAndOrder above already
+		// writes the file itself when it is missing, so the unconditional save here was redundant
+		// even on a fresh install.
+		if (!Algorithms.isEmpty(mapMarkers) || !Algorithms.isEmpty(mapMarkersGroups)) {
+			saveGroups(false);
+		}
 		lookupAddressAll();
 		if (hasFavoriteGroup) {
 			updateFavoriteMarkersModifiedTime();

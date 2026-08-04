@@ -34,6 +34,7 @@ import net.osmand.plus.backup.AutoBackupHelper;
 import net.osmand.plus.backup.BackupHelper;
 import net.osmand.plus.backup.NetworkSettingsHelper;
 import net.osmand.plus.base.MapViewTrackingUtilities;
+import net.osmand.plus.cairodrive.CairoDriveDataSaver;
 import net.osmand.plus.base.dialog.DialogManager;
 import net.osmand.plus.configmap.routes.RouteLayersHelper;
 import net.osmand.plus.configmap.tracks.TrackSortModesHelper;
@@ -230,8 +231,12 @@ public class AppInitializer implements IProgress {
 		// 172800 ms - under three minutes, not two days - and the only thing left throttling
 		// a download of the worldwide map catalogue is the one-in-five random. That is a
 		// meaningful amount of mobile data for anyone who opens the app several times a day.
+		// isInternetConnectionAvailable() is true on cellular, and the catalogue is the whole
+		// worldwide index - hundreds of KB. blocksBulkTransfer is the same gate the weather tiles,
+		// live updates and cloud backup already use.
 		if (diff >= 2 * 24 * 60 * 60 * 1000L && new Random().nextInt(5) == 0 &&
-				app.getSettings().isInternetConnectionAvailable()) {
+				app.getSettings().isInternetConnectionAvailable()
+				&& !CairoDriveDataSaver.blocksBulkTransfer(app)) {
 			app.getDownloadThread().runReloadIndexFiles();
 		} else if (Version.isDeveloperVersion(app)) {
 //			app.getDownloadThread().runReloadIndexFiles();
@@ -600,7 +605,15 @@ public class AppInitializer implements IProgress {
 				long lastCheck = preferenceLastSuccessfulUpdateCheck(fileName, settings).get();
 
 				if (System.currentTimeMillis() - lastCheck > updateFrequency.intervalMillis * 2) {
-					runLiveUpdate(app, fileName, false, null);
+					// LiveUpdatesAlarmReceiver already refuses to run on a metered connection, but
+					// this startup path bypassed that check entirely - and runLiveUpdate's own guard
+					// sits in onPostExecute, so it stops the diff DOWNLOAD while still letting the
+					// osmand.net/check_live and osmlive_status requests go out. Same gate, applied
+					// before the request rather than after it. The alarm below is still scheduled,
+					// so a genuinely due update simply happens on the next unmetered tick.
+					if (!CairoDriveDataSaver.blocksBulkTransfer(app)) {
+						runLiveUpdate(app, fileName, false, null);
+					}
 					PendingIntent alarmIntent = getPendingIntent(app, fileName);
 					int timeOfDayOrd = preferenceTimeOfDayToUpdate(fileName, settings).get();
 					TimeOfDay[] timeOfDayValues = TimeOfDay.values();

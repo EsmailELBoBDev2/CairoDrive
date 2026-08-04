@@ -55,6 +55,12 @@ public class SelectLocationLayer extends OsmandMapLayer {
 
 	@Override
 	public void onDraw(Canvas canvas, RotatedTileBox tileBox, DrawSettings settings) {
+		// Same guard, same reason as MapInfoLayer.onDraw. Picking a location on the map is a
+		// phone-screen dialog flow; the controller lookup ran on every projected frame to find a
+		// controller that cannot exist while the car surface is the draw target.
+		if (view != null && view.isCarView()) {
+			return;
+		}
 		OsmandApplication app = getApplication();
 		selectLocationController = SelectLocationController.getExistedInstance(app);
 

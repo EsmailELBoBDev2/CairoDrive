@@ -334,6 +334,12 @@ public class MapQuickActionLayer extends OsmandMapLayer implements QuickActionUp
 
 	@Override
 	public void onDraw(Canvas canvas, RotatedTileBox box, DrawSettings settings) {
+		// Same guard, same reason as MapInfoLayer.onDraw. Quick action buttons are a phone-screen
+		// affordance - the head unit has no long-press and no floating buttons - yet updateButton
+		// resolved day/night per button per frame on the projected surface.
+		if (view != null && view.isCarView()) {
+			return;
+		}
 		if (isInMovingMarkerMode()) {
 			canvas.translate(box.getCenterPixelX() - contextMarker.getWidth() / 2f, box.getCenterPixelY() - contextMarker.getHeight());
 			contextMarker.draw(canvas);

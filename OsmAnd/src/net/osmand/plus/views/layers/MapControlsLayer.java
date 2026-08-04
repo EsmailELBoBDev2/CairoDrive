@@ -330,6 +330,13 @@ public class MapControlsLayer extends OsmandMapLayer {
 
 	@Override
 	public void onDraw(Canvas canvas, RotatedTileBox tileBox, DrawSettings nightMode) {
+		// Same guard, same reason as MapInfoLayer.onDraw. updateControls walks every MapButton,
+		// allocates a fresh list to do it, and resolves night mode through FragmentManager tag
+		// lookups - all to maintain phone-screen buttons that are not drawn on the car surface
+		// (Android Auto supplies its own action strip).
+		if (view != null && view.isCarView()) {
+			return;
+		}
 		updateControls(nightMode);
 
 		if (invalidated) {

@@ -443,7 +443,15 @@ public class OsmandAidlApi {
 	private void registerReceiver(BroadcastReceiver rec, MapActivity ma, String filter) {
 		try {
 			receivers.put(filter, rec);
-			AndroidUtils.registerBroadcastReceiver(ma, filter, rec, true);
+			// NOT exported. These receivers are how OsmandAidlService talks to MapActivity inside
+			// this same process - they are an internal transport, not the third-party API surface.
+			// The service itself does validate its caller (getNameForUid(Binder.getCallingUid()),
+			// default-deny for unknown packages); the broadcast layer behind it never did. Exported,
+			// every action string here is a plain constant in an open-source project, so any app on
+			// the phone with no permissions at all could inject a location (AIDL_SET_LOCATION even
+			// suppresses real GPS for a window), start navigation somewhere, exit the app, or drive
+			// the camera and microphone through AudioVideoNotesPlugin using OUR permissions.
+			AndroidUtils.registerBroadcastReceiver(ma, filter, rec, false);
 		} catch (IllegalStateException e) {
 			LOG.error(e);
 		}

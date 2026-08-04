@@ -144,6 +144,15 @@ public class WeatherPlugin extends OsmandPlugin {
 		app.getAppInitializer().addListener(new AppInitializeListener() {
 			@Override
 			public void onProgress(@NonNull AppInitializer init, @NonNull AppInitEvents event) {
+				// This listener is installed from the constructor, and every plugin is constructed
+				// unconditionally by PluginsHelper.initPlugins - so without this check a DISABLED
+				// weather plugin still built the native WeatherTileResourcesManager, ran mkdirs()
+				// and listFiles() on the cache dir, and could kick off a full LocalIndexHelper
+				// directory scan, on every cold start. None of that is reachable by the user until
+				// the plugin is switched on.
+				if (!isEnabled()) {
+					return;
+				}
 				if (event == NATIVE_OPEN_GL_INITIALIZED) {
 					updateMapPresentationEnvironment();
 					updateLayers(app, null);

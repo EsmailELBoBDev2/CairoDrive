@@ -207,7 +207,19 @@ public class CheckAssetsTask extends AsyncTask<Void, String, List<String>> {
 				}
 			}
 			if (shouldCopy) {
-				ResourceManager.copyAssets(manager, asset.source, destinationFile, asset.getVersionTime());
+				// Per-entry catch. copyAssets throws when a manifest entry names a file that is not
+				// in the APK, and without this the whole loop aborted on the first one - skipping
+				// every remaining asset AND, back in the caller, the PREVIOUS_INSTALLED_VERSION.set()
+				// that follows it. With that never set, versionChanged stays true forever, so the
+				// entire copy pass re-runs on every cold start for the life of the install, and
+				// firstInstall stays true so ALWAYS_COPY_ON_FIRST_INSTALL entries re-copy too. One
+				// bad manifest line turned into a permanent, silent startup regression.
+				try {
+					ResourceManager.copyAssets(manager, asset.source, destinationFile, asset.getVersionTime());
+				} catch (IOException e) {
+					warnings.add(asset.source + ": " + e.getMessage());
+					log.error("Failed to unpack bundled asset " + asset.source, e);
+				}
 			}
 		}
 	}

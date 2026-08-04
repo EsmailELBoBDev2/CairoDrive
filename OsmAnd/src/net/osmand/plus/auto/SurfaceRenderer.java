@@ -411,12 +411,11 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 			mapView.setView(surfaceView);
 		}
 		if (getApp().isApplicationInitializing()) {
-			getApp().getAppInitializer().addListener(new AppInitializeListener() {
-				@Override
-				public void onFinish(@NonNull AppInitializer init) {
-					setupOffscreenRenderer();
-				}
-			});
+			// addOnFinishListener, not addListener: it removes itself when it fires. setupRenderingView
+			// is reached from NavigationSession.onStart, onStop, onSurfaceAvailable and onPurchaseDone,
+			// so the raw addListener left one more anonymous listener holding this SurfaceRenderer
+			// behind on every call during init.
+			getApp().getAppInitializer().addOnFinishListener(init -> setupOffscreenRenderer());
 		} else
 			setupOffscreenRenderer();
 	}

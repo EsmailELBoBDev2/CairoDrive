@@ -223,8 +223,18 @@ public class MapSuggestionController {
 
 	private void hideSuggestMapToolbar() {
 		MapActivity mapActivity = view.getMapActivity();
-		if (mapActivity != null) {
-			app.runInUIThread(() -> mapActivity.hideTopToolbar(TopToolbarControllerType.SUGGEST_MAP));
+		if (mapActivity == null) {
+			return;
 		}
+		// Only post when there is actually a toolbar to hide. updateSuggestion runs from
+		// DownloadedRegionsLayer.onPrepareBufferImage at any zoom >= 3, and updateCachedMapPosition
+		// returns true whenever the map centre moved - i.e. on every frame while driving. The
+		// banner itself only exists between zoom 9 and 11, so at navigation zoom every one of those
+		// frames fell through to here and enqueued a capturing lambda onto the same main looper the
+		// frame was running on, to hide a toolbar that was not showing. ~20 no-op Messages a second.
+		if (mapActivity.getTopToolbarController(TopToolbarControllerType.SUGGEST_MAP) == null) {
+			return;
+		}
+		app.runInUIThread(() -> mapActivity.hideTopToolbar(TopToolbarControllerType.SUGGEST_MAP));
 	}
 }
