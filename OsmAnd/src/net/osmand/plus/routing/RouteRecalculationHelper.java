@@ -19,6 +19,7 @@ import net.osmand.router.FastRoutingState;
 import net.osmand.router.MissingMapsCalculationResult;
 import net.osmand.router.RouteCalculationProgress;
 import net.osmand.util.Algorithms;
+import net.osmand.util.MapUtils;
 
 import org.apache.commons.logging.Log;
 
@@ -192,6 +193,111 @@ class RouteRecalculationHelper {
 		routingHelper.newRouteCalculated(newRoute, res);
 		if (res.initialCalculation) {
 			app.runInUIThread(() -> routingHelper.recalculateRouteDueToSettingsChange(false));
+		}
+	}
+
+	/** Distance ahead on the old route to aim the probe at - HERE and TomTom both work at this scale. */
+	private static final int REPAIR_PROBE_REJOIN_M = 600;
+	/** At most one probe per this interval, so a reroute storm cannot turn into a CPU storm. */
+	private static final long REPAIR_PROBE_MIN_INTERVAL_MS = 90_000;
+
+	private long lastRepairProbeAt;
+
+	/**
+	 * Times what a ROUTE REPAIR would have cost, and throws the answer away.
+	 *
+	 * <h3>The question this exists to settle</h3>
+	 *
+	 * Every deviation on this device runs a full search to the final destination. OsmAnd's own
+	 * repair mechanism is bypassed by the HH C++ branch and gated behind a 20 km threshold besides,
+	 * and upstream issue #19737 says the same. The fix the commercial SDKs ship - HERE's
+	 * {@code returnToRoute()}, TomTom's continuous replanning - is to route only as far as a point
+	 * a few hundred metres ahead ON the existing route, and splice the untouched tail back on.
+	 *
+	 * <p>All of that rests on one assumption nobody has measured: <b>that a short route is
+	 * proportionally cheaper on this hardware.</b> It might not be. HH's cost is dominated by
+	 * loading and searching the network around each endpoint, and if that fixed cost dominates then
+	 * a 600 m repair costs nearly what an 8 km search does and the whole technique is worthless
+	 * here. Six hypotheses have already been spent guessing at this router and all six were wrong.
+	 *
+	 * <h3>Why a shadow run rather than shipping the repair</h3>
+	 *
+	 * Correlating {@code search} against {@code straightM} across a drive would only ever be
+	 * indirect evidence. This measures the actual thing: a real repair search, on the real device,
+	 * from the real position the driver actually deviated at.
+	 *
+	 * <p>And it cannot produce a wrong route, because the result is discarded. A route that is
+	 * wrong is far worse than a route that is slow, and that is the whole reason the repair is not
+	 * simply switched on to find out.
+	 *
+	 * <h3>Why it cannot cost the drive anything</h3>
+	 *
+	 * <ul>
+	 *   <li>It runs only AFTER {@code setNewRoute} - the driver already has their route and the
+	 *       head unit is already showing it.</li>
+	 *   <li>Only on a reroute ({@code previousToRecalculate != null}), never on a first
+	 *       calculation.</li>
+	 *   <li>At most once every 90 s, so the reroute storm this project is trying to fix cannot turn
+	 *       into a CPU storm.</li>
+	 *   <li>Not at all if another calculation has since been queued - a real route always wins.</li>
+	 *   <li>Its own {@code RouteCalculationProgress}, so it cannot disturb the live one.</li>
+	 *   <li>Wrapped in Throwable, so a probe can never take down a navigation session.</li>
+	 * </ul>
+	 */
+	void runRepairProbe(@NonNull RouteProvider provider, @NonNull RouteCalculationParams params) {
+		try {
+			RouteCalculationResult previous = params.previousToRecalculate;
+			if (previous == null || !previous.isCalculated() || params.start == null) {
+				return;
+			}
+			long now = System.currentTimeMillis();
+			if (now - lastRepairProbeAt < REPAIR_PROBE_MIN_INTERVAL_MS) {
+				return;
+			}
+			if (isRouteBeingCalculated()) {
+				// A real calculation has been queued behind this one. It gets the CPU.
+				return;
+			}
+			Location rejoin = previous.getRouteLocationByDistance(REPAIR_PROBE_REJOIN_M);
+			if (rejoin == null) {
+				// Less than 600 m of route left. Nothing to rejoin to, and nothing to learn.
+				return;
+			}
+			lastRepairProbeAt = now;
+
+			RouteCalculationParams probe = new RouteCalculationParams();
+			probe.start = params.start;
+			probe.end = new LatLon(rejoin.getLatitude(), rejoin.getLongitude());
+			probe.intermediates = null;
+			probe.gpxRoute = null;
+			probe.onlyStartPointChanged = false;
+			probe.previousToRecalculate = null;
+			probe.leftSide = params.leftSide;
+			probe.fast = params.fast;
+			probe.mode = params.mode;
+			probe.ctx = params.ctx;
+			probe.calculationProgress = new RouteCalculationProgress();
+
+			long startedAt = System.currentTimeMillis();
+			RouteCalculationResult probeResult = provider.calculateRouteImpl(probe);
+			long elapsedMs = System.currentTimeMillis() - startedAt;
+
+			// straightM is the like-for-like comparison: the real calculation logs its own in
+			// CD_ROUTE_TIMING, so the two lines together give cost against distance for the SAME
+			// deviation, seconds apart, on the same roads - which no amount of cross-drive
+			// correlation can match for cleanliness.
+			long straightM = Math.round(MapUtils.getDistance(
+					params.start.getLatitude(), params.start.getLongitude(),
+					probe.end.getLatitude(), probe.end.getLongitude()));
+			CairoDriveLogger.getInstance().log("CD_REROUTE", "repairProbe"
+					+ " repairMs=" + elapsedMs
+					+ " straightM=" + straightM
+					+ " rejoinAheadM=" + REPAIR_PROBE_REJOIN_M
+					+ " ok=" + probeResult.isCalculated()
+					+ " - result DISCARDED, navigation unaffected");
+		} catch (Throwable t) {
+			CairoDriveLogger.getInstance().log("CD_REROUTE", "repairProbe failed "
+					+ t.getClass().getSimpleName() + ": " + t.getMessage());
 		}
 	}
 
@@ -480,6 +586,8 @@ class RouteRecalculationHelper {
 					params.alternateResultListener.onRouteCalculated(res);
 				} else {
 					routingThreadHelper.setNewRoute(prev, res, params.start);
+					// AFTER the driver already has their route, never before.
+					routingThreadHelper.runRepairProbe(provider, params);
 				}
 			} else {
 				evalWaitInterval = Math.max(3000, routingThreadHelper.evalWaitInterval * 3 / 2); // for Issue #3899
