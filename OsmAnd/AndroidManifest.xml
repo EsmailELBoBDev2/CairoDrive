@@ -1152,19 +1152,25 @@
 			android:stopWithTask="false">
 		</service>
 
-		<service android:name="net.osmand.aidl.OsmandAidlService" android:exported="true" >
-			<intent-filter>
-				<action android:name="net.osmand.aidl.OsmandAidlService"/>
-				<category android:name="android.intent.category.DEFAULT"/>
-			</intent-filter>
-		</service>
+		<!-- S3. The exported AIDL service is REMOVED in this fork.
+		     S1 already closed the receivers this service could reach, which was the actual
+		     attack; this removes the surface itself. Nothing inside the app binds it - the
+		     only other references are AIDL-internal callback bookkeeping - so the single
+		     thing lost is third-party apps driving OsmAnd through its public API, which
+		     this fork does not use.
+		     Left commented rather than deleted so an upstream sync that re-adds it is
+		     visible in the diff instead of silently restoring an exported service.
+		<service android:name="net.osmand.aidl.OsmandAidlService" ... /> -->
 
-		<service android:name="net.osmand.aidl.OsmandAidlServiceV2" android:exported="true" >
-			<intent-filter>
-				<action android:name="net.osmand.aidl.OsmandAidlServiceV2"/>
-				<category android:name="android.intent.category.DEFAULT"/>
-			</intent-filter>
-		</service>
+		<!-- S3. The exported AIDL service is REMOVED in this fork.
+		     S1 already closed the receivers this service could reach, which was the actual
+		     attack; this removes the surface itself. Nothing inside the app binds it - the
+		     only other references are AIDL-internal callback bookkeeping - so the single
+		     thing lost is third-party apps driving OsmAnd through its public API, which
+		     this fork does not use.
+		     Left commented rather than deleted so an upstream sync that re-adds it is
+		     visible in the diff instead of silently restoring an exported service.
+		<service android:name="net.osmand.aidl.OsmandAidlServiceV2" ... /> -->
 
 		<service
 			android:name="net.osmand.plus.download.DownloadService"

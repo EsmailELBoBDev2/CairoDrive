@@ -254,6 +254,9 @@ public class MapViewTrackingUtilities implements OsmAndLocationListener, IMapLoc
 		// The thresholds are simulated rather than picked - see CairoDriveStationary. The obvious
 		// "freeze below 2 km/h" was tested and rejected: it froze the arrow on 13.4% of fixes from
 		// a car actually moving at 3 km/h, which in Cairo traffic is most of a journey.
+		if (location != null) {
+			stationary.countFix();
+		}
 		if (location != null && stationary.isStationary(location,
 				net.osmand.plus.cairodrive.CairoDriveLogger.getInstance().isGnssDegraded())) {
 			return;

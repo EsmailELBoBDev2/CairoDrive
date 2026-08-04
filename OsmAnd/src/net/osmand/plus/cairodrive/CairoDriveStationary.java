@@ -116,6 +116,38 @@ public class CairoDriveStationary {
 						+ " needFixes=" + FIXES_TO_FREEZE);
 	}
 
+	/**
+	 * N4 instrumentation. Whether to drop the location callback rate from "as fast as the provider
+	 * will give it" to ~1 Hz is a real question, and the honest answer is that nobody knows the
+	 * current rate: requestLocationUpdates is called with minTime=0, but GPS hardware is typically
+	 * 1 Hz anyway, so the fused provider may already be delivering exactly what a 1000 ms request
+	 * would ask for. Guessing here would trade battery for nothing, or nothing for jitter.
+	 *
+	 * <p>So this counts. One CD_FIXRATE line a minute says how many fixes actually arrived. If it
+	 * reads ~60 the change is pointless; if it reads 300+ then nine in ten callbacks are
+	 * interpolation and there is something to win.
+	 */
+	private long rateWindowStart;
+	private int fixesThisWindow;
+
+	public synchronized void countFix() {
+		long now = System.currentTimeMillis();
+		if (rateWindowStart == 0) {
+			rateWindowStart = now;
+			fixesThisWindow = 0;
+		}
+		fixesThisWindow++;
+		long elapsed = now - rateWindowStart;
+		if (elapsed >= 60_000) {
+			CairoDriveLogger.getInstance().log("CD_FIXRATE",
+					"fixes=" + fixesThisWindow + " inMs=" + elapsed
+							+ " hz=" + String.format(java.util.Locale.US, "%.2f",
+							fixesThisWindow * 1000.0 / Math.max(1, elapsed)));
+			rateWindowStart = now;
+			fixesThisWindow = 0;
+		}
+	}
+
 	public synchronized void reset() {
 		consecutiveSlowFixes = 0;
 		frozen = false;
