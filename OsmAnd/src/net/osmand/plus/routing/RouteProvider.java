@@ -18,6 +18,7 @@ import net.osmand.binary.BinaryMapIndexReader;
 import net.osmand.binary.RouteDataObject;
 import net.osmand.data.LatLon;
 import net.osmand.gpx.GPXFile;
+import net.osmand.map.OsmandRegions;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.avoidroads.AvoidRoadsHelper;
@@ -177,10 +178,26 @@ public class RouteProvider {
 	private boolean resourceListenerRegistered;
 
 	/**
+	 * The application, captured the first time one is handed to this class.
+	 * <p>
+	 * RouteProvider had no app reference at all, which is why the cache invalidation below originally
+	 * reached for {@code PlatformUtil.getOsmandRegions()}. That was wrong twice over: it does not compile
+	 * without an import, and had it compiled it would have invalidated the wrong object. PlatformUtil owns
+	 * a separate java-side singleton; the instance routing actually queries is OsmandApplication's, built
+	 * in its constructor. Clearing PlatformUtil's would have been a silent no-op - the worst kind, because
+	 * the log line would still have said the cache was dropped.
+	 * <p>
+	 * Volatile and nullable rather than a constructor parameter: this class is created by AppInitializer
+	 * before ResourceManager exists, and the invalidation callbacks can fire on any thread.
+	 */
+	private volatile OsmandApplication resolvedApp;
+
+	/**
 	 * Registers the map-change listener once, lazily. It cannot be done in the constructor: AppInitializer
 	 * creates RoutingHelper (and therefore this) before it creates ResourceManager.
 	 */
 	private void ensureResourceListenerRegistered(@NonNull OsmandApplication app) {
+		resolvedApp = app;
 		synchronized (warmLock) {
 			if (resourceListenerRegistered) {
 				return;
@@ -222,13 +239,16 @@ public class RouteProvider {
 		// exactly a signal that the loaded region set changed, so the two are invalidated together.
 		// Missing this would mean a route being told a map is absent that has since been installed.
 		try {
-			OsmandRegions regions = PlatformUtil.getOsmandRegions();
-			if (regions != null) {
-				regions.invalidateRegionPointCache();
+			OsmandApplication app = resolvedApp;
+			if (app != null) {
+				OsmandRegions regions = app.getRegions();
+				if (regions != null) {
+					regions.invalidateRegionPointCache();
+				}
+				// Same signal, same reason: a cached reroute computed over a map that has since been
+				// installed or removed is exactly the stale answer that cache must never serve.
+				app.getRoutingHelper().invalidateRerouteCache();
 			}
-			// Same signal, same reason: a cached reroute computed over a map that has since been
-			// installed or removed is exactly the stale answer that cache must never serve.
-			settings.getContext().getRoutingHelper().invalidateRerouteCache();
 		} catch (Throwable ignored) {
 			// Diagnostics and caches must never be able to break a map-change callback.
 		}
@@ -1094,7 +1114,7 @@ public class RouteProvider {
 				return null;
 			}
 			RoutingContext ctx = env.getComplexCtx() != null ? env.getComplexCtx() : env.getCtx();
-			RouteCalcResult raw = env.getRouter().searchRoute(ctx,
+			RouteResultPreparation.RouteCalcResult raw = env.getRouter().searchRoute(ctx,
 					new LatLon(params.start.getLatitude(), params.start.getLongitude()),
 					rejoin, null, env.getPrecalculated());
 			if (raw == null || !raw.isCorrect() || raw.getList().isEmpty()) {
@@ -1173,9 +1193,14 @@ public class RouteProvider {
 				&& x.getEndPointIndex() == y.getEndPointIndex();
 	}
 
-	private static String regionCacheStats() {
+	/** Non-static so it reads the app's OsmandRegions - the one routing queries. See resolvedApp. */
+	private String regionCacheStats() {
 		try {
-			OsmandRegions regions = PlatformUtil.getOsmandRegions();
+			OsmandApplication app = resolvedApp;
+			if (app == null) {
+				return "n/a";
+			}
+			OsmandRegions regions = app.getRegions();
 			return regions != null ? regions.getRegionCacheStats() : "n/a";
 		} catch (Throwable t) {
 			return "err";
