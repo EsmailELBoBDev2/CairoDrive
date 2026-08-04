@@ -183,6 +183,27 @@ def hwCanvas = hwCanvasEnv?.trim() ? hwCanvasEnv.trim() : "true"
 // still on the CPU. What to check on the SCREEN: that the map appears at all, and that touch,
 // panning and zoom still work from the head unit.
 // Set CAIRODRIVE_PRESENTATION=false to build the offscreen path.
+// Refuse osmand.api:// READ commands from other apps.
+//
+// osmand.api:// is an EXPORTED intent filter, so any app on the phone can call it having asked
+// the user for no permission of its own. get_info answers with the current GPS position, the map
+// centre, the navigation destination, the ETA, the remaining distance, the upcoming turns and the
+// recorded routing analytics - a live location feed, and a way around the location permission the
+// user granted to THIS app and not to that one.
+//
+// Only the read commands are gated (get_info, get_quick_action_info, subscribe_voice_notifications).
+// Showing a point, adding a favourite and starting navigation stay open: those are visible to the
+// user when they happen, and they are why the API exists.
+//
+// The check is getCallingActivity(), which the system fills in and an intent cannot forge. A null
+// caller is allowed - it means startActivity rather than startActivityForResult, so there is
+// nowhere for a result to go anyway.
+//
+// A refusal is logged as CD_SEC with the calling package, so a legitimate integration that breaks
+// says exactly what to allowlist instead of failing mysteriously.
+def lockExternalApiEnv = System.getenv("CAIRODRIVE_LOCK_EXTERNAL_API")
+def lockExternalApi = lockExternalApiEnv?.trim() ? lockExternalApiEnv.trim() : "true"
+
 def presentationEnv = System.getenv("CAIRODRIVE_PRESENTATION")
 def presentation = presentationEnv?.trim() ? presentationEnv.trim() : "true"
 
@@ -265,6 +286,7 @@ android {
 			buildConfigField "float", "CAIRODRIVE_RENDER_SCALE", renderScale + "f"
 			buildConfigField "boolean", "CAIRODRIVE_HW_CANVAS", hwCanvas
 			buildConfigField "boolean", "CAIRODRIVE_PRESENTATION", presentation
+			buildConfigField "boolean", "CAIRODRIVE_LOCK_EXTERNAL_API", lockExternalApi
 		}
 		release {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
@@ -277,6 +299,7 @@ android {
 			buildConfigField "float", "CAIRODRIVE_RENDER_SCALE", renderScale + "f"
 			buildConfigField "boolean", "CAIRODRIVE_HW_CANVAS", hwCanvas
 			buildConfigField "boolean", "CAIRODRIVE_PRESENTATION", presentation
+			buildConfigField "boolean", "CAIRODRIVE_LOCK_EXTERNAL_API", lockExternalApi
 		}
 	}
 }

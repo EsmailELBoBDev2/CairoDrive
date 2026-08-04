@@ -78,6 +78,10 @@ public final class SearchScreen extends BaseSearchScreen implements DefaultLifec
 	@Override
 	public void onDestroy(@NonNull LifecycleOwner owner) {
 		super.onDestroy(owner);
+		// A queued debounced search holds this screen alive through the Handler and would run
+		// against a destroyed screen 350 ms later. The other two removals here exist for the same
+		// reason; this is the third.
+		cancelPendingSearch();
 		getApp().getAppInitializer().removeListener(this);
 		getLifecycle().removeObserver(this);
 		destroyed = true;
@@ -100,11 +104,15 @@ public final class SearchScreen extends BaseSearchScreen implements DefaultLifec
 			public void onSearchTextChanged(@NonNull String searchText) {
 				SearchScreen.this.searchText = searchText;
 				getSearchHelper().resetSearchRadius();
-				doSearch(searchText);
+				scheduleSearch(searchText);
 			}
 
 			@Override
 			public void onSearchSubmitted(@NonNull String searchTerm) {
+				// A pending debounced search is now irrelevant - the user has committed, and the
+				// top result is being taken. Leaving it queued would fire a search against a
+				// screen that is already navigating away.
+				cancelPendingSearch();
 				// When the user presses the search key use the top item in the list
 				// as the result and simulate as if the user had pressed that.
 				List<SearchResult> searchResults = getSearchHelper().getSearchResults();
@@ -130,6 +138,57 @@ public final class SearchScreen extends BaseSearchScreen implements DefaultLifec
 		}
 
 		return builder.build();
+	}
+
+	/**
+	 * How long typing must pause before a search actually runs. Long enough that a word typed at
+	 * speed produces one search instead of one per letter, short enough not to feel laggy - the
+	 * range every major search UI sits in.
+	 */
+	private static final long SEARCH_DEBOUNCE_MS = 350;
+
+	private final android.os.Handler searchHandler =
+			new android.os.Handler(android.os.Looper.getMainLooper());
+	@Nullable
+	private Runnable pendingSearch;
+
+	/**
+	 * Runs the search once typing pauses, instead of once per keystroke.
+	 *
+	 * <p>Every character typed used to start a full search: an index scan across the loaded
+	 * {@code .obf}, on a phone already drawing an Android Auto surface. Typing "مصر الجديدة"
+	 * launched eleven of them, ten of which were obsolete the moment the next letter arrived, and
+	 * the visible result was a list flickering through the answers to prefixes the driver had
+	 * already finished typing.
+	 *
+	 * <p>An empty box is handled immediately and deliberately: showing recents costs nothing and
+	 * making the driver wait 350 ms to see their own history after clearing the field would be a
+	 * regression, not a fix.
+	 *
+	 * <p>This also matters ahead of any Places autocomplete work. That endpoint is billed per
+	 * keystroke session, so a per-keystroke trigger is a bill as well as a stall - and CLAUDE.md
+	 * records that the previous attempt at typing-time features had to be reverted wholesale.
+	 */
+	private void scheduleSearch(String searchText) {
+		cancelPendingSearch();
+		if (searchText.isEmpty()) {
+			doSearch(searchText);
+			return;
+		}
+		Runnable task = () -> {
+			pendingSearch = null;
+			doSearch(searchText);
+		};
+		pendingSearch = task;
+		searchHandler.postDelayed(task, SEARCH_DEBOUNCE_MS);
+	}
+
+	private void cancelPendingSearch() {
+		Runnable task = pendingSearch;
+		if (task != null) {
+			searchHandler.removeCallbacks(task);
+			pendingSearch = null;
+		}
 	}
 
 	private void doSearch(String searchText) {

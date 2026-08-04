@@ -13,6 +13,7 @@ import static net.osmand.search.core.SearchCoreFactory.MAX_DEFAULT_SEARCH_RADIUS
 import android.app.Activity;
 import android.app.ProgressDialog;
 import android.content.DialogInterface;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
@@ -36,6 +37,8 @@ import net.osmand.data.FavouritePoint;
 import net.osmand.data.LatLon;
 import net.osmand.data.PointDescription;
 import net.osmand.shared.gpx.GpxFile;
+import net.osmand.plus.BuildConfig;
+import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.activities.MapActivity;
@@ -70,6 +73,8 @@ import java.io.FileDescriptor;
 import java.io.FileInputStream;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Type;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -198,6 +203,54 @@ public class ExternalApiHelper {
 		this.mapActivity = mapActivity;
 	}
 
+	/**
+	 * Commands that hand private data back to whoever asked. Everything else in this API either
+	 * acts on the map or writes something the user can see happen; these READ.
+	 */
+	private static final Set<String> PRIVACY_SENSITIVE_COMMANDS = new HashSet<>(Arrays.asList(
+			API_CMD_GET_INFO, API_CMD_GET_QUICK_ACTION_INFO,
+			API_CMD_SUBSCRIBE_VOICE_NOTIFICATIONS));
+
+	/**
+	 * Whether the app that sent this request may have the answer.
+	 *
+	 * <p>{@code osmand.api://} is an EXPORTED intent filter, so any app on the phone can call it
+	 * with no permission of its own. {@code get_info} answers with the current GPS position, the
+	 * map centre, the navigation destination, the ETA, the remaining distance, the upcoming turn
+	 * directions and the recorded routing analytics. That is a live location feed available to a
+	 * zero-permission app, which is a straightforward way around the location permission the user
+	 * granted to THIS app and not to that one.
+	 *
+	 * <p>Only the read commands are gated. The rest of the API - show a point, add a favourite,
+	 * start navigating - is left open, because those are things the user can see happening and
+	 * they are the reason the API exists. Refusing everything would be a bigger change than the
+	 * problem warrants.
+	 *
+	 * <p>{@code getCallingActivity()} is only non-null when the caller used
+	 * {@code startActivityForResult}, which is exactly how a result is collected - so a null
+	 * caller cannot receive the payload anyway and is allowed through. It is not spoofable: the
+	 * system fills it in, not the intent.
+	 *
+	 * <p>Set {@code CAIRODRIVE_LOCK_EXTERNAL_API=false} to build upstream behaviour.
+	 */
+	private boolean isCallerAllowed(@Nullable String cmd) {
+		if (!BuildConfig.CAIRODRIVE_LOCK_EXTERNAL_API || cmd == null
+				|| !PRIVACY_SENSITIVE_COMMANDS.contains(cmd)) {
+			return true;
+		}
+		ComponentName caller = mapActivity.getCallingActivity();
+		if (caller == null || caller.getPackageName().equals(mapActivity.getPackageName())) {
+			return true;
+		}
+		// The package name is logged, not suppressed: if something legitimate is being refused,
+		// the next drive log says exactly what to add to an allowlist rather than leaving a
+		// feature mysteriously broken.
+		CairoDriveLogger.getInstance().log("CD_SEC",
+				"refused osmand.api://" + cmd + " from " + caller.getPackageName()
+						+ " - returns location/destination to an app that asked for no permission");
+		return false;
+	}
+
 	public Intent processApiRequest(Intent intent) {
 
 		Intent result = new Intent();
@@ -206,6 +259,11 @@ public class ExternalApiHelper {
 		try {
 			Uri uri = intent.getData();
 			String cmd = uri.getHost().toLowerCase();
+			if (!isCallerAllowed(cmd)) {
+				resultCode = Activity.RESULT_CANCELED;
+				finish = true;
+				return result;
+			}
 			if (API_CMD_SHOW_GPX.equals(cmd) || API_CMD_NAVIGATE_GPX.equals(cmd)) {
 				boolean navigate = API_CMD_NAVIGATE_GPX.equals(cmd);
 				String path = uri.getQueryParameter(PARAM_PATH);
