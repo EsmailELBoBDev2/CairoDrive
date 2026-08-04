@@ -80,11 +80,10 @@ masquerading as a Play build has wasted a drive before.
 - **Debug-signed vs signed.** The `build` job is debug-signed; Play rejects it with "signed with
   the wrong key". Only the `release` job (tag `v*`, or dispatch with `sign=true`, behind the
   `production` reviewer gate) produces `cairodrive-release-aab-*`. That is the only Play upload.
-- **No free compile check any more.** Pushes to `dev` no longer build - owner's call, only
-  signed artifacts are wanted. So a compile error now surfaces inside the SIGNED build, after
-  the approval and the keystore decode. Review the diff before dispatching: check every symbol
-  a change introduces resolves to an import, the same package, or an existing wildcard. A
-  missing `net.osmand.Location` import cost 15 minutes this way once.
+- **Compile-check before spending an approval.** Pushes to `dev` build unsigned; that artifact
+  is useless (Play rejects debug-signed) but the compile check is not. Let it go green before
+  dispatching a signed run. A missing `net.osmand.Location` import once surfaced inside the
+  gated build instead and cost 15 minutes.
 - **Verify against the tree, never against a commit message.** A re-audit found a "fixed" token
   redaction that closed one of three leak vectors, and three regressions introduced the same day.
 - **The asset extractor aborts on the first missing file.** `CheckAssetsTask.unpackBundledAssets`
