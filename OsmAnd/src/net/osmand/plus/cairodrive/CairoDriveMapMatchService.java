@@ -89,11 +89,12 @@ public class CairoDriveMapMatchService {
 	private RoutingEnvironment environment;
 	private long environmentBuiltAt;
 
+	/**
+	 * The newest match. The fix it was computed FROM travels inside it - {@code Match.fixX31},
+	 * {@code fixY31}, {@code fixTime} - so a consumer can test staleness against one immutable
+	 * object instead of reading several volatiles that can tear against each other.
+	 */
 	private volatile CairoDriveMapMatcher.Match lastMatch;
-	/** The fix the match was computed FROM - the staleness test needs it, not the arrival time. */
-	private volatile long lastMatchFixTime;
-	private volatile double lastMatchLat;
-	private volatile double lastMatchLon;
 
 	// Sampling gate. Touched only by the caller's thread, guarded by the busy flag for publication.
 	private double gateLat;
@@ -138,113 +139,6 @@ public class CairoDriveMapMatchService {
 	@Nullable
 	public CairoDriveMapMatcher.Match getLastMatch() {
 		return CairoDriveMapMatching.isEnabled() ? lastMatch : null;
-	}
-
-	/**
-	 * Corrects a location for DISPLAY, or returns it unchanged.
-	 *
-	 * <h3>Display only, and that separation is load-bearing</h3>
-	 *
-	 * The corrected position must never become the input to off-route detection, the ETA or route
-	 * recalculation. A matcher that is wrong would then cause REROUTES, and a spurious reroute is
-	 * far worse than an arrow a few metres off the true road. This mirrors what
-	 * {@code CairoDriveStationary} already does: raw fixes for logic, corrected positions for what
-	 * is drawn.
-	 *
-	 * <h3>Why staleness is the real hazard, not accuracy</h3>
-	 *
-	 * The matcher runs on a worker thread and DROPS fixes when it is busy, by design - a queue
-	 * would turn a slow patch into a growing backlog of stale positions. So the newest match can
-	 * easily be two fixes behind, and snapping the current position onto a road chosen for where
-	 * the car was three seconds ago would put the arrow somewhere it has already left. Both gates
-	 * below are about that, not about whether the match was good.
-	 *
-	 * @return a corrected copy, or {@code location} itself when no correction is applied.
-	 */
-	@NonNull
-	public Location applyToDisplay(@NonNull Location location) {
-		CairoDriveMapMatcher.Match match = getLastMatch();
-		if (match == null) {
-			return location;
-		}
-		String reject = null;
-		long now = location.getTime() > 0 ? location.getTime() : System.currentTimeMillis();
-		long ageMs = now - lastMatchFixTime;
-		double movedM = MapUtils.getDistance(lastMatchLat, lastMatchLon,
-				location.getLatitude(), location.getLongitude());
-		if (ageMs > CairoDriveMapMatching.MAX_MATCH_AGE_MS) {
-			reject = "stale ageMs=" + ageMs;
-		} else if (movedM > CairoDriveMapMatching.MAX_SOURCE_DRIFT_M) {
-			// The car has moved on since the fix this match was computed from. Applying it now
-			// would drag the arrow backwards toward a road chosen for a position already left.
-			reject = "drifted movedM=" + Math.round(movedM);
-		} else if (match.settledDepth != CairoDriveMapMatching.MAX_SETTLED_DEPTH) {
-			// settledDepth is "steps back at which every surviving hypothesis agrees, or -1 if
-			// none within the window" - so SMALLER is better and 0 means fully converged. An
-			// earlier version of this gate had the comparison the wrong way round and would have
-			// rejected exactly the converged matches while accepting the unconverged ones.
-			//
-			// settled, not confidence: the posterior is normalised over the SURVIVORS, and the
-			// survivors were selected by that same likelihood. When pruning leaves one candidate
-			// the posterior is 1.0 whether or not the road is right - confidently wrong precisely
-			// in the case that matters, a run of degraded fixes all agreeing on the wrong road.
-			//
-			// Why exactly 0 rather than a looser depth: mean error alone argues for no gate at
-			// all, because even a wrong match usually lands nearer the truth than a 25 m network
-			// fix. Mean error is the wrong criterion. "Arrow hop" - consecutive applied fixes
-			// where the displayed road changes family while the car does not - is what a driver
-			// sees, and it goes 0.01% at settled=0 to 4.75% ungated. One applied fix in twenty
-			// hopping between the flyover and the street beneath it is a visible flicker several
-			// times a minute, and a driver who sees that stops believing the map. Half of every
-			// fix is still corrected, for a 3-4 m mean gain.
-			reject = "unsettled depth=" + match.settledDepth;
-		} else if (match.offsetM > CairoDriveMapMatching.MAX_CORRECTION_M) {
-			// A sanity stop, not a tuning knob: CANDIDATE_RADIUS_MAX_M is 120 m, so without a cap
-			// one confident match on a huge network fix could throw the arrow 120 m sideways.
-			//
-			// The swept direction is the opposite of the intuition, and an earlier 35 m guess sat
-			// on the wrong side of it: a TIGHTER cap is worse in the wrong-match case, because
-			// small corrections happen on GOOD fixes where the raw position was already close and
-			// a mistake costs more than it saves. At 20 m the correction is a net loss when wrong;
-			// from 60 m up it is a net gain and apply% has saturated.
-			reject = "tooFar offsetM=" + Math.round(match.offsetM);
-		}
-		if (reject != null) {
-			logApplied(false, reject, 0);
-			return location;
-		}
-		Location corrected = new Location(location);
-		corrected.setLatitude(match.lat);
-		corrected.setLongitude(match.lon);
-		logApplied(true, null, match.offsetM);
-		return corrected;
-	}
-
-	// All four gates live in CairoDriveMapMatching, where each carries the sweep that chose it.
-	// They were guessed here first; the swept values replaced them, and two of the four moved -
-	// MAX_SOURCE_DRIFT_M from 40 to 20 (the matcher refuses to process a fix until the car has
-	// moved MIN_STEP_M = 12 m, so in steady state the source fix is 0-12 m behind and 20 is that
-	// floor plus noise) and MAX_CORRECTION_M from 35 to 60.
-
-	private long lastAppliedLogAt;
-	private int appliedCount;
-	private int rejectedCount;
-
-	private void logApplied(boolean applied, String reason, double offsetM) {
-		if (applied) {
-			appliedCount++;
-		} else {
-			rejectedCount++;
-		}
-		long now = System.currentTimeMillis();
-		if (now - lastAppliedLogAt < CairoDriveMapMatching.APPLY_LOG_INTERVAL_MS) {
-			return;
-		}
-		lastAppliedLogAt = now;
-		CairoDriveLogger.getInstance().log("CD_MATCH", "applied=" + applied
-				+ (applied ? " movedM=" + String.format(java.util.Locale.US, "%.1f", offsetM)
-				: " reason=" + reason)
-				+ " appliedTotal=" + appliedCount + " rejectedTotal=" + rejectedCount);
 	}
 
 	/**
@@ -314,7 +208,6 @@ public class CairoDriveMapMatchService {
 		}
 		gateValid = false;
 		lastMatch = null;
-		lastMatchFixTime = 0;
 	}
 
 	private synchronized Handler handler() {
@@ -384,9 +277,6 @@ public class CairoDriveMapMatchService {
 				disagreements++;
 			}
 			lastMatch = match;
-			lastMatchFixTime = fix.time;
-			lastMatchLat = fix.lat;
-			lastMatchLon = fix.lon;
 		}
 
 		logMatch(match, elapsedMs);
