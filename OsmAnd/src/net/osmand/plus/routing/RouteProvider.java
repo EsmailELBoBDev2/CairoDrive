@@ -1015,6 +1015,90 @@ public class RouteProvider {
 		}
 	}
 
+	/**
+	 * Item 4. Splices a short repair route onto the untouched tail of the previous route.
+	 *
+	 * <p>Called with the raw segment list of a search that ran only as far as a rejoin point ON the
+	 * previous route, plus that route and the location index of the rejoin. Produces a complete
+	 * RouteCalculationResult to the REAL destination, or null - in which case the caller must run a
+	 * full search, which is the unchanged behaviour.
+	 *
+	 * <h3>The three things that make this safe rather than merely plausible</h3>
+	 *
+	 * <b>1. The tail is deep-copied.</b> getOriginalRoute hands back the same RouteSegmentResult
+	 * objects the LIVE route still holds. prepareResult below mutates them - setTurnType,
+	 * distance, segment time. Without the copy, a repair that is later rejected would have
+	 * rewritten the turn types of the route the driver is currently following, and it would only
+	 * happen on the rejection path, the one least likely to be exercised.
+	 *
+	 * <b>2. prepareResult is re-run over the WHOLE spliced list.</b> This is the flagship risk and
+	 * the answer to it. The tail's turn types were computed against a predecessor segment that the
+	 * splice just replaced, so "turn right" can silently become wrong. prepareResult recomputes
+	 * every turn from geometry, so after it the turns are correct BY CONSTRUCTION rather than by
+	 * comparison. If ctx.requestNativePrepareResult were true it would short-circuit and this would
+	 * be unsafe - so that is checked explicitly rather than assumed.
+	 *
+	 * <b>3. The joint is verified geometrically.</b> validateAllPointsConnected only prints and
+	 * returns - it never throws and never fixes - so a disconnected splice would otherwise produce
+	 * a route with a teleport in it and no error anywhere.
+	 */
+	@Nullable
+	private RouteCalculationResult spliceRepair(@NonNull RouteCalculationParams params,
+	                                            @NonNull RoutingContext ctx,
+	                                            @NonNull List<RouteSegmentResult> repairSegments,
+	                                            @NonNull RouteCalculationResult previous,
+	                                            int rejoinLocationIndex) {
+		try {
+			if (repairSegments.isEmpty() || ctx.requestNativePrepareResult) {
+				return null;
+			}
+			List<RouteSegmentResult> tail = previous.getOriginalRoute(rejoinLocationIndex);
+			if (tail == null || tail.isEmpty()) {
+				return null;
+			}
+			List<RouteSegmentResult> spliced = new ArrayList<>(repairSegments.size() + tail.size());
+			spliced.addAll(repairSegments);
+			RouteSegmentResult last = repairSegments.get(repairSegments.size() - 1);
+			for (RouteSegmentResult rr : tail) {
+				// Deep copy - see (1) above.
+				RouteSegmentResult copy = new RouteSegmentResult(rr.getObject(),
+						rr.getStartPointIndex(), rr.getEndPointIndex());
+				if (spliced.size() == repairSegments.size()
+						&& sameSegment(last, copy)) {
+					continue;   // dedupe the joint
+				}
+				spliced.add(copy);
+			}
+			// (3) the joint must be geometrically continuous.
+			RouteSegmentResult a = repairSegments.get(repairSegments.size() - 1);
+			RouteSegmentResult b = spliced.get(repairSegments.size());
+			double gap = MapUtils.getDistance(
+					a.getPoint(a.getEndPointIndex()).getLatitude(), a.getPoint(a.getEndPointIndex()).getLongitude(),
+					b.getPoint(b.getStartPointIndex()).getLatitude(), b.getPoint(b.getStartPointIndex()).getLongitude());
+			if (gap > 1.0) {
+				CairoDriveLogger.getInstance().log("CD_REROUTE",
+						"splice REJECTED jointGapM=" + Math.round(gap));
+				return null;
+			}
+			// (2) recompute every turn from geometry over the whole spliced list.
+			new RouteResultPreparation().prepareResult(ctx, spliced);
+			// Constructed with the ORIGINAL params, so introduceLastPoint appends a leg to the REAL
+			// destination rather than stopping the route at the rejoin point.
+			return new RouteCalculationResult(spliced, params, ctx, null, true);
+		} catch (Throwable t) {
+			CairoDriveLogger.getInstance().log("CD_REROUTE",
+					"splice FAILED " + t.getClass().getSimpleName() + ": " + t.getMessage());
+			return null;
+		}
+	}
+
+	private static boolean sameSegment(@NonNull RouteSegmentResult x, @NonNull RouteSegmentResult y) {
+		return x.getObject() != null && y.getObject() != null
+				&& x.getObject().getId() == y.getObject().getId()
+				&& x.getStartPointIndex() == y.getStartPointIndex()
+				&& x.getEndPointIndex() == y.getEndPointIndex();
+	}
+
 	private static String regionCacheStats() {
 		try {
 			OsmandRegions regions = PlatformUtil.getOsmandRegions();
