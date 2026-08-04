@@ -1516,7 +1516,7 @@ public class RouteCalculationResult {
 	 * along-route distance between two indexes is exactly their difference - no new computation,
 	 * and exact rather than approximated.
 	 *
-	 * @return {@code {location, alongRouteMetres}}, or null when less than {@code meters} of route
+	 * @return {@code {location, alongRouteMetres, locationIndex}}, or null when less than {@code meters} of route
 	 * remains - which callers must treat as "do not do the thing", not as an error.
 	 */
 	@Nullable
@@ -1535,7 +1535,11 @@ public class RouteCalculationResult {
 		for (int i = from + 1; i < locations.size() && i < listDistance.length; i++) {
 			int travelled = startRemaining - listDistance[i];
 			if (travelled >= meters) {
-				return new Object[] {locations.get(i), travelled};
+				// Index included: the splice needs to know WHERE on the previous route the rejoin
+				// point sits, not only where it is on the map. Without it the tail would have to be
+				// found again by geometry, which is exactly the index-space guessing that produced
+				// the upstream bug at RouteProvider:708.
+				return new Object[] {locations.get(i), travelled, i};
 			}
 		}
 		return null;

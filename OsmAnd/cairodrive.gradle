@@ -229,6 +229,31 @@ def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim
 //
 // Set CAIRODRIVE_ROUTE_ALTERNATIVES=true to force it on for every calculation instead, or
 // CAIRODRIVE_ALTERNATE_ALTERNATIVES=false to switch the A/B off entirely.
+// ITEM 4, LIVE. On a deviation, route only as far as a rejoin point on the previous route and
+// splice the untouched tail back on, instead of a full search to the destination.
+//
+// ON. The technique is what HERE ships as returnToRoute() and TomTom as continuous replanning,
+// and upstream OsmAnd's own issue #19737 says it "could be near instantaneous" with HH.
+//
+// The failure mode this has to survive is not a crash - it is a route that looks perfect on the
+// map and speaks the WRONG TURN at a real junction, because the reused tail's turn types were
+// computed against a predecessor segment the splice replaced. Three mechanisms answer that, and
+// they are in the code rather than in this comment: the tail is deep-copied so a rejected repair
+// cannot rewrite the live route, RouteResultPreparation.prepareResult is re-run over the WHOLE
+// spliced list so every turn is recomputed from geometry, and the joint is verified to within a
+// metre because validateAllPointsConnected only prints and returns.
+//
+// Every gate falls back to the unchanged full search: not a deviation, intermediates present, a
+// GPX route, upstream having discarded the previous route, three consecutive rejected repairs,
+// less than a cutoff of route remaining, an absolute cap of 2500 m, a detour ratio of 3.0, a
+// joint gap over 1 m, or any Throwable. The worst case is one wasted short search.
+//
+// CD_REROUTE reports `repair USED`, `repair REJECTED <reason>` or `repair SKIPPED`, and
+// CD_REROUTE finished carries repaired=true|false. Set CAIRODRIVE_ROUTE_REPAIR=false to build
+// the full-search behaviour.
+def routeRepairEnv = System.getenv("CAIRODRIVE_ROUTE_REPAIR")
+def routeRepair = routeRepairEnv?.trim() ? routeRepairEnv.trim() : "true"
+
 def alternateAltEnv = System.getenv("CAIRODRIVE_ALTERNATE_ALTERNATIVES")
 def alternateAlternatives = alternateAltEnv?.trim() ? alternateAltEnv.trim() : "true"
 
@@ -320,6 +345,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_LOCK_EXTERNAL_API", lockExternalApi
 			buildConfigField "boolean", "CAIRODRIVE_ROUTE_ALTERNATIVES", routeAlternatives
 			buildConfigField "boolean", "CAIRODRIVE_ALTERNATE_ALTERNATIVES", alternateAlternatives
+			buildConfigField "boolean", "CAIRODRIVE_ROUTE_REPAIR", routeRepair
 		}
 		release {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
@@ -335,6 +361,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_LOCK_EXTERNAL_API", lockExternalApi
 			buildConfigField "boolean", "CAIRODRIVE_ROUTE_ALTERNATIVES", routeAlternatives
 			buildConfigField "boolean", "CAIRODRIVE_ALTERNATE_ALTERNATIVES", alternateAlternatives
+			buildConfigField "boolean", "CAIRODRIVE_ROUTE_REPAIR", routeRepair
 		}
 	}
 }

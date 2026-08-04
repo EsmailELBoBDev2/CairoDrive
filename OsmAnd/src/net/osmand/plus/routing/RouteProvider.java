@@ -1042,6 +1042,63 @@ public class RouteProvider {
 	 * returns - it never throws and never fixes - so a disconnected splice would otherwise produce
 	 * a route with a teleport in it and no error anywhere.
 	 */
+	/**
+	 * Item 4, LIVE. Calculates a repair route to a rejoin point on the previous route and splices
+	 * the untouched tail onto it, producing a complete route to the real destination.
+	 *
+	 * @return the spliced route, or null - in which case the caller runs a full search exactly as
+	 * before. Every failure path returns null; none of them throws, and none of them mutates the
+	 * route the driver is currently following.
+	 */
+	@Nullable
+	public RouteCalculationResult calculateRepairRoute(@NonNull RouteCalculationParams params,
+	                                                   @NonNull RouteCalculationResult previous,
+	                                                   @NonNull LatLon rejoin,
+	                                                   int rejoinLocationIndex) {
+		RoutingEnvironment env = null;
+		try {
+			// A clone aimed at the rejoin point. previousToRecalculate is deliberately null: this
+			// search must not itself try to reuse anything, or the reasoning becomes circular.
+			RouteCalculationParams repairParams = new RouteCalculationParams();
+			repairParams.start = params.start;
+			repairParams.end = rejoin;
+			repairParams.intermediates = null;
+			repairParams.gpxRoute = null;
+			repairParams.onlyStartPointChanged = false;
+			repairParams.previousToRecalculate = null;
+			repairParams.leftSide = params.leftSide;
+			repairParams.fast = params.fast;
+			repairParams.mode = params.mode;
+			repairParams.ctx = params.ctx;
+			repairParams.calculationProgress = new RouteCalculationProgress();
+
+			env = calculateRoutingEnvironment(repairParams, false, true);
+			if (env == null) {
+				return null;
+			}
+			RoutingContext ctx = env.getComplexCtx() != null ? env.getComplexCtx() : env.getCtx();
+			RouteCalcResult raw = env.getRouter().searchRoute(ctx,
+					new LatLon(params.start.getLatitude(), params.start.getLongitude()),
+					rejoin, null, env.getPrecalculated());
+			if (raw == null || !raw.isCorrect() || raw.getList().isEmpty()) {
+				return null;
+			}
+			// Spliced with the ORIGINAL params, so the result ends at the real destination.
+			return spliceRepair(params, ctx, raw.getList(), previous, rejoinLocationIndex);
+		} catch (Throwable t) {
+			CairoDriveLogger.getInstance().log("CD_REROUTE",
+					"repair search FAILED " + t.getClass().getSimpleName() + ": " + t.getMessage());
+			return null;
+		} finally {
+			if (env != null) {
+				try {
+					finishWarmSession(env, false);
+				} catch (Throwable ignored) {
+				}
+			}
+		}
+	}
+
 	@Nullable
 	private RouteCalculationResult spliceRepair(@NonNull RouteCalculationParams params,
 	                                            @NonNull RoutingContext ctx,

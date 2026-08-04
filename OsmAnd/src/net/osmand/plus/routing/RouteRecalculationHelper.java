@@ -8,6 +8,7 @@ import androidx.annotation.Nullable;
 import net.osmand.Location;
 import net.osmand.PlatformUtil;
 import net.osmand.data.LatLon;
+import net.osmand.plus.BuildConfig;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.R;
@@ -412,6 +413,94 @@ class RouteRecalculationHelper {
 		}
 	}
 
+	/**
+	 * ITEM 4 LIVE. Attempts a short repair to a rejoin point on the previous route instead of a
+	 * full search to the destination.
+	 *
+	 * <p>Every gate below returns null, and null means the caller runs the unchanged full search.
+	 * There is no path here that produces a route without passing all of them.
+	 *
+	 * @return a complete spliced route to the real destination, or null.
+	 */
+	@Nullable
+	RouteCalculationResult tryRepairRoute(@NonNull RouteProvider provider,
+	                                      @NonNull RouteCalculationParams params) {
+		if (!BuildConfig.CAIRODRIVE_ROUTE_REPAIR) {
+			return null;
+		}
+		try {
+			RouteCalculationResult previous = params.previousToRecalculate;
+			// Only a deviation reroute. Never a first calculation, never with intermediates (their
+			// indices are rebuilt from the location list and a splice invalidates that), never a
+			// GPX route (it has its own recalculation path).
+			if (previous == null || !previous.isCalculated() || params.start == null
+					|| params.gpxRoute != null
+					|| (params.intermediates != null && !params.intermediates.isEmpty())) {
+				return null;
+			}
+			// Upstream discards previousToRecalculate after three recalculations in two minutes,
+			// deliberately, to break a reuse loop. Repairing then would reuse exactly the route it
+			// just declared untrustworthy.
+			if (recalculateCountInInterval >= RECALCULATE_THRESHOLD_COUNT_CAUSING_FULL_RECALCULATE) {
+				return null;
+			}
+			// Escape hatch: after this many consecutive repairs the driver is not coming back, and
+			// dragging them toward a receding rejoin point is the failure TomTom's doubling cutoff
+			// exists to bound.
+			if (consecutiveRepairs >= REPAIR_MAX_CONSECUTIVE) {
+				CairoDriveLogger.getInstance().log("CD_REROUTE",
+						"repair SKIPPED consecutiveRepairs=" + consecutiveRepairs + " - full search");
+				return null;
+			}
+			Object[] ahead = previous.getLocationAheadAlongRoute(repairCutoffM());
+			if (ahead == null) {
+				return null;   // less than a cutoff of route left; a short search is cheap anyway
+			}
+			Location rejoinLoc = (Location) ahead[0];
+			int alongRouteM = (Integer) ahead[1];
+			int rejoinIndex = ahead.length > 2 ? (Integer) ahead[2] : -1;
+			if (rejoinIndex < 0) {
+				return null;
+			}
+			long startedAt = System.currentTimeMillis();
+			RouteCalculationResult repaired = provider.calculateRepairRoute(params, previous,
+					new LatLon(rejoinLoc.getLatitude(), rejoinLoc.getLongitude()), rejoinIndex);
+			long elapsedMs = System.currentTimeMillis() - startedAt;
+
+			String reject = null;
+			if (repaired == null || !repaired.isCalculated()) {
+				reject = "notCalculated";
+			} else {
+				int repairDistM = repaired.getWholeDistance();
+				if (repairDistM > REPAIR_ABSOLUTE_CAP_M + alongRouteM) {
+					reject = "tooLong";
+				} else if (repairDistM > REPAIR_DETOUR_RATIO * Math.max(alongRouteM, REPAIR_MIN_BASE_M)
+						+ alongRouteM) {
+					reject = "detourRatio";
+				}
+			}
+			if (reject != null) {
+				consecutiveRepairs++;
+				CairoDriveLogger.getInstance().log("CD_REROUTE", "repair REJECTED"
+						+ " reason=" + reject + " ms=" + elapsedMs
+						+ " cutoffM=" + repairCutoffM()
+						+ " consecutiveRepairs=" + consecutiveRepairs + " - falling back to full search");
+				return null;
+			}
+			consecutiveRepairs = 0;
+			CairoDriveLogger.getInstance().log("CD_REROUTE", "repair USED"
+					+ " ms=" + elapsedMs
+					+ " alongRouteM=" + alongRouteM
+					+ " cutoffM=" + repairCutoffM()
+					+ " wholeDistM=" + repaired.getWholeDistance());
+			return repaired;
+		} catch (Throwable t) {
+			CairoDriveLogger.getInstance().log("CD_REROUTE",
+					"repair threw " + t.getClass().getSimpleName() + " - full search");
+			return null;
+		}
+	}
+
 	private boolean shouldAnnounceNewRoute(RouteCalculationResult res) {
 		if (res.getAppMode().getRouteService() == RouteService.ONLINE) {
 			OnlineRoutingEngine engine = app.getOnlineRoutingHelper().getEngineByKey(res.getAppMode().getRoutingProfile());
@@ -666,7 +755,14 @@ class RouteRecalculationHelper {
 			}
 			RouteProvider provider = routingHelper.getProvider();
 			OsmandSettings settings = getSettings();
-			RouteCalculationResult res = provider.calculateRouteImpl(params);
+			// ITEM 4, LIVE. Try the short repair first. Returns null on ANY failure or any failed
+			// sanity test, and the full search below then runs exactly as it always has - so the
+			// worst case is one wasted short search, never a wrong route.
+			RouteCalculationResult res = routingThreadHelper.tryRepairRoute(provider, params);
+			boolean repaired = res != null;
+			if (!repaired) {
+				res = provider.calculateRouteImpl(params);
+			}
 			if (params.calculationProgress.isCancelled) {
 				return;
 			}
@@ -687,6 +783,7 @@ class RouteRecalculationHelper {
 			long dispatchedAt = params.cairoDriveDispatchedAt;
 			if (dispatchedAt > 0) {
 				CairoDriveLogger.getInstance().log("CD_REROUTE", "finished"
+						+ " repaired=" + repaired
 						+ " totalMs=" + (System.currentTimeMillis() - dispatchedAt)
 						+ " calculated=" + res.isCalculated()
 						+ " missingMaps=" + res.hasMissingMaps()
@@ -698,7 +795,12 @@ class RouteRecalculationHelper {
 				} else {
 					routingThreadHelper.setNewRoute(prev, res, params.start);
 					// AFTER the driver already has their route, never before.
-					routingThreadHelper.runRepairProbe(provider, params);
+					// Shadow probe only when the live repair did NOT run. Once the repair is real,
+					// timing a second one would just burn a search to re-measure what `repair USED`
+					// already reports - and would do it on the same worker the next reroute needs.
+					if (!repaired) {
+						routingThreadHelper.runRepairProbe(provider, params);
+					}
 				}
 			} else {
 				evalWaitInterval = Math.max(3000, routingThreadHelper.evalWaitInterval * 3 / 2); // for Issue #3899
