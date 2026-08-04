@@ -16,6 +16,7 @@ import androidx.annotation.Nullable;
 import net.osmand.PlatformUtil;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.cairodrive.CairoDriveLogger;
+import net.osmand.plus.cairodrive.CairoDriveSpeechClock;
 import net.osmand.plus.R;
 import net.osmand.plus.api.AudioFocusHelperImpl;
 import net.osmand.plus.routing.VoiceRouter;
@@ -113,6 +114,13 @@ public class JsTtsCommandPlayer extends CommandPlayer {
 				// The call back is on a binder thread.
 				@Override
 				public synchronized void onUtteranceCompleted(String utteranceId) {
+					// N7. Closes the timing loop on the utterances that started with an empty
+					// queue - see playCommands below. Ids this never saw are ignored, so a queued
+					// utterance cannot pollute the measurement with the time it spent waiting.
+					// First, before the audio-focus bookkeeping: that path can throw on some head
+					// units, and losing the sample to it would silently freeze the estimate at its
+					// cold-start prior for the whole drive.
+					CairoDriveSpeechClock.getInstance().onUtteranceCompleted(utteranceId);
 					if (--ttsRequests <= 0) {
 						abandonAudioFocus();
 					}
@@ -271,6 +279,11 @@ public class JsTtsCommandPlayer extends CommandPlayer {
 		}
 		sendAlertToPebble(bld.toString());
 		if (mTts != null && !voiceRouter.isMute() && speechAllowed) {
+			// N7. Whether this utterance will start speaking straight away or sit behind another
+			// one. Only the former can be timed: with QUEUE_ADD, a queued utterance's elapsed time
+			// measures the queue, not the speech. Captured before the increment below, which is
+			// what consumes the information.
+			boolean startsImmediately = ttsRequests == 0;
 			if (ttsRequests++ == 0) {
 				requestAudioFocus();
 				mTts.setAudioAttributes(new AudioAttributes.Builder()
@@ -285,12 +298,25 @@ public class JsTtsCommandPlayer extends CommandPlayer {
 					if (vpd > 0) {
 						ttsRequests++;
 						mTts.playSilentUtterance(vpd, TextToSpeech.QUEUE_ADD, "" + System.currentTimeMillis());
+						// The silence is now ahead of us in the queue, so this utterance no longer
+						// starts immediately and its elapsed time would include vpd milliseconds
+						// of nothing.
+						startsImmediately = false;
 					}
 				}
 			}
 			log.debug("ttsRequests=" + ttsRequests);
-			params.put(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "" + System.currentTimeMillis());
+			String utteranceId = "" + System.currentTimeMillis();
+			params.put(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId);
 			if (AudioFocusHelperImpl.playbackAuthorized) {
+				// N7. Start the clock on this utterance only if it is genuinely first in the queue.
+				// The completion callback above stops it, giving a real measured duration for a
+				// known piece of text - which is how CairoDriveSpeechClock stops guessing at this
+				// device's speaking rate. Registered before speak() so a very short utterance
+				// cannot complete before we are watching for it.
+				if (startsImmediately) {
+					CairoDriveSpeechClock.getInstance().onUtteranceStarted(utteranceId, bld.toString());
+				}
 				mTts.speak(bld.toString(), TextToSpeech.QUEUE_ADD, params);
 			} else {
 				stop();

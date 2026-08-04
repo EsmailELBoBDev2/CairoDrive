@@ -14,6 +14,7 @@ import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.api.AudioFocusHelper;
 import net.osmand.plus.api.AudioFocusHelperImpl;
+import net.osmand.plus.cairodrive.CairoDriveTurnLead;
 import net.osmand.plus.routing.VoiceRouter;
 import net.osmand.plus.settings.backend.ApplicationMode;
 import net.osmand.plus.settings.backend.OsmandSettings;
@@ -89,6 +90,10 @@ public abstract class CommandPlayer {
 		this.voiceProviderDir = voiceProviderDir;
 		this.language = defineVoiceProviderLanguage();
 		this.jsScope = initializeJsScope();
+		// N7. Idempotent, and deliberately here rather than at app start: CairoDriveTurnLead
+		// schedules an extra spoken cue, so there is no point arming it before something exists
+		// that can speak. It adds a prompt and never moves one - see the class comment.
+		CairoDriveTurnLead.attach(app);
 	}
 
 	@NonNull

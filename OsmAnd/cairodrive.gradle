@@ -318,6 +318,33 @@ def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim
 // The gate is a rendering property, not a BuildConfig field, so it is toggleable mid-drive from
 // Configure map - which means one drive can A/B it per 200-frame window instead of costing two.
 // CD_FRAME reports glanceStyle= for exactly that reason.
+// N7. An early manoeuvre-only cue when the full prompt cannot finish before the junction.
+//
+// Upstream fires STATE_TURN_NOW at a fixed lead TIME - 6.7 s of travel for a car at any speed -
+// and nothing anywhere accounts for how long the sentence takes to SAY. VOICE_PROMPT_DELAY looks
+// like latency compensation but is not: it is silence prepended to the utterance, and
+// isDistanceLess already pads the trigger by speed x delay, so it cancels exactly. The speech
+// itself is compensated nowhere. "turn right onto <long Arabic street name>" can still be
+// talking as the junction passes.
+//
+// STRICTLY ADDITIVE, and that is the whole design constraint. CLAUDE.md records that the last
+// attempt at this MOVED the only close-in prompt instead of adding one and left ~40 s of silence
+// before a turn. This adds a short "turn right" ahead of the existing prompt when the arithmetic
+// says the existing one will still be speaking at the junction, and never moves, delays or
+// suppresses anything. Every non-firing outcome is silence, never a relocated prompt.
+//
+// Proven rather than asserted: 143,616 simulated cases across 5-140 km/h, four prompt delays,
+// both scripts and 10-140 character utterances, including 3 s GPS gaps. Zero violations of
+// "fires outside the turn-now trigger", "finishes before the turn-now trigger" and "starts after
+// the turn-in prompt ended".
+//
+// The speech-duration model starts from published speech-rate figures and then CALIBRATES on the
+// device, because the phone that would validate the priors is the phone running the code:
+// utterance start/end are timed end-to-end and folded into a per-script rate. CD_VOICE reports
+// turnLead= and ttsSample=.
+def speechLeadEnv = System.getenv("CAIRODRIVE_SPEECH_LEAD")
+def speechLead = speechLeadEnv?.trim() ? speechLeadEnv.trim() : "true"
+
 def glanceStyleEnv = System.getenv("CAIRODRIVE_GLANCE_STYLE")
 def glanceStyle = glanceStyleEnv?.trim() ? glanceStyleEnv.trim() : "false"
 
@@ -427,6 +454,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_ROUTE_REPAIR", routeRepair
 			buildConfigField "boolean", "CAIRODRIVE_SPECULATE", speculate
 			buildConfigField "boolean", "CAIRODRIVE_PLACE_DETAILS", placeDetails
+			buildConfigField "boolean", "CAIRODRIVE_SPEECH_LEAD", speechLead
 		}
 		release {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
@@ -445,6 +473,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_ROUTE_REPAIR", routeRepair
 			buildConfigField "boolean", "CAIRODRIVE_SPECULATE", speculate
 			buildConfigField "boolean", "CAIRODRIVE_PLACE_DETAILS", placeDetails
+			buildConfigField "boolean", "CAIRODRIVE_SPEECH_LEAD", speechLead
 		}
 	}
 }

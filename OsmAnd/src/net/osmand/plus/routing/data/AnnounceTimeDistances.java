@@ -220,6 +220,49 @@ public class AnnounceTimeDistances {
 	// ADDITIVE - a new rung - never a moved threshold. Leaving a dead method with a javadoc that
 	// reads like a working feature is how that gets rewired by mistake.
 
+	/**
+	 * The distance at which {@link #STATE_TURN_NOW} trips at this speed, in metres.
+	 *
+	 * <p>Exactly what {@code isTurnStateActive(currentSpeed, dist, STATE_TURN_NOW)} compares
+	 * against, exposed as a number instead of a boolean. Nothing here decides anything - it exists
+	 * so {@code CairoDriveTurnLead} can place its extra cue strictly OUTSIDE this distance and
+	 * prove, per fix, that it cannot displace the turn-now prompt. Keep the two in step: if the
+	 * predicate above changes, this changes with it.
+	 */
+	public double getTurnNowTriggerDistance(float currentSpeed) {
+		if (currentSpeed < DEFAULT_SPEED) {
+			// Issue #17376: low speed adjustment for TURN_NOW timing
+			return Math.max(POSITIONING_TOLERANCE, currentSpeed / DEFAULT_SPEED * TURN_NOW_DISTANCE)
+					+ currentSpeed * voicePromptDelayTimeSec;
+		}
+		return Math.max(TURN_NOW_DISTANCE, currentSpeed / DEFAULT_SPEED * TURN_NOW_DISTANCE)
+				+ currentSpeed * voicePromptDelayTimeSec;
+	}
+
+	/**
+	 * The distance at which {@link #STATE_TURN_IN} trips at this speed, in metres. Same contract as
+	 * {@link #getTurnNowTriggerDistance}: a read-only view of {@link #isDistanceLess}, used as the
+	 * outer bound of the window the extra cue is allowed to live in.
+	 */
+	public double getTurnInTriggerDistance(float currentSpeed) {
+		return Math.max(TURN_IN_DISTANCE, currentSpeed / DEFAULT_SPEED * TURN_IN_DISTANCE)
+				+ currentSpeed * voicePromptDelayTimeSec;
+	}
+
+	/**
+	 * {@code VOICE_PROMPT_DELAY} for the active audio stream, in seconds.
+	 *
+	 * <p>Worth being precise about what this is, because it looks like latency compensation and is
+	 * not: it is a silence the TTS player prepends to the first utterance of a batch so a Bluetooth
+	 * SCO link has time to come up. Both trigger predicates above pad their lead distance by
+	 * {@code speed * this}, which exactly cancels the silence - so the prompt still STARTS at the
+	 * same point on the road. The time the words themselves take is compensated nowhere, which is
+	 * what {@code CairoDriveTurnLead} is for.
+	 */
+	public double getVoicePromptDelayTimeSec() {
+		return voicePromptDelayTimeSec;
+	}
+
 	public boolean isTurnStateNotPassed(float currentSpeed, double dist, int turnType) {
 		switch (turnType) {
 			case STATE_TURN_IN:
