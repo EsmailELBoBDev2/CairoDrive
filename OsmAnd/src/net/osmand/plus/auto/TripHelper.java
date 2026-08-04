@@ -94,6 +94,8 @@ public class TripHelper {
 
 	/** Latched after the host rejects a populated trip once - see {@link #buildTrip}. */
 	private static boolean keepCardUnsupported;
+	/** So the success case is logged once per session rather than several times a second. */
+	private static boolean keepCardReported;
 
 	@NonNull
 	public Trip buildTrip(Location currentLocation, float density) {
@@ -118,7 +120,17 @@ public class TripHelper {
 		// screen stops reading as latency and starts reading as a fault.
 		if (routeBeingCalculated && !keepCardUnsupported) {
 			try {
-				return buildTrip(currentLocation, density, false);
+				Trip trip = buildTrip(currentLocation, density, false);
+				if (!keepCardReported) {
+					// Logged once, on the first reroute that keeps the card. Only the FAILURE was
+					// recorded before, so a log with no CD_TRIP line was ambiguous between "it
+					// worked" and "the code never ran" - and buildTrip is called several times a
+					// second, so this cannot be logged per call.
+					keepCardReported = true;
+					CairoDriveLogger.getInstance().log("CD_TRIP",
+							"manoeuvre card kept during recalculation (host accepted it)");
+				}
+				return trip;
 			} catch (Throwable t) {
 				// androidx.car.app may require the step and destination lists to be empty when a
 				// Trip is marked loading. That cannot be verified from this tree - the car-app

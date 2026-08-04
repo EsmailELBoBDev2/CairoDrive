@@ -1024,6 +1024,11 @@ public class RouteProvider {
 					.append(" mode=").append(params.mode.getStringKey())
 					.append(" engine=").append(engine)
 					.append(" reroute=").append(params.previousToRecalculate != null ? 1 : 0)
+					// Whether the private-access probe was skipped for this calculation. Without it, a
+					// `pre=` that did not move would be ambiguous between "skipping it saved nothing"
+					// and "it was never skipped" - and the flag is set on two different contexts, so
+					// the second one silently not being set is a real way for it to be a no-op.
+					.append(" skipPriv=").append(ctx.skipPrivateAccessCheck ? 1 : 0)
 					.append(" warm=").append(warmHHContext ? 1 : 0)
 					.append(" reuse=").append(reuseCount)
 					.append(" setup=").append(ms(setupNanos))
