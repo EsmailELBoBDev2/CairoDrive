@@ -777,13 +777,27 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 			// thing to fix, and they have different fixes. A large `lock` means the head unit is
 			// the bottleneck and no app-side change will help. Large `read` or `blit` means the
 			// per-frame GPU readback and canvas copy dominate, which is what the overscan setting
-			// attacks. A large `over` would mean OsmAnd's own overlay drawing, the only part that
-			// is plain Java and the only part easily optimised further.
+			// attacks.
+			//
+			// The 2026-08-04 drive settled which one it is here, and it was none of those:
+			//   over 25.9ms (61%) | blit 9.2 (22%) | read 4.5 (11%) | lock 1.6 | post 1.0 | wdgt 0.1
+			// `over` is mapView.drawOverMap - this app's own overlay drawing - and it is twice
+			// read+blit combined. CD_LAYER breaks it down per layer; hwCanvas= below says whether
+			// it was being drawn on the CPU while that measurement was taken.
 			CairoDriveLogger.getInstance().log("CD_FRAME", "summary frames=" + frameCount
 					+ " avgMs=" + (frameWallSumMs / frameCount)
 					+ " maxMs=" + frameWallMaxMs + " slow=" + slowFrameCount
 					+ " overscan=" + surfaceWidthMultiply
 					+ " renderScale=" + renderScale
+					// Which canvas ACTUALLY drew these frames, not which one was requested. The
+					// hardware path latches off for the session the first time lockHardwareCanvas
+					// throws or returns null, and the head unit - not this app - allocates the
+					// buffer, so "on" in the build config is a request, not a fact. Without this,
+					// an unchanged `over` after flipping the flag is ambiguous between "hardware
+					// canvas does not help" and "the head unit refused it", which are opposite
+					// conclusions about whether the VirtualDisplay rewrite is worth 3-5 days.
+					+ " hwCanvas=" + (useHardwareCanvas
+							? (hardwareCanvasFailed ? "REFUSED" : "on") : "off")
 					// The head unit's ACTUAL surface, which nothing was recording. Everything
 					// about whether reducing renderScale is worth it depends on how many pixels
 					// there are to begin with and how many of them a street label gets, and both

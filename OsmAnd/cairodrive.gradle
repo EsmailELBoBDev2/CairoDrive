@@ -119,18 +119,35 @@ def surfaceOverscan = overscanEnv?.trim() ? overscanEnv.trim() : "0.0"
 // Draw the car frame with a HARDWARE canvas instead of the software one.
 //
 // surface.lockCanvas() is never hardware accelerated - that is AOSP's documented behaviour, not a
-// quirk - so the per-frame blit runs on the CPU through Skia. The 2026-08-04 drive measured that
-// blit at 9.2 ms, 22% of a 46.9 ms frame, second only to OsmAnd's own overlay drawing.
-// lockHardwareCanvas() moves it to the GPU and is a five-line change against what would otherwise
-// be a multi-day rewrite.
+// quirk - so everything drawn into that canvas runs on the CPU through Skia.
 //
-// OFF by default because the head unit, not this app, allocates the buffer, and if it lacks the
-// GPU usage flags the hardware path needs the lock fails outright. SurfaceRenderer falls back to
-// the software canvas and latches that decision for the session, so the failure mode is "no
-// improvement", never a black screen - but it should still be proven on a real drive before it
-// becomes the default.
+// This was first written as a fix for `blit` alone (9.2 ms, 22% of the 46.9 ms frame). That
+// undersold it. The SAME canvas is what mapView.drawOverMap() draws into, and drawOverMap IS the
+// `over` bucket - 25.9 ms, 61% of the frame, the single largest cost this app has. So the software
+// canvas is not paying for one of the six buckets, it is paying for two, together 76% of a frame:
+//
+//     blit 9.2 (22%)  +  over 25.9 (61%)  =  35.1 ms of 46.9
+//
+// That also makes this the cheap experiment that DECIDES the VirtualDisplay rewrite (B1). B1's
+// whole premise is that moving the car frame onto a hardware-accelerated pipeline is worth 3-5
+// days. This flag tests that premise in one drive. If `over` falls, the premise holds and B1 is
+// worth scheduling; if `over` does not move, `over` is genuine Java geometry work, B1 would not
+// have helped either, and the money goes to CD_LAYER's named offenders instead.
+//
+// ON by default as of the next build, so the drive produces the comparison. It is not a blind
+// flip: the two preconditions lockHardwareCanvas needs are already satisfied here (the surface is
+// fully repainted every frame, and no GLES surface is ever attached to it), and the failure mode
+// is bounded - the head unit, not this app, allocates the buffer, so if it lacks the GPU usage
+// flags the lock fails outright, SurfaceRenderer falls back to the software canvas and LATCHES
+// that decision for the session. Worst case is "no improvement", never a black screen.
+//
+// What to actually check on the log: `over` and `blit` in CD_FRAME against 25.9 / 9.2, and
+// hwCanvas= in the SESSION line to confirm it did not latch back to software. What to check on
+// the SCREEN: a hardware canvas does not accept every Canvas operation a software one does, so
+// look for a missing or wrongly-drawn overlay - the route line, the arrow, the speed limit sign.
+// Set CAIRODRIVE_HW_CANVAS=false to build without it.
 def hwCanvasEnv = System.getenv("CAIRODRIVE_HW_CANVAS")
-def hwCanvas = hwCanvasEnv?.trim() ? hwCanvasEnv.trim() : "false"
+def hwCanvas = hwCanvasEnv?.trim() ? hwCanvasEnv.trim() : "true"
 
 def renderScaleEnv = System.getenv("CAIRODRIVE_RENDER_SCALE")
 def renderScale = renderScaleEnv?.trim() ? renderScaleEnv.trim() : "1.0"

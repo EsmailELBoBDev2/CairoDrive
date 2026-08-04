@@ -67,6 +67,32 @@ public class CairoDriveDataSaver {
 		return isEnabled() && isMetered(ctx);
 	}
 
+	private static volatile boolean lastVetoState;
+	private static volatile boolean vetoEverReported;
+	private static volatile long lastVetoLogAt;
+	private static final long VETO_LOG_INTERVAL_MS = 60_000;
+
+	/**
+	 * Records what the tile gate decided, so a blank overlay is explained in the drive log instead
+	 * of just being absent. Only writes a line when the answer CHANGES, or once a minute while it
+	 * stays blocking - the gate is asked per tile, so an unconditional log would be a flood.
+	 *
+	 * @param allow what the gate returned; {@code false} means tiles are being refused.
+	 */
+	public static void noteTileVeto(boolean allow) {
+		long now = System.currentTimeMillis();
+		boolean changed = !vetoEverReported || allow != lastVetoState;
+		if (!changed && (allow || now - lastVetoLogAt < VETO_LOG_INTERVAL_MS)) {
+			return;
+		}
+		lastVetoState = allow;
+		vetoEverReported = true;
+		lastVetoLogAt = now;
+		CairoDriveLogger.getInstance().log("CD_DATA",
+				"tileGate=" + (allow ? "ALLOW" : "BLOCK metered")
+						+ " saver=" + isEnabled());
+	}
+
 	/** Memoised: isActiveNetworkMetered() is a binder call, and the tile path can ask per tile. */
 	private static volatile long meteredCheckedAt;
 	private static volatile boolean meteredCached = true;

@@ -278,8 +278,20 @@ public class OsmandApplication extends MultiDexApplication {
 		// MapTileDownloader is in OsmAnd-java and has no Context, so it cannot check metering
 		// itself - it was the only network path in the app with no data-saver gate at all. Install
 		// the veto here, once, before anything can request a tile.
-		MapTileDownloader.setDownloadGate(() ->
-				!CairoDriveDataSaver.isEnabled() || !CairoDriveDataSaver.isMeteredCached(this));
+		MapTileDownloader.setDownloadGate(() -> {
+			if (!CairoDriveDataSaver.isEnabled()) {
+				return true;
+			}
+			boolean allow = !CairoDriveDataSaver.isMeteredCached(this);
+			// Announce the veto rather than dropping tiles silently. This gate is ON by default
+			// and the test device drives on mobile data, so with a raster overlay/underlay or
+			// Mapillary switched on the visible result is a layer that simply never appears -
+			// which is indistinguishable, on the head unit, from the map "not loading for a
+			// time". Rate-limited inside CairoDriveDataSaver so a tile storm cannot flood the
+			// log; the point is that the next drive log SAYS which it was.
+			CairoDriveDataSaver.noteTileVeto(allow);
+			return allow;
+		});
 		appInitializer.initVariables();
 		if (appInitializer.isAppVersionChanged() && appInitializer.getPrevAppVersion() < AppVersionUpgradeOnInit.VERSION_2_3) {
 			settings.freezeExternalStorageDirectory();
