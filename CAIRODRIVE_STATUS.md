@@ -107,11 +107,22 @@ the font manifest · `CD_LAYER` per-layer timing · metered tile gate with `CD_D
 
 | Item | Reason |
 |---|---|
-| **Recoloured map icons** | **Impossible as scoped.** Icons are bitmaps; the entire point-symbol output set (`icon`, `iconOrder`, `iconVisibleSize`, collision controls) contains no colour property. Verified against both renderers. B3 removes them instead, which achieves the colour *and* draw-cost reduction |
-| **N8** — tighten the 120 m deviation threshold | Correctly held on N1's data. Tightening before reading it trades missed reroutes for spurious ones |
-| **N6**: cache the local graph across fixes; speed-consistency term | Optimisations, not gaps |
-| **N7**: roundabouts; arrival clause; the long sentence still overrunning the junction | The last is structurally forced, not a choice |
-| **D4 / D5** — catalogue and help-article gating | Current state never confirmed. Not claimed either way |
+| **N7**: the long sentence still overrunning the junction | Structurally forced, not a choice. A phrase that takes longer to say than the driver has cannot be fixed by saying it earlier — only by saying less, which is a different feature |
+| **D4** — catalogue gating | Current state never confirmed. Not claimed either way |
+| **Popular times / "best time to visit"** | Not a Places API field at all. Only reachable by scraping Maps through a third party — separate provider, separate bill, breaks on any markup change, and it is scraped Google data on a Play-listed app |
+
+### Moved out of this table since it was written
+
+These were listed as not-done and are now in the tree. Kept visible rather than silently deleted,
+because the *reasons* they were held are the useful part.
+
+| Item | Was held because | What changed |
+|---|---|---|
+| **Recoloured map icons** | Called impossible: icons are bitmaps and the point-symbol output set has no colour property. That fact is correct and was verified against both renderers | The inference from it was wrong. A style cannot tint a bitmap, but the colour can be removed *from the bitmap* before the style sees it. `patches/cairodrive_glance_icons.py`, Rec. 709 luma so a hazard and a water icon do not collapse to the same grey. Build-time only and it cannot be toggled back |
+| **N8** — deviation threshold | Correctly held on N1's data | Done as a *tightening only where the fix is good*, capped by `Math.min` against the old formula so no case is looser. The first version was looser above ~20 m accuracy; simulation caught it |
+| **N6** — local-graph cache, speed term | "Optimisations, not gaps" | Both in. Cache keyed on road identity, hit rate in `CD_MATCH graphCache=`. Speed term applied only *above* the limit — the "fast car ⇒ fast road" form stays rejected, because Cairo flyovers jam |
+| **N7** — roundabouts, arrival clause | Roundabouts excluded as "not safe to say twice"; arrival clause "under-fires, which is the safe direction" | Nothing says it twice — the cue is timed, never spoken. Roundabouts are the worst case for late guidance, and the final manoeuvre is the one a driver can least recover from |
+| **D5** — help-article gating | Current state never confirmed | Confirmed and done |
 
 ## Pre-existing, found not caused
 
