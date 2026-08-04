@@ -700,6 +700,10 @@ public class RouteProvider {
 		} else {
 			ctx = router.buildRoutingContext(cf, lib, files, RouteCalculationMode.NORMAL);
 		}
+		// A reroute happens mid-drive, so the private-access dialog this probe feeds can neither
+		// be read nor answered. Skipping it drops a JNI round trip that resolves both endpoints
+		// inside the C++ engine. A FIRST calculation still asks, so route planning is unchanged.
+		ctx.skipPrivateAccessCheck = params.previousToRecalculate != null;
 		ctx.leftSideNavigation = params.leftSide;
 		ctx.calculationProgress = params.calculationProgress;
 		ctx.publicTransport = params.inPublicTransportMode;
@@ -734,6 +738,9 @@ public class RouteProvider {
 		RoutingContext complexCtx = complex ? cachedComplexCtx : null;
 		if (complexCtx != null) {
 			complexCtx.calculationProgress = params.calculationProgress;
+			// Must be set here too. complexCtx is the context actually handed to searchRoute on
+			// this path, so setting the flag only on `ctx` above would skip nothing at all.
+			complexCtx.skipPrivateAccessCheck = ctx.skipPrivateAccessCheck;
 			complexCtx.leftSideNavigation = params.leftSide;
 			complexCtx.previouslyCalculatedRoute = ctx.previouslyCalculatedRoute;
 		}

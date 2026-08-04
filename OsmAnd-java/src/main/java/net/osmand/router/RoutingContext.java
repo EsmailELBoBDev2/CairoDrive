@@ -59,6 +59,25 @@ public class RoutingContext {
 	// 0. Reference to native routingcontext for multiple routes
 	public long nativeRoutingContext;
 	public boolean keepNativeRoutingContext;
+
+	/**
+	 * Skip the "does this route need private-road access?" probe for this calculation.
+	 *
+	 * <p>On the native path that probe is a JNI round trip which resolves BOTH endpoints inside
+	 * the C++ engine - structurally the same work as finding an initial route segment, twice, and
+	 * it runs unconditionally on every calculation.
+	 *
+	 * <p>Its only consumer is {@code onRequestPrivateAccessRouting()}, which raises a dialog asking
+	 * the user whether to allow private roads. That is a question worth asking when a driver plans
+	 * a route. It is not a question that can be asked, read or answered on a head unit at speed,
+	 * and a reroute is by definition mid-drive - so on a reroute the work is done and the answer is
+	 * discarded.
+	 *
+	 * <p>Set only for recalculations. A first calculation still asks, so nothing about planning a
+	 * route changes. The cost of being wrong is bounded and known: a driver who reroutes onto a
+	 * route needing private access is not prompted about it during that reroute.
+	 */
+	public boolean skipPrivateAccessCheck;
 	public boolean requestNativePrepareResult; // OK for tests/tools. Do not use in Android UI.
 	
 	// 1. Initial variables

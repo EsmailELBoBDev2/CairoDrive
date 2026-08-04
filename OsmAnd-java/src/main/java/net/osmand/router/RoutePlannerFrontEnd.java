@@ -446,7 +446,7 @@ public class RoutePlannerFrontEnd {
 				}
 			}
 		}
-		if (needRequestPrivateAccessRouting(ctx, targets)) {
+		if (!ctx.skipPrivateAccessCheck && needRequestPrivateAccessRouting(ctx, targets)) {
 			ctx.calculationProgress.requestPrivateAccessRouting = true;
 		}
 		if (hhRoutingConfig != null && ctx.calculationMode != RouteCalculationMode.BASE) {
