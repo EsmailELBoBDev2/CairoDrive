@@ -202,13 +202,12 @@ public class RadiusRulerControlLayer extends OsmandMapLayer {
 
 	@Override
 	public void onDraw(Canvas canvas, RotatedTileBox tb, DrawSettings drawSettings) {
-		// Same guard, same reason as MapInfoLayer.onDraw. isRulerWidgetOn() below is not a cheap
-		// test - it reads MAP_INFO_CONTROLS, splits it, and scans every registered widget - and it
-		// ran on every projected frame to decide whether a ruler the head unit cannot show should
-		// draw. The radius ruler is a phone-screen tool; Android Auto has no gesture for it.
-		if (view != null && view.isCarView()) {
-			return;
-		}
+		// NO isCarView() guard here - one was added and reverted. "AA" in getCachedAACanvasOffset()
+		// below is ANDROID AUTO, not anti-aliasing: OsmandMapTileView.updateAACanvasOffset computes
+		// it only when isCarView() is true, from SurfaceRenderer.getVisibleArea(), and this layer
+		// applies it at ~15 draw sites and scales its stroke width for the car specifically. The
+		// ruler is supported ON the head unit by design, and guarding this made all of that dead.
+		// If isRulerWidgetOn() proves expensive, cache it - do not skip the draw.
 		OsmandMapTileView mapView = app.getOsmandMap().getMapView();
 		AnimateDraggingMapThread animatedThread = mapView.getAnimatedDraggingThread();
 

@@ -53,6 +53,7 @@ import net.osmand.plus.base.MapViewTrackingUtilities;
 import net.osmand.plus.helpers.MapDisplayPositionManager;
 import net.osmand.plus.helpers.TwoFingerTapDetector;
 import net.osmand.plus.measurementtool.MeasurementToolLayer;
+import net.osmand.plus.cairodrive.CairoDriveLayerTiming;
 import net.osmand.plus.plugins.PluginsHelper;
 import net.osmand.plus.plugins.accessibility.AccessibilityActionsProvider;
 import net.osmand.plus.plugins.development.OsmandDevelopmentPlugin;
@@ -1315,11 +1316,21 @@ public class OsmandMapTileView implements IMapDownloaderCallback {
 		// throwaway objects a second on the main looper during navigation, and the GC pauses it
 		// causes are felt as exactly the arrow jitter this is meant to avoid.
 		updateAACanvasOffset();
+		// Per-layer timing, car surface only. The 2026-08-04 drive gave the first CD_FRAME data we
+		// have ever had, and it inverted the plan: `over` - this loop - is 25.9 ms of a 46.9 ms
+		// frame (61%), while read+blit together are 32%. So the VirtualDisplay rewrite is not the
+		// lever; whatever is expensive in here is. The nine previously deferred findings are NOT it
+		// either - those model out at 0.2-0.4% combined. Rather than guess which of 23 layers costs
+		// 25 ms, measure it: CD_LAYER names the worst offenders per frame window.
+		boolean timeLayers = CairoDriveLayerTiming.isEnabled(isCarView());
 		for (int i = 0; i < layers.size(); i++) {
 			final int saveCount = canvas.getSaveCount();
 			canvas.save();
+			long layerStart = timeLayers ? System.nanoTime() : 0;
+			OsmandMapLayer timed = null;
 			try {
 				OsmandMapLayer layer = layers.get(i);
+				timed = layer;
 				// rotate if needed
 				if (!layer.drawInScreenPixels()) {
 					canvas.rotate(tileBox.getRotate(), c.x, c.y);
@@ -1332,7 +1343,13 @@ public class OsmandMapTileView implements IMapDownloaderCallback {
 				// skip it
 			} finally {
 				canvas.restoreToCount(saveCount);
+				if (timeLayers && timed != null) {
+					CairoDriveLayerTiming.record(timed, System.nanoTime() - layerStart);
+				}
 			}
+		}
+		if (timeLayers) {
+			CairoDriveLayerTiming.endFrame();
 		}
 		if (showMapPosition || PluginsHelper.isMapPositionIconNeeded()) {
 			drawMapPosition(canvas, c.x, c.y);

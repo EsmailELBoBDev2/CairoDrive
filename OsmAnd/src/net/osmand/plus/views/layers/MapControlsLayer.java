@@ -330,13 +330,11 @@ public class MapControlsLayer extends OsmandMapLayer {
 
 	@Override
 	public void onDraw(Canvas canvas, RotatedTileBox tileBox, DrawSettings nightMode) {
-		// Same guard, same reason as MapInfoLayer.onDraw. updateControls walks every MapButton,
-		// allocates a fresh list to do it, and resolves night mode through FragmentManager tag
-		// lookups - all to maintain phone-screen buttons that are not drawn on the car surface
-		// (Android Auto supplies its own action strip).
-		if (view != null && view.isCarView()) {
-			return;
-		}
+		// updateControls stays OUTSIDE any isCarView() guard. It is state maintenance, not drawing:
+		// mapRouteInfoMenu.setVisible(), per-button setNightMode/setRouteDialogOpened/update(). Its
+		// own showBottomMenuButtons() folds in androidAutoAttached, i.e. upstream intends this to
+		// run DURING a car session so the phone's buttons stay correct for when the driver looks
+		// back at the phone. A guard here froze them at whatever state attach time left behind.
 		updateControls(nightMode);
 
 		if (invalidated) {

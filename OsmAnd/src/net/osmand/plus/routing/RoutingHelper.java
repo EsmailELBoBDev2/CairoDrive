@@ -892,7 +892,11 @@ public class RoutingHelper {
 	}
 
 	public int getLeftTimeNextTurn() {
-		return route.getLeftTimeToNextTurn(lastFixedLocation);
+		// Corrected too. If the arrival card is calibrated and the time-to-next-turn beside it is
+		// not, the two disagree on screen - and RouteCalculationResult.getLeftTimeToNextIntermediate
+		// subtracts a raw prefix sum from a corrected total, which can land on zero. That is the
+		// "0 min - 493 m" the head unit showed on the 2026-08-04 drive.
+		return etaCalibrator.correct(route.getLeftTimeToNextTurn(lastFixedLocation));
 	}
 
 	public int getLeftTimeNextIntermediate() {
@@ -900,7 +904,8 @@ public class RoutingHelper {
 	}
 
 	public int getLeftTimeNextIntermediate(int intermediateIndexOffset) {
-		return route.getLeftTimeToNextIntermediate(lastFixedLocation, intermediateIndexOffset);
+		return etaCalibrator.correct(
+				route.getLeftTimeToNextIntermediate(lastFixedLocation, intermediateIndexOffset));
 	}
 
 	public OsmandSettings getSettings() {

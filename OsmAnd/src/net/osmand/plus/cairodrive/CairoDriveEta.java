@@ -8,156 +8,145 @@ import net.osmand.Location;
 import java.util.Locale;
 
 /**
- * Corrects the remaining-time estimate against the speed the driver is actually managing.
+ * Corrects the remaining-time estimate against the pace the driver is actually keeping.
  *
  * <p>Upstream's ETA never learns. {@code RouteCalculationResult.getLeftTime} is
  * {@code afterLeftTime + distanceToNextTurn / averageSpeed}, where {@code afterLeftTime} is a
  * prefix sum computed once when the route is built and {@code getAverageSpeed()} is the ROUTER's
- * modelled speed - taken from the OSM {@code maxspeed} tag where one exists, and otherwise from the
- * routing profile's default for that road class. Nothing in that expression consults a GPS fix, so
- * the figure is a property of the map, not of the drive.
+ * modelled speed - OSM {@code maxspeed} where tagged, otherwise a profile default per road class.
+ * Nothing in that expression consults a GPS fix, so the figure describes the map, not the drive.
  *
- * <p>That is survivable in a country where {@code maxspeed} is widely tagged and traffic broadly
- * matches it. In Cairo it is not: most roads carry no {@code maxspeed} at all, so the router falls
- * back to defaults that assume free-flowing traffic, and the error compounds with distance. The
- * reported symptom is exactly what the arithmetic predicts - short estimates that get shorter the
- * longer the trip.
+ * <p>Measured on a real Cairo drive (2026-08-04, 76 samples over four legs): the static estimate
+ * was short on EVERY sample, mean absolute error 209 s, worst case 8.7 minutes short on a 5.4 km
+ * leg. So the correction is warranted. The first version of this class cut that error by 21% but
+ * was too volatile - the ratio swung between 0.26 and 1.04 within a single trip.
  *
- * <p>Worth being precise about what this is NOT. It is not traffic data. Waze produces good
- * estimates in Egypt without live traffic because its baseline speeds come from historical
- * per-segment averages built out of real driver traces; that is a dataset, and this fork has no
- * route to one. What it does have is one driver, driving the same city every day, whose own
- * observed speed is a perfectly good estimator of how far off the modelled speed is. So this
- * tracks the ratio
+ * <h3>Why v1 was volatile, and what changed</h3>
  *
- * <pre>observed speed / modelled speed for the segment being driven</pre>
+ * v1 compared an INSTANTANEOUS GPS speed against {@code getAverageSpeed()} of the current
+ * direction. Those are not the same kind of quantity: {@code getAverageSpeed()} is
+ * {@code segment distance / segment time} for a whole direction, so it already contains the
+ * router's junction and deceleration penalties, while the GPS sample is a single moment - and v1
+ * additionally discarded every fix below 2 m/s, throwing away exactly the stops that make Cairo
+ * slow. Worse, the modelled value changes whenever the road class changes, so the ratio jumped at
+ * every turn rather than describing the trip.
  *
- * smooths it, and scales the remaining static estimate by it.
+ * <p>v2 compares like with like. It accumulates the distance actually covered and the wall-clock
+ * time that took - <em>including</em> every red light and jam - alongside the time the router would
+ * have predicted for that same distance. The ratio is then simply
  *
- * <p>Deliberate constraints, because a confidently wrong ETA is worse than an optimistic one:
+ * <pre>modelled time for the distance covered / actual time it took</pre>
+ *
+ * which is dimensionless, stop-inclusive on both sides, and converges over a trip instead of
+ * oscillating. {@code corrected = static / ratio}.
+ *
+ * <h3>Constraints, because a confidently wrong ETA is worse than an optimistic one</h3>
  * <ul>
- *   <li>The ratio is clamped. A driver stuck behind a bus for a minute must not turn a 20 minute
- *       trip into two hours.</li>
- *   <li>Nothing is applied until enough moving samples have accumulated, so the first minute of a
- *       drive shows upstream's number rather than a ratio derived from pulling out of a parking
- *       space.</li>
- *   <li>Stationary and near-stationary fixes are ignored entirely. Traffic lights are not evidence
- *       about road speed, and including them would make every Cairo estimate diverge.</li>
- *   <li>The output is rate-limited so the arrival time does not visibly jitter between fixes.</li>
+ *   <li>Clamped both ways, so one bus or one empty stretch cannot rewrite the estimate.</li>
+ *   <li>Nothing is applied until a minimum distance has been covered - the first 400 m of a trip
+ *       is pulling out of a parking space, not evidence about the road ahead.</li>
+ *   <li>Implausible jumps between fixes (GPS glitches) are discarded rather than integrated.</li>
+ *   <li>{@link #correct} is a PURE function: no mutation, no rate limiting, no shared state
+ *       between callers. v1 rate-limited inside correct(), which meant whichever caller asked
+ *       first pinned the value every other caller saw for the next five seconds - across threads,
+ *       with non-volatile fields. That is also why the arrival card could disagree with the
+ *       distance beside it.</li>
  * </ul>
  *
- * <p>Emits {@code CD_ETA} so a drive log can show whether this helped: it carries the raw estimate,
- * the corrected one, the live ratio and the sample count, and can be compared against the actual
- * arrival time at the end of the trip.
+ * <p>Emits {@code CD_ETA} so the correction can be judged against actual arrival rather than
+ * trusted.
  */
 public class CairoDriveEta {
 
-	/** Ignore fixes below this speed - stopped at a light says nothing about the road. */
-	private static final float MIN_SPEED_MPS = 2.0f;
+	/** Distance covered before the ratio is trusted at all. */
+	private static final double MIN_DISTANCE_M = 400;
 
-	/** Modelled speeds below this are not credible enough to divide by. */
+	/** Ignore modelled speeds at or below this - RouteDirectionInfo stores exactly 1 as a sentinel. */
 	private static final float MIN_MODELLED_SPEED_MPS = 1.0f;
 
-	/**
-	 * Ratio bounds. 0.25 means "you are managing a quarter of the modelled speed" - about as bad as
-	 * Cairo gets before the trip is not really moving; 1.5 allows for genuinely under-tagged roads
-	 * where the driver comfortably exceeds a conservative default.
-	 */
-	private static final float MIN_RATIO = 0.25f;
-	private static final float MAX_RATIO = 1.5f;
+	/** A single fix-to-fix step further than this is a GPS glitch, not travel. */
+	private static final double MAX_STEP_M = 400;
 
-	/** Smoothing factor. Low, because the useful signal is the trip average, not the last minute. */
-	private static final float ALPHA = 0.05f;
+	/** Fix-to-fix gaps longer than this mean the app was backgrounded; do not integrate them. */
+	private static final long MAX_STEP_MS = 15_000;
 
-	/** Samples before the correction is trusted at all. At ~1 Hz this is roughly half a minute. */
-	private static final int MIN_SAMPLES = 30;
+	private static final double MIN_RATIO = 0.20;
+	private static final double MAX_RATIO = 1.60;
 
-	/** Do not restate the arrival time more often than this. */
-	private static final long OUTPUT_INTERVAL_MS = 5000;
-
-	private float ratio = 1.0f;
-	private int samples;
-	private long lastLoggedTime;
-	private int lastReportedSeconds = -1;
+	private double observedDistanceM;
+	private double observedTimeS;
+	private double modelledTimeS;
+	private Location lastFix;
 
 	/**
-	 * Feed one fix and the modelled speed the router expects for the segment being driven.
-	 *
-	 * @param location      the current fix; ignored when null, stationary, or without a speed
-	 * @param modelledSpeed the router's {@code getAverageSpeed()} for the current direction, m/s
+	 * Feed one fix plus the modelled speed the router expects for the segment being driven.
+	 * Synchronized because {@link #correct} is read from the UI thread, the Android Auto thread,
+	 * the notification thread and the live-monitoring thread.
 	 */
-	public void registerFix(@Nullable Location location, float modelledSpeed) {
-		if (location == null || !location.hasSpeed() || modelledSpeed < MIN_MODELLED_SPEED_MPS) {
+	public synchronized void registerFix(@Nullable Location location, float modelledSpeed) {
+		if (location == null) {
 			return;
 		}
-		float observed = location.getSpeed();
-		if (observed < MIN_SPEED_MPS) {
+		Location previous = lastFix;
+		lastFix = location;
+		if (previous == null || modelledSpeed < MIN_MODELLED_SPEED_MPS) {
 			return;
 		}
-		float sample = clamp(observed / modelledSpeed);
-		if (samples == 0) {
-			ratio = sample;
-		} else {
-			ratio = ratio + ALPHA * (sample - ratio);
+		double stepM = previous.distanceTo(location);
+		double stepMs = location.getTime() - previous.getTime();
+		if (stepMs <= 0 || stepMs > MAX_STEP_MS || stepM > MAX_STEP_M) {
+			// Backgrounded, or a jumped fix. Integrating either would corrupt the ratio.
+			return;
 		}
-		ratio = clamp(ratio);
-		samples++;
+		observedDistanceM += stepM;
+		observedTimeS += stepMs / 1000.0;
+		// What the router would have predicted for exactly this stretch.
+		modelledTimeS += stepM / modelledSpeed;
+	}
+
+	/** @return the observed/modelled pace ratio, clamped. 1.0 means the router was right. */
+	public synchronized double getRatio() {
+		if (observedTimeS <= 0 || modelledTimeS <= 0) {
+			return 1.0;
+		}
+		double ratio = modelledTimeS / observedTimeS;
+		if (Double.isNaN(ratio) || Double.isInfinite(ratio)) {
+			return 1.0;
+		}
+		return Math.max(MIN_RATIO, Math.min(MAX_RATIO, ratio));
+	}
+
+	public synchronized boolean isWarmedUp() {
+		return observedDistanceM >= MIN_DISTANCE_M && modelledTimeS > 0;
+	}
+
+	public synchronized double getObservedDistanceM() {
+		return observedDistanceM;
 	}
 
 	/**
-	 * @param staticSeconds upstream's uncorrected estimate
-	 * @return the corrected estimate, or the input unchanged while still warming up
+	 * Pure. Returns the input unchanged until warmed up, so every caller that asks at the same
+	 * moment gets the same answer and the arrival time cannot contradict the time-to-next-turn.
 	 */
 	public int correct(int staticSeconds) {
-		if (samples < MIN_SAMPLES || staticSeconds <= 0) {
-			lastReportedSeconds = staticSeconds;
+		if (staticSeconds <= 0 || !isWarmedUp()) {
 			return staticSeconds;
 		}
-		int corrected = Math.round(staticSeconds / ratio);
-		// Rate limit the visible number so it does not flicker between fixes. The underlying ratio
-		// keeps updating regardless; this only smooths what the driver reads.
-		long now = System.currentTimeMillis();
-		if (lastReportedSeconds >= 0 && now - lastLoggedTime < OUTPUT_INTERVAL_MS) {
-			// Let it move if it has drifted far enough to matter anyway.
-			if (Math.abs(corrected - lastReportedSeconds) < 30) {
-				return lastReportedSeconds;
-			}
-		}
-		lastLoggedTime = now;
-		lastReportedSeconds = corrected;
-		return corrected;
+		return (int) Math.round(staticSeconds / getRatio());
 	}
 
-	public boolean isWarmedUp() {
-		return samples >= MIN_SAMPLES;
-	}
-
-	public float getRatio() {
-		return ratio;
-	}
-
-	public int getSamples() {
-		return samples;
-	}
-
-	public void reset() {
-		ratio = 1.0f;
-		samples = 0;
-		lastLoggedTime = 0;
-		lastReportedSeconds = -1;
+	public synchronized void reset() {
+		observedDistanceM = 0;
+		observedTimeS = 0;
+		modelledTimeS = 0;
+		lastFix = null;
 	}
 
 	@NonNull
-	public String describe(int staticSeconds, int correctedSeconds) {
+	public synchronized String describe(int staticSeconds, int correctedSeconds) {
 		return String.format(Locale.US,
-				"static=%d corrected=%d ratio=%.3f samples=%d warm=%b",
-				staticSeconds, correctedSeconds, ratio, samples, isWarmedUp());
-	}
-
-	private static float clamp(float value) {
-		if (Float.isNaN(value) || Float.isInfinite(value)) {
-			return 1.0f;
-		}
-		return Math.max(MIN_RATIO, Math.min(MAX_RATIO, value));
+				"static=%d corrected=%d ratio=%.3f obsM=%.0f obsS=%.0f modS=%.0f warm=%b",
+				staticSeconds, correctedSeconds, getRatio(),
+				observedDistanceM, observedTimeS, modelledTimeS, isWarmedUp());
 	}
 }
