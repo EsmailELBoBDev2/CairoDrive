@@ -125,7 +125,8 @@ public final class SearchResultsScreen extends BaseSearchScreen implements Defau
 		// Anything the pane cannot describe (a track, a resumed route, a result with no position)
 		// still takes the old direct path - see PlaceDetailsScreen.canShow.
 		if (PlaceDetailsScreen.canShow(sr)) {
-			getScreenManager().push(new PlaceDetailsScreen(getCarContext(), settingsAction, sr));
+			getScreenManager().push(new PlaceDetailsScreen(getCarContext(), settingsAction, sr,
+					PlaceDetailsScreen.Origin.SEARCH_RESULTS));
 		} else {
 			openRoutePreview(settingsAction, sr);
 		}

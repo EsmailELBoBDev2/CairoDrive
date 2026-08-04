@@ -177,12 +177,60 @@ class POIScreen(
         loading = true
     }
 
-    override fun onClickSearchResult(point: SearchResult) {
-        val result = SearchResult()
+    /**
+     * Rebuilds the tapped result as the plain POI destination the rest of the car flow consumes.
+     *
+     * The phrase is carried over deliberately, and it is not optional. `SearchResult()` installs
+     * `SearchPhrase.emptyPhrase()`, whose `settings` field is null, and the POI branch of
+     * `QuickSearchListItem.getName` reads `requiredSearchPhrase.getSettings().getLang()` with no
+     * null check - so a POI result built with the no-arg constructor throws
+     * `NullPointerException` the moment anything asks it for its name. Every result reaching this
+     * screen comes from `SearchUICore` via `SearchHelper.runSearch`, so it always carries a phrase
+     * with real settings; the fix is to keep it rather than to guard the reader.
+     *
+     * The locale-resolved names and the OSM address ride along for the same reason: they are what
+     * `getName`, `getTypeName` and the detail pane's address row are built from, and dropping them
+     * made the destination anonymous once it left this screen.
+     */
+    private fun asDestination(point: SearchResult): SearchResult {
+        val result = SearchResult(point.requiredSearchPhrase)
         result.location = LatLon(point.location.latitude, point.location.longitude)
         result.objectType = ObjectType.POI
         result.`object` = point.`object`
-        openRoutePreview(settingsAction, result)
+        result.file = point.file
+        result.preferredZoom = point.preferredZoom
+        result.localeName = point.localeName
+        result.alternateName = point.alternateName
+        result.otherNames = point.otherNames
+        result.addressName = point.addressName
+        result.cityName = point.cityName
+        result.relatedObject = point.relatedObject
+        result.localeRelatedObjectName = point.localeRelatedObjectName
+        return result
+    }
+
+    /**
+     * B2 - a tapped POI gets the detail pane, the same as a tapped search result.
+     *
+     * Unlike the search flow the pane does NOT stay under route preview here: this task is one
+     * screen deeper already (Landing -> POICategories -> POIScreen), and the head unit caps a task
+     * at five templates. The pane therefore hands the destination back with `setResult` /
+     * `finish()` - a back operation, which returns the template to the host's quota - and this
+     * screen makes the same `openRoutePreview` call it made before B2. See
+     * [PlaceDetailsScreen.Origin] for the full accounting.
+     */
+    override fun onClickSearchResult(point: SearchResult) {
+        val result = asDestination(point)
+        if (PlaceDetailsScreen.canShow(result)) {
+            screenManager.pushForResult(
+                PlaceDetailsScreen(
+                    carContext, settingsAction, result, PlaceDetailsScreen.Origin.POI_LIST)
+            ) { obj: Any? ->
+                (obj as? SearchResult)?.let { openRoutePreview(settingsAction, it) }
+            }
+        } else {
+            openRoutePreview(settingsAction, result)
+        }
     }
 
 	override fun onDestroy(owner: LifecycleOwner) {

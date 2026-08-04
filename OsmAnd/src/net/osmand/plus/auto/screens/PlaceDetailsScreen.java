@@ -54,12 +54,11 @@ import net.osmand.util.MapUtils;
  *       heading, which is why the whole "where is it" story is one row rather than a labelled
  *       list of Address / Distance / Category rows. A denser pane is not more informative at
  *       70 km/h on the Ring Road, it is just a longer glance.</li>
- *   <li><b>Template quota.</b> A car app task may be five screens deep. Search is
- *       Landing -> Search -> <b>PlaceDetails</b> -> RoutePreview, which is four; this screen
- *       spends the fourth. That is also why the POI-category flow
- *       (Landing -> POICategories -> POIScreen -> RoutePreview) is deliberately <b>not</b> wired
- *       to this pane - it is already four deep and would hit the limit. Wiring it later means
- *       flattening that flow first, not adding a fifth push.</li>
+ *   <li><b>Template quota.</b> The host caps a task at five templates, so a pane that costs a
+ *       template has to be paid for out of a fixed budget. Search is
+ *       Landing -> Search -> <b>PlaceDetails</b> -> RoutePreview, which is four. The POI-category
+ *       flow is a screen deeper before the pane exists, so there the pane hands the destination
+ *       back instead of stacking on top of route preview - see {@link Origin}.</li>
  * </ul>
  *
  * <h3>RTL</h3>
@@ -70,12 +69,8 @@ import net.osmand.util.MapUtils;
  * backwards under RTL.
  *
  * <h3>Kill switch</h3>
- * {@link #isEnabled()} is a constant in this class rather than a {@code BuildConfig} field on
- * purpose: {@code OsmAnd/cairodrive.gradle} is shared with other work in flight and is not touched
- * here. The intended env var is {@code CAIRODRIVE_PLACE_DETAILS} (default {@code true}); when it
- * lands, point {@link #isEnabled()} at {@code BuildConfig.CAIRODRIVE_PLACE_DETAILS} and add it to
- * the {@code SESSION} flags line in {@code CairoDriveLogger}, so a drive log says whether the pane
- * was compiled in.
+ * {@code CAIRODRIVE_PLACE_DETAILS}, default true. {@code SESSION} records it, so a drive log says
+ * whether the pane was compiled in. Setting it false restores the direct-to-preview path.
  */
 public final class PlaceDetailsScreen extends BaseAndroidAutoScreen {
 
@@ -107,10 +102,98 @@ public final class PlaceDetailsScreen extends BaseAndroidAutoScreen {
 	/** Build-time kill switch: CAIRODRIVE_PLACE_DETAILS=false restores the direct-to-preview path. */
 	private static final boolean PLACE_DETAILS_ENABLED = BuildConfig.CAIRODRIVE_PLACE_DETAILS;
 
+	/**
+	 * What the host allows a single task to spend, from the Car App Library's template
+	 * restrictions: "The host limits the number of templates to display for a given task to a
+	 * maximum of five", and "if the template quota is exhausted and the app attempts to send a new
+	 * template, the host displays an error message to the user before closing the app."
+	 *
+	 * <p>Recorded here only so the {@code CD_AUTO} line can print the budget alongside the depth it
+	 * measured. Nothing in {@code androidx.car.app} enforces it - {@code ScreenManager.push} has no
+	 * size check at all, the stack is a plain {@code Deque} - so the first sign of getting this
+	 * wrong is the head unit closing the app mid-drive, which is exactly the failure a log line is
+	 * cheaper than.
+	 */
+	private static final int MAX_TEMPLATES_PER_TASK = 5;
+
+	/**
+	 * Which flow opened the pane, and therefore what Navigate has to do to stay inside
+	 * {@link #MAX_TEMPLATES_PER_TASK}.
+	 *
+	 * <h3>The accounting</h3>
+	 * The quota counts <b>templates sent in a task</b>, not screens; a back operation returns
+	 * quota ("the host detects when an app is popping a Screen from the ScreenManager stack and
+	 * updates the remaining quota based on the number of templates that the app is going backward
+	 * by"), and a same-type refresh costs nothing. So the number that matters is the deepest point
+	 * a flow reaches, not how many screens it visits.
+	 *
+	 * <p>Search reaches four: Landing, Search, PlaceDetails, RoutePreview. The POI flow already
+	 * reaches four without a pane - Landing, POICategories, POIScreen, RoutePreview - so pushing
+	 * the pane as a fifth is not merely "at the limit", it leaves the flow with no headroom, and
+	 * route preview is not a leaf:
+	 * <ul>
+	 *   <li>{@code NavigationSession.showMissingMapsScreen} pushes {@code MissingMapsScreen} on
+	 *       top of it, driven from {@code RoutePreviewScreen.updateRoute};</li>
+	 *   <li>{@code NavigationSession.onRequestPrivateAccessRouting} pushes
+	 *       {@code PrivateAccessScreen} on top of it - a routine prompt on Cairo side streets;</li>
+	 *   <li>the settings action in every one of these action strips pushes {@code SettingsScreen},
+	 *       which itself pushes {@code MapMagnifierScreen}.</li>
+	 * </ul>
+	 * Any of those is a sixth template, and a sixth template closes the app.
+	 *
+	 * <p>{@link Origin#POI_LIST} therefore hands back rather than stacking: Navigate calls
+	 * {@code setResult} + {@code finish()}, the host sees a pop and returns the template, and
+	 * {@code POIScreen} - which is still alive underneath - makes the same {@code openRoutePreview}
+	 * call it made before B2. The flow's peak stays at four, identical to today, and the fifth slot
+	 * stays free for the interstitials above.
+	 *
+	 * <p>{@code ScreenManager.remove(this)} after pushing preview would look equivalent and is not:
+	 * removing a screen that is not on top skips {@code popInternal} entirely, so the host never
+	 * sees a back operation and never returns the quota. The pop has to happen first.
+	 */
+	public enum Origin {
+		/** The search screen's own result list. Depth 3 at the pane; preview makes 4. */
+		SEARCH("search", false),
+		/** The results screen reached from a submitted query. Same depth as {@link #SEARCH}. */
+		SEARCH_RESULTS("searchResults", false),
+		/** The POI-category drill-down. Depth 4 at the pane, so Navigate hands back. */
+		POI_LIST("poiList", true);
+
+		@NonNull
+		private final String label;
+		private final boolean handsBack;
+
+		Origin(@NonNull String label, boolean handsBack) {
+			this.label = label;
+			this.handsBack = handsBack;
+		}
+
+		/** Short, stable token for the {@code CD_AUTO} line. */
+		@NonNull
+		public String getLabel() {
+			return label;
+		}
+
+		/**
+		 * Whether Navigate should return the destination to the screen below instead of pushing
+		 * route preview itself.
+		 */
+		public boolean handsBackToCaller() {
+			return handsBack;
+		}
+	}
+
 	@NonNull
 	private final Action settingsAction;
 	@NonNull
 	private final SearchResult searchResult;
+	/**
+	 * Named {@code flow}, not {@code origin}: {@link #resolveOrigin} and {@link #logOpened} already
+	 * use "origin" for the {@link LatLon} distances are measured from, and a field by that name
+	 * would be silently shadowed by that parameter inside the one method that needs both.
+	 */
+	@NonNull
+	private final Origin flow;
 
 	/**
 	 * Which fallback produced the address and the measuring origin on the last build of the
@@ -126,10 +209,11 @@ public final class PlaceDetailsScreen extends BaseAndroidAutoScreen {
 	private boolean logged;
 
 	public PlaceDetailsScreen(@NonNull CarContext carContext, @NonNull Action settingsAction,
-	                          @NonNull SearchResult searchResult) {
+	                          @NonNull SearchResult searchResult, @NonNull Origin flow) {
 		super(carContext);
 		this.settingsAction = settingsAction;
 		this.searchResult = searchResult;
+		this.flow = flow;
 		setMarker(PlaceDetailsScreen.class.getSimpleName());
 	}
 
@@ -238,16 +322,47 @@ public final class PlaceDetailsScreen extends BaseAndroidAutoScreen {
 	}
 
 	/**
-	 * Exactly what tapping the result used to do before this screen existed.
+	 * Exactly what tapping the result used to do before this screen existed - by two routes that
+	 * differ only in which screen makes the call.
 	 *
 	 * <p>{@code openRoutePreview} is the shared path in {@link BaseAndroidAutoScreen}: it pushes
 	 * {@code RoutePreviewScreen} for a result and, when the driver confirms, pops the whole task
 	 * back to the root, starts navigation and finishes. Calling it from here rather than from the
 	 * search screen changes nothing about that - {@code popToRoot} clears this screen and the
-	 * search screen alike - so Navigate is the pre-B2 behaviour with one screen in front of it.
+	 * search screen alike.
+	 *
+	 * <p>When the {@link Origin} hands back, this screen finishes first and the screen underneath
+	 * makes that same call with that same result. The driver sees the identical route preview and
+	 * the identical Start behaviour; the only difference is that Back from route preview returns to
+	 * the POI list rather than to a pane the driver has already acted on, which is the better of
+	 * the two anyway. What it buys is the template - see {@link Origin} for why the POI flow cannot
+	 * spend it.
 	 */
 	private void onNavigate() {
-		openRoutePreview(settingsAction, searchResult);
+		logNavigate();
+		// The depth test is not decoration: ScreenManager.remove() returns silently when the stack
+		// holds one screen, so a hand-back from a root pane would leave Navigate doing nothing at
+		// all. That cannot happen from POIScreen, which is always pushed onto something - but
+		// "nothing happens when the driver presses the only button" is a bad way to find out that
+		// an unforeseen entry point exists.
+		if (flow.handsBackToCaller() && stackDepth() > 1) {
+			// setResult before finish: Screen.setResult only records the value, and the host
+			// propagates it while the screen is being destroyed.
+			setResult(searchResult);
+			finish();
+		} else {
+			openRoutePreview(settingsAction, searchResult);
+		}
+	}
+
+	/**
+	 * Screens currently on the stack, which is one per template this task has outstanding.
+	 *
+	 * <p>{@code getScreenStack()} hands back a defensive copy, so this is a read with no way to
+	 * disturb the stack - the same call {@code NavigationSession.isRoutePreviewPresent} makes.
+	 */
+	private int stackDepth() {
+		return getScreenManager().getScreenStack().size();
 	}
 
 	@NonNull
@@ -445,7 +560,9 @@ public final class PlaceDetailsScreen extends BaseAndroidAutoScreen {
 	                       @NonNull LatLon origin, int lines, int extraRows) {
 		LatLon location = searchResult.location;
 		StringBuilder builder = new StringBuilder(192);
-		builder.append("placeDetails open type=").append(searchResult.objectType)
+		builder.append("placeDetails open flow=").append(flow.getLabel())
+				.append(" depth=").append(stackDepth()).append('/').append(MAX_TEMPLATES_PER_TASK)
+				.append(" type=").append(searchResult.objectType)
 				.append(" nameLen=").append(name.length())
 				.append(" addr=").append(addressSource)
 				.append(" cat=").append(Algorithms.isEmpty(category) ? 0 : 1)
@@ -459,5 +576,27 @@ public final class PlaceDetailsScreen extends BaseAndroidAutoScreen {
 				.append(" placesRows=").append(extraRows)
 				.append(" contentLimit=").append(getContentLimit());
 		CairoDriveLogger.getInstance().log(TRACE_TAG, builder.toString());
+	}
+
+	/**
+	 * One line when Navigate is pressed, saying which flow paid for the pane and how deep the task
+	 * is about to get.
+	 *
+	 * <p>{@code peak} is the answer to the only question that can close the app: the depth once
+	 * {@code RoutePreviewScreen} is on top. On the hand-back path this screen pops first, so the
+	 * peak equals the depth measured here; on the push path it is one more. If a drive log ever
+	 * shows {@code peak=5} the flow has no room left for {@code MissingMapsScreen},
+	 * {@code PrivateAccessScreen} or {@code SettingsScreen}, and the next such push closes the app
+	 * - which is a thing to read in a log rather than to discover on the Ring Road.
+	 */
+	private void logNavigate() {
+		int depth = stackDepth();
+		boolean handsBack = flow.handsBackToCaller();
+		CairoDriveLogger.getInstance().log(TRACE_TAG,
+				"placeDetails navigate flow=" + flow.getLabel()
+						+ " mode=" + (handsBack ? "handBack" : "push")
+						+ " depth=" + depth
+						+ " peak=" + (handsBack ? depth : depth + 1)
+						+ '/' + MAX_TEMPLATES_PER_TASK);
 	}
 }

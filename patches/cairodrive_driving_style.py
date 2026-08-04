@@ -25,7 +25,10 @@ WHY THIS IS A BUILD-TIME PATCH AND NOT A FILE IN THE REPO
 OFF BY DEFAULT, AND WHY THAT IS NOT NEGOTIABLE ON THE NEXT DRIVE
     Every rule this script injects is gated on a new boolean rendering property,
     `cairodriveDriving`, which is FALSE unless the user turns it on. A build that carries this
-    patch renders byte-for-byte like stock OsmAnd until the switch is flipped.
+    patch renders byte-for-byte like stock OsmAnd until the switch is flipped. All four changes
+    ride the ONE property on purpose: the text half and the icon half of the glance style are
+    two halves of one idea, and a screen with de-hued labels but full-colour icons is neither
+    style and is not worth a drive.
 
     That is deliberate. This build already carries B1 (the VirtualDisplay + Presentation render
     path), which is being measured on the next drive. A render-style change moves map
@@ -104,19 +107,82 @@ WHAT IS CHANGED, AND WHY EACH
        actually uses. Halo colours are left alone too - they are near-white by day and dark by
        night in every one of these groups, and both work with a neutral ink.
 
+    4. THE LONG TAIL OF POI ICONS OFF IN CAR MODE  (3 groups, 943 icon assignments today)
+       ICONS CANNOT BE RECOLOURED. That is not an opinion, it is the schema: the point-symbol
+       output set is icon / icon_2..5 / icon__1..3 / shield / iconOrder / iconVisibleSize /
+       intersectionSize[Factor|Margin] / iconMinDistance / icon_shift_p[xy] - checked against
+       both renderers, RenderingRuleStorageProperties.java for the legacy path and
+       MapStyleBuiltinValueDefinitions_Set.h for the OpenGL core. Not one of them is a colour.
+       The only colour outputs in the whole schema are textColor/textHaloColor (text),
+       color*/shadowColor/onewayArrowsColor (lines and polygons) and attrColorValue. A map icon
+       is a PNG in style-icons/ and the style can choose WHICH png, not what colour it is.
+
+       So the colour comes out by removing the icons, not by tinting them. Combined with change
+       3, which already drained the hue out of POI labels, the result is that in car mode at
+       navigation zooms the entire POI layer is achromatic: grey words, no coloured glyphs and
+       no coloured shield discs behind them.
+
+       WHICH ICONS. Upstream's <point> section is, at the top level, an ordered if/else chain
+       (RenderingRulesStorage.registerTopLevel flattens it, registerGlobalRule re-chains rules
+       that share a tag/value in document order, and RenderingRuleSearchRequest.visitRule breaks
+       on the first branch that matches). The car profile's own block comes FIRST in that chain,
+       so anything it claims never reaches what follows. That block is upstream's own answer to
+       "what does a driver need to see": fuel, charging, services, rest areas, speed cameras,
+       passing places, mini roundabouts, turning circles, fords, level crossings, traffic
+       calming, parking entrances, border control, car repair/parts/tyres/wash, vehicle ramp
+       and inspection, emergency phones.
+
+       This change appends one suppression rule to three groups that come AFTER it and that
+       upstream itself marks hideIcons="false" - its own "this is a hideable map icon" flag:
+
+         - the long tail (upstream labels it "Icons that can be hidden using hideIcons option"):
+           886 icon assignments covering natural features, emergency and health, accommodation,
+           tourism and entertainment, sport and leisure, and ~670 lines of shops and amenities.
+           This is the Cairo screen: every pharmacy, mosque, cafe, bank and phone shop;
+         - barriers (55): gates, bollards, spikes, chains, lift gates;
+         - power and utility poles (2 icons, but one black dot per pole from z16 along every
+           mapped street).
+
+       There is NO exception list and that is the point - the if/else ordering above IS the
+       exception list, maintained by upstream. A driver keeps every icon the car block claims.
+
+       WHY THIS IS NOT A BARE JUDGEMENT CALL. The rules carry moreDetailed="false", and so does
+       upstream's car block for traffic signals, pedestrian crossings and barriers - i.e.
+       upstream has ALREADY decided a car driver sees those only if they asked for more detail.
+       The long tail then hands them straight back through the fall-through, which is the same
+       shape of defect as change 1's maxzoom cap. This change makes the car profile's own stated
+       policy actually hold. Ticking "More details" restores everything, exactly as upstream
+       intends.
+
+       WHAT IS DELIBERATELY LEFT DRAWING: hazards (slippery road, falling rocks, flood - a
+       driver can act on those), railway and metro stations, tram stops and halts (landmarks,
+       and Cairo Metro stations are how people navigate the city), favourites, waypoints and the
+       location dots. Each is a separate hideIcons group and each is listed in ICON_GROUPS below
+       with its reason, so the decision is reviewable rather than implicit.
+
+       LABELS ARE NOT REMOVED, and that is deliberate rather than an oversight. A coloured glyph
+       on a coloured disc is what grabs the eye; the grey word beside it is what a driver can
+       skip in peripheral vision. Change 3 already made the word quiet. Removing the loud half
+       and keeping the quiet half is the glance hierarchy working as intended - the POI is still
+       on the map for the moment the driver actually wants it. If the next drive says otherwise
+       it is one more <text> rule, not a redesign.
+
 WHAT THIS DELIBERATELY DOES NOT DO
     - It does not flatten the polygon palette. That was the first idea and MEASURING IT KILLED
       IT: with `moreDetailed` off, which is the default, landuseResidentialColor already
       resolves to $null and landuseCommercial/Retail/Railway already resolve to $defaultColor.
       The built-up landuse tints a driver sees at navigation zoom are largely already collapsed,
       and a patch to "fix" them would have been an inert diff that looked like work.
-    - It does not recolour icons. Map icons are bitmaps from style-icons/; a render style cannot
-      tint them. Reducing icon colour means shipping a different icon set, which is its own
-      change and its own drive.
-    - It does not hide POI classes upstream has NOT already classified as driver-noise. There is
-      a long tail of shop and amenity icons with no baseAppMode gate at all, and hiding them is
-      a defensible next step - but it is a JUDGEMENT about what a driver wants, not a fix to an
-      obvious artifact, so it belongs in its own build measured on its own drive.
+    - It does not thin icon DENSITY with iconVisibleSize or intersectionSizeFactor, though both
+      exist and both would work without new bitmaps. Three reasons. (a) intersectionSizeFactor
+      and iconMinDistance are OpenGL-core-only - RenderingRuleStorageProperties.java does not
+      even declare iconMinDistance, and OsmandRenderer never reads intersectionSizeFactor - so
+      the two cores CI can build would render differently and a drive log could not say which
+      was measured. (b) iconVisibleSize is a COLLISION BOX, not a draw size: OsmandRenderer uses
+      it only to build the QuadTree rect, so enlarging it changes WHICH icon wins a collision.
+      That is a screen that reshuffles rather than calms, and it is close to unattributable in a
+      log. (c) With the long tail gone, density is no longer what is on the screen.
+    - It does not recolour icons, because no renderer in this project can. See change 4.
     - It does not touch cairodrive.gradle, the CI workflow, or any Java. See the report.
 
 USAGE
@@ -142,7 +208,8 @@ PROPERTY_DECL = (
     '\t\t     Configure map. -->\n'
     '\t\t<renderingProperty attr="%s" name="CairoDrive driving style"\n'
     '\t\t\tdescription="Tune the map for glancing at speed: keep car POI suppression above zoom'
-    ' 17, drop house numbers, and draw POI labels in one neutral ink."\n'
+    ' 17, drop house numbers, draw POI labels in one neutral ink, and hide the long tail of shop,'
+    ' amenity, barrier and pole icons. Turn on More details to get them all back."\n'
     '\t\t\ttype="boolean" possibleValues="" category="hide"/>' % PROPERTY
 )
 

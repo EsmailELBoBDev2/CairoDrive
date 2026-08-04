@@ -234,7 +234,8 @@ public final class SearchScreen extends BaseSearchScreen implements DefaultLifec
 		// by reloadHistoryInternal) and is deliberately excluded by PlaceDetailsScreen.canShow:
 		// that card is a one-tap resume, and a confirmation pane in front of it is a regression.
 		if (PlaceDetailsScreen.canShow(sr)) {
-			getScreenManager().push(new PlaceDetailsScreen(getCarContext(), settingsAction, sr));
+			getScreenManager().push(new PlaceDetailsScreen(getCarContext(), settingsAction, sr,
+					PlaceDetailsScreen.Origin.SEARCH));
 		} else {
 			openRoutePreview(settingsAction, sr);
 		}
