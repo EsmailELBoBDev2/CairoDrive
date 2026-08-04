@@ -1500,6 +1500,47 @@ public class RouteCalculationResult {
 		return listDistance.length > index ? listDistance[index] : 0;
 	}
 
+	/**
+	 * The point {@code meters} further along THIS route from where the driver currently is,
+	 * measured along the road rather than across it, with the along-route distance actually
+	 * reached.
+	 *
+	 * <p>Distinct from {@link #getRouteLocationByDistance(int)}, which compares
+	 * {@code MapUtils.getDistance(locations.get(currentRoute), candidate)} - a straight line. That
+	 * is fine for its own callers, which look 15 m back to work out a heading, and wrong for
+	 * anything that means "this far along the road": on a flyover ramp or a route that doubles
+	 * back, 600 m of road can be 200 m of straight line, and on a loop the straight-line threshold
+	 * may never be met at all, so the method returns null and the caller silently does nothing.
+	 *
+	 * <p>{@code listDistance} is already cumulative distance remaining to the end, so the
+	 * along-route distance between two indexes is exactly their difference - no new computation,
+	 * and exact rather than approximated.
+	 *
+	 * @return {@code {location, alongRouteMetres}}, or null when less than {@code meters} of route
+	 * remains - which callers must treat as "do not do the thing", not as an error.
+	 */
+	@Nullable
+	public Object[] getLocationAheadAlongRoute(int meters) {
+		// Snapshotted once. currentRoute is a plain int mutated from the location callback while
+		// anything reading it may be on the routing executor; re-reading it mid-walk would let the
+		// start of the measurement and its end disagree.
+		int from = currentRoute;
+		if (meters <= 0 || from < 0 || from >= locations.size() || listDistance.length <= from) {
+			return null;
+		}
+		int startRemaining = listDistance[from];
+		if (startRemaining < meters) {
+			return null;
+		}
+		for (int i = from + 1; i < locations.size() && i < listDistance.length; i++) {
+			int travelled = startRemaining - listDistance[i];
+			if (travelled >= meters) {
+				return new Object[] {locations.get(i), travelled};
+			}
+		}
+		return null;
+	}
+
 	public int getCurrentStraightAngleRoute() {
 		return Math.max(currentStraightAngleRoute, currentRoute);
 	}

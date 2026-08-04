@@ -258,11 +258,18 @@ class RouteRecalculationHelper {
 				// A real calculation has been queued behind this one. It gets the CPU.
 				return;
 			}
-			Location rejoin = previous.getRouteLocationByDistance(REPAIR_PROBE_REJOIN_M);
-			if (rejoin == null) {
+			// Along the road, not across it. getRouteLocationByDistance measures a STRAIGHT LINE
+			// from the current position, so on a flyover ramp or a route that doubles back it
+			// picks a point far further along than asked for - and on a loop it never meets the
+			// threshold at all and returns null, so the probe would silently never run. Both would
+			// corrupt the one measurement this whole exercise depends on.
+			Object[] ahead = previous.getLocationAheadAlongRoute(REPAIR_PROBE_REJOIN_M);
+			if (ahead == null) {
 				// Less than 600 m of route left. Nothing to rejoin to, and nothing to learn.
 				return;
 			}
+			Location rejoin = (Location) ahead[0];
+			int alongRouteM = (Integer) ahead[1];
 			lastRepairProbeAt = now;
 
 			RouteCalculationParams probe = new RouteCalculationParams();
@@ -292,7 +299,14 @@ class RouteRecalculationHelper {
 			CairoDriveLogger.getInstance().log("CD_REROUTE", "repairProbe"
 					+ " repairMs=" + elapsedMs
 					+ " straightM=" + straightM
-					+ " rejoinAheadM=" + REPAIR_PROBE_REJOIN_M
+					// Both are logged because they answer different questions. straightM is what
+					// the router was actually given and is the like-for-like comparison against
+					// CD_ROUTE_TIMING's own straightM. alongRouteM is how far ahead on the old
+					// route the rejoin point sits, i.e. how much route a real repair would have
+					// reused. They diverge exactly where the road curves, and the gap between them
+					// is itself worth seeing.
+					+ " alongRouteM=" + alongRouteM
+					+ " askedM=" + REPAIR_PROBE_REJOIN_M
 					+ " ok=" + probeResult.isCalculated()
 					+ " - result DISCARDED, navigation unaffected");
 		} catch (Throwable t) {
