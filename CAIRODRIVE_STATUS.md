@@ -1,8 +1,8 @@
 # CairoDrive — what is done, what is not, and why
 
-Living status of the performance and reroute work. Kept in the repo on purpose: this used to
-exist only inside a chat, which meant the only record of *why* something was not done could be
-lost, and a later session would re-raise a settled question or re-derive a falsified one.
+Living status. Kept in the repo on purpose: this used to exist only inside a chat, which meant
+the only record of *why* something was not done could be lost, and a later session would re-raise
+a settled question or re-derive a falsified one.
 
 Update this file in the same commit that changes an item's state.
 
@@ -10,141 +10,129 @@ Last updated: 2026-08-04, branch `dev`.
 
 ---
 
-## Two different problems, and they keep getting conflated
+## Everything below is IN the tree. None of it has compiled.
 
-| | State |
-|---|---|
-| **Reroute happening over and over** (reroute after reroute while turning around) | **Fixed and shipping** |
-| **A single reroute taking 4–8 s** | **Not fixed.** The next drive measures it; it does not speed it up |
+29 commits since the last green build (`351d535`). Every CI run since was cancelled by
+concurrency — commits landed faster than a ~19 minute build.
 
-Everything below is about the second one unless marked otherwise.
+**One definite compile error was found and fixed by accident, not by CI**: `@Override` had been
+left annotating a *field* in `MapViewTrackingUtilities` when the N3 filter's field was inserted
+between the annotation and the method it belonged to. That would have failed every build. It was
+caught in an agent's report. There may be more of the same kind.
 
 ---
 
 ## Done
 
-### Compiled and green (last successful build: `351d535`)
+### Routing / reroute
 
 | Item | What |
 |---|---|
-| — | Off-route hysteresis: three compounding rules fixed + hard 12 s timeout. Six fix patterns simulated before the default was flipped on |
-| — | ETA learns from real driving including stops. Mean absolute error down 21% (32% on median) over 76 samples |
-| **P3** | Android Auto first frame fires on `MAPS_INITIALIZED` instead of the whole init chain (`INDEX_REGION_BOUNDARIES` alone measured 1150–1300 ms) |
-| **P7** | Hardware canvas behind `CAIRODRIVE_HW_CANVAS`, default on |
-| **P8** | Track recording: one connection + WAL + `synchronous=NORMAL` instead of open/close per point |
-| **D2** | Mobile-data consent time-boxed to 10 minutes instead of process-lifetime |
-| **N1** | GNSS health recorded as `gnss=OK|DEGRADED` (55% of the 2026-08-04 drive's fixes had `satsUsed=0` while claiming 2.1 m accuracy) |
-| — | Security: AIDL receiver not exported; `ContextCompat.registerReceiver` closes the API 24–32 hole; notification receivers un-exported with `setPackage()` |
-| — | `ArabicNormalizer` `charAt(0)` bug — `٢٦ يوليو` now matches `26 يوليو`, verified by codepoint |
-| — | Estedad (Naskh) added to the asset manifest. Nastaliq was the only Arabic-script font and it is the wrong style for Egyptian signage |
-| — | `CD_LAYER` per-layer frame timing |
-| — | Tile downloads gated on metered connections, with `CD_DATA` so the gate is never silent |
+| **4** | **Partial repair, LIVE.** A deviation routes ~600 m to a rejoin point on the previous route and splices the untouched tail, instead of a full search to the destination. Tail deep-copied, `prepareResult` re-run over the whole spliced list so turns are correct *by construction*, joint verified to 1 m. Falls back to a full search on every failure path |
+| **5** | Region point queries memoised (~4 per calculation over two points, each a synchronized `regions.ocbf` binary search + polygon ray-cast). Invalidated on every map change. `regionCache=` in the log |
+| **6** | **Speculative precompute.** The reroute for a missed turn is computed before the turn is missed. Serialised on the routing worker, dropped if a real calculation queues, 45 s rate limit, expires at 2 min / 120 m |
+| **7** | HH alternatives, **alternating per calculation** so one drive carries both arms. `alt=` per line |
+| — | Off-route hysteresis: three compounding rules fixed + 12 s hard timeout. Six patterns simulated before flipping the default |
+| — | ETA learns from real driving including stops. MAE −21% (−32% median) over 76 samples |
+| — | `evalWaitInterval` capped 120 s → 15 s. Two minutes of silently refusing reroutes read as the app giving up |
+| — | Private-access probe skipped on reroutes — a JNI round trip resolving both endpoints, feeding a dialog nobody can answer while driving |
+| — | Reroute result cache — an oscillating driver re-asks a question answered seconds ago |
+| — | **Upstream index-space bug fixed** (`RouteProvider`): a location index was slicing a segment-indexed list |
 
-### Written and pushed, but **never compile-checked**
-
-Every CI run from `ad816c0` onward was cancelled by concurrency — commits landed every 5–14
-minutes while a build takes ~19. The last conclusive result predates all of this.
-
-**`CairoDriveCarPresentation` calls into `net.osmand.core.android.AtlasMapRendererView`, a
-prebuilt binding whose source is not in this repo. CI is the only place its API shape can be
-verified. A compile failure there is the expected failure mode.**
+### Rendering / Android Auto
 
 | Item | What |
 |---|---|
-| **B1** | VirtualDisplay + `Presentation`. Same view stack the phone uses, on a display backed by the car surface. Falls back to offscreen-and-blit on any failure, latched, reason in `CD_PRESENT` |
+| **B1** | VirtualDisplay + `Presentation`. Same view stack the phone uses, on a display backed by the car surface. Latched fallback, reason in `CD_PRESENT` |
+| **B2** | Place-detail pane on Android Auto — there was none. Wired into search *and* the POI flow via hand-back (`setResult`/`finish`) so the template quota peak stays at 4 of 5 |
+| **B3** | Glance style: car POI suppression uncapped past z17, house numbers off, POI label ink collapsed to one grey pair, and the long tail of shop/amenity/barrier/pole **icons** suppressed at z15+. **OFF by default** — it moves the same `CD_FRAME` numbers B1 is measured on |
+| **B5** | Search debounce — every keystroke used to start a full `.obf` index scan |
+| **P3** | AA first frame on `MAPS_INITIALIZED` instead of the whole init chain |
+| **P7** | Hardware canvas, default on |
+| **P9** | Baseline profile (`src/main/baseline-prof.txt` + profileinstaller, plugin-free path) |
 | — | Head unit keeps the manoeuvre card during a reroute instead of blanking to a spinner |
-| — | `pre=` — times the pre-search block (missing-maps check, private-access probe, region lookup) |
-| — | `repairProbe` — shadow-times a 600 m repair search and discards the result |
-| — | Private-access probe skipped on reroutes |
-| — | `CD_REROUTE` — dropped requests, dispatch, and total dispatch→result span |
-| — | `SESSION` header records `hwCanvas` and `presentation`; `CD_ITINERARY` routed to the file instead of logcat |
+
+### Navigation / position
+
+| Item | What |
+|---|---|
+| **N1** | GNSS health as `gnss=OK\|DEGRADED` |
+| **N2** | Arrow no longer un-snaps, and voice no longer goes silent, on a recalculation the driver did not cause |
+| **N3** | Stationary hold. Thresholds **simulated, not chosen** — the naive "2 km/h" froze 13.4% of fixes from a car moving at 3 km/h. Applied at the provider *and* the tracking utilities, because they gate different things |
+| **N4** | Instrumented (`CD_FIXRATE`), not changed — the premise is unproven |
+| **N6** | Offline HMM/Viterbi map matching, consumed for display only. Re-projects onto the matched segment; stands down when routing already snapped |
+| **N7** | Speech lead — additive only, never moves an existing prompt |
+
+### Security
+
+| Item | What |
+|---|---|
+| **S1** | AIDL receiver un-exported, plus the API 24–32 hole the first fix missed |
+| **S2** | OSM password not `.makeShared()` |
+| **S3** | Both exported AIDL `<service>` blocks removed |
+| — | `osmand.api://` read commands now check the caller. `get_info` was handing GPS position, destination, ETA and routing analytics to any zero-permission app |
+| — | POI `SearchResult` NPE fixed at the root — latent, and the place-detail pane would have made it unconditional |
+
+### Correctness / data
+
+`C1`–`C10` · `D2` `D3` `D6` · `P8` `P10` · `ArabicNormalizer` `charAt(0)` · Estedad (Naskh) in
+the font manifest · `CD_LAYER` per-layer timing · metered tile gate with `CD_DATA`
 
 ---
 
-## Not done — and why
+## Not done, and why
 
-| # | Item | Why not |
-|---|---|---|
-| 4 | **Partial repair** — route 600 m to a rejoin point on the old route and splice the tail, instead of a full search to the destination | **The big one, if it works.** Blocked on `repairProbe`: the whole technique assumes a short route is proportionally cheaper on this hardware, and it might not be — HH's cost is dominated by loading and searching the network around each endpoint. If that fixed cost dominates, a 600 m repair costs nearly what an 8 km search does and the idea is worthless here. Second reason to be slow: a bad splice produces a route that **looks correct on the map and gives the wrong turn instruction** |
-| 5 | Cut the duplicated region queries (~4 per calculation over essentially two points, each a synchronized binary search over `regions.ocbf` plus a polygon ray-cast, because the quad-tree is never built on Android) | Waiting on `pre=` to say whether the cost is actually there. Small either way |
-| 6 | Speculative precomputation at junctions — compute the alternative before the driver misses the turn | Depends on 4. A full 8 km search per junction is ~13% duty cycle on one of this phone's two big cores, continuously, on a device already at 46.9 ms/frame. Only affordable if repairs are cheap |
-| 7 | Enable the alternatives switch that already exists in the tree but is off (`HHRoutingConfig.CALC_ALTERNATIVES`) | Would be a third render/routing variable in a drive already testing B1 and the card change. One at a time |
-| — | Raise the car frame cap 20 → 30 | **Done on the B1 path only.** On the offscreen path a frame costs 46.9 ms, so a 33 ms budget cannot be met — asking for more frames queues work that cannot be delivered. The cap was never the limiter there |
-
-## Also not done — found while auditing, not part of the four above
-
-Listed separately because these are not gated on the next drive. They are simply open.
-
-| Item | Why it is still open |
+| Item | Reason |
 |---|---|
-| **`osmand.api://` has no caller validation** | `ExternalApiHelper` does not check which app is calling, and `get_info` returns precise location and destination. Any app on the phone can ask. **Found and described, never fixed.** The only genuine security hole still open in this tree |
-| `evalWaitInterval` is only measured, not fixed | It grows ×1.5 up to **120 s**, and while it is running a deviation is refused silently with nothing retrying. `CD_REROUTE dropped` now records it; the behaviour is unchanged. Fixing it means deciding what the cap should be, which wants one drive's data first |
-| Arrow un-snaps on **any** recalculation | `RoutingHelper:544` gates the projection on `inRecalc`, which is true for a target change or a settings change too — not only a genuine deviation. Correct when off-route, misleading otherwise. Narrow fix, moderate risk |
-| Voice is silent for the whole recalculation | Prompts are interrupted while `inRecalc`. Same window as the blank card, and the card fix does not address it |
-| No reroute result cache | A driver oscillating at a junction re-asks a question answered seconds earlier. Free to a system with no marginal query cost. Needs the warm-signature discipline (`RouteProvider:306-336`) to avoid serving a stale route |
-| `RouteProvider:708-714` index-space bug | Upstream slices a segment-indexed list with a location index. Inert today because the HH branch discards the result anyway — but it stops being inert if anything changes at `RoutePlannerFrontEnd:460`. Fix on its own commit |
+| **Recoloured map icons** | **Impossible as scoped.** Icons are bitmaps; the entire point-symbol output set (`icon`, `iconOrder`, `iconVisibleSize`, collision controls) contains no colour property. Verified against both renderers. B3 removes them instead, which achieves the colour *and* draw-cost reduction |
+| **N8** — tighten the 120 m deviation threshold | Correctly held on N1's data. Tightening before reading it trades missed reroutes for spurious ones |
+| **N6**: cache the local graph across fixes; speed-consistency term | Optimisations, not gaps |
+| **N7**: roundabouts; arrival clause; the long sentence still overrunning the junction | The last is structurally forced, not a choice |
+| **D4 / D5** — catalogue and help-article gating | Current state never confirmed. Not claimed either way |
 
-## Item codes that could not be mapped
+## Pre-existing, found not caused
 
-The original planning table used codes `S3, C9, P9, C2, C3, C7, C8, N2–N8, B2, B3, B5`. That
-table lived in a chat and was never committed, and the mapping is no longer recoverable with
-confidence. Rather than guess, they are recorded here as unknown. Everything in the Done
-sections above was verified by reading the tree, not from memory.
+- `Landing → Search → PlaceDetails → Settings → MapMagnifier` is **already 5 templates**, at the
+  host's per-task ceiling. Exhausting it does not degrade — the host closes the app.
+- Four one-shot user-initiated paths read `getLastKnownLocation()` into routing. None is on the
+  per-fix path, and N6's route-snapped stand-down covers the case.
 
-**This file exists so that does not happen again.**
+## Needs a human, not a build
+
+The Arabic strings in B2 are an agent's, not a translator's — `الاتجاهات` for Navigate.
+
+---
 
 ## Dropped
 
 | Item | Why |
 |---|---|
-| **D1** — resume a download after the app is closed | **Architecturally blocked.** `.obf` maps arrive as zip streams: the bytes downloaded are compressed, the bytes on disk are decompressed, and there is no way to map one to the other, so no byte offset can be requested. `ZipInputStream`'s inflater state cannot be restored mid-stream either. **Resume *within* a download already exists** — HTTP `Range`, 15 retries, 8 s apart |
-| **B4** — OBD | Owner's decision. Verified absent from the tree |
-| Lowering `recalculateDistance` from 20 km on its own | Only affects the `BinaryRoutePlanner` path, which the HH branch pre-empts. Recorded so nobody rediscovers it |
-
----
+| **D1** — resume a download after the app closes | **Architecturally blocked.** `.obf` maps arrive as zip streams: bytes downloaded are compressed, bytes on disk are decompressed, and no offset maps between them. Resume *within* a download already exists (HTTP `Range`, 15 retries) |
+| **B4** — OBD | Owner's decision |
+| Lowering `recalculateDistance` from 20 km alone | Only affects the `BinaryRoutePlanner` path, which HH pre-empts |
 
 ## Settled — do not re-open
 
-- **Route calculation speed itself.** Six hypotheses were measured on-device and all six were
-  wrong: cold start, warming the routing context, the native memory cap, this fork's priority
-  rules, a stale map, and a silent A* fallback. Do not propose these again.
-- **Google Places key**: daily quota cap set; rotation declined; SHA-1 restriction left as is.
-- **Online OSM routing**: recommended against — needs network per reroute, and OSRM/GraphHopper
-  read the same `maxspeed` tags that make the offline estimate what it is.
-
----
-
-## Why every deviation is a full search (verified, three independent reasons)
-
-OsmAnd *has* a repair mechanism, `RoutePlannerFrontEnd.getRecalculationEnd`. It is dead here:
-
-1. `RoutePlannerFrontEnd:460` — the HH C++ branch passes a hardcoded `null` and returns before
-   the splice code at `:494`/`:733`. Drive logs show `fast=SUCCESS`, so this is the live branch.
-2. `RoutingConfiguration:63` — `recalculateDistance = 20000f`. Only route beyond 20 km is reused,
-   so an 8 km Cairo route never qualifies even on the fallback path.
-3. `RouteProvider:708-714` slices a segment-indexed list with a location index — an upstream
-   index-space bug, so the tail it would reuse is wrong anyway. Inert today; fix separately.
-
-Upstream agrees: [osmandapp/OsmAnd#19737](https://github.com/osmandapp/OsmAnd/issues/19737), open,
-says smart recalculation "could be near instantaneous" with HH.
-
-HERE ships the technique as `returnToRoute()` (documented as avoiding "a costly route
-recalculation", and available on its **offline** engine); TomTom as continuous replanning with a
-1 km cutoff that doubles on repeated deviation. Every open-source engine checked — Valhalla,
-OSRM, GraphHopper, Mapbox — does a full recompute.
+- **Route calculation speed itself.** Six hypotheses measured on-device, all six wrong: cold
+  start, warming the routing context, the native memory cap, this fork's priority rules, a stale
+  map, a silent A* fallback.
+- **Google Places key**: quota cap set; rotation declined; SHA-1 restriction left as is.
+- **Online OSM routing**: recommended against — network per reroute, same `maxspeed` tags.
 
 ---
 
 ## What the next drive decides
 
-Read these together, for the same deviation:
-
 | Line | Field | Decides |
 |---|---|---|
-| `CD_REROUTE repairProbe` | `repairMs` vs `CD_ROUTE_TIMING search` | Item 4. A 600 m repair that is a small fraction of the full search justifies building it; one that is close to it kills the plan |
-| `CD_ROUTE_TIMING` | `pre=` | Item 5, and where the unattributed ~80% of a search actually goes |
-| `CD_ROUTE_TIMING` | `find=` | **Must be 0.00** on `engine=hh-cpp fast=SUCCESS`. If not, the reading above is wrong |
-| `CD_ROUTE_TIMING` | `skipPriv=1` on reroutes | That the private-access skip actually took effect (it is set on two contexts; the second silently not being set would make it a no-op) |
-| `CD_PRESENT` / `CD_FRAME` | `renderMode=`, `hwAccel=`, `avgOver` vs 25.9, `avgMs` vs 46.9 | Whether B1 works |
-| `CD_TRIP` | present at all | Whether the head unit accepted the populated card |
-| `CD_REROUTE dropped` | `evalWaitMs` | How often a reroute was silently refused. That interval grows ×1.5 up to 120 s and nothing retries |
+| `CD_REROUTE` | `repair USED ms=` vs `CD_ROUTE_TIMING search=` | Whether partial repair actually saved seconds |
+| `CD_SPECULATE` | `HIT` | Whether a reroute was served with no search at all |
+| `CD_ROUTE_TIMING` | `pre=`, `regionCache=` | Where the unattributed ~80% of a search goes |
+| `CD_ROUTE_TIMING` | `find=` | **Must be 0.00** on `hh-cpp`. If not, the whole static reading is wrong |
+| `CD_ROUTE_TIMING` | `alt=0` vs `alt=1` | What alternatives cost |
+| `CD_FRAME` | `renderMode`, `hwAccel`, `avgOver` vs 25.9, `avgMs` vs 46.9 | Whether B1 worked |
+| `CD_LAYER` | worst layers | What is actually eating `over` |
+| `CD_MATCH` | `disagree=`, `applied=` | Whether map matching would have moved the car, and was right |
+| `CD_STATIONARY` | `frozen=`, `frozenWhileDegraded=` | Whether N3's simulation held on real GPS |
+| `CD_FIXRATE` | `hz=` | Whether N4 is worth doing |
+| `CD_TRIP`, `CD_AUTO`, `CD_SEC` | present at all | Card kept, pane opened, API refusals |
