@@ -595,6 +595,18 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 		return offscreenMapRendererView != null || isPresenting();
 	}
 
+	/**
+	 * Whether B3's glance style is currently switched on. Read live rather than cached: the whole
+	 * point of gating it on a rendering property is that it can be flipped without a rebuild.
+	 */
+	private boolean glanceStyleOn() {
+		try {
+			return getApp().getSettings().getCustomRenderBooleanProperty("cairodriveDriving").get();
+		} catch (Throwable t) {
+			return false;
+		}
+	}
+
 	private boolean isPresenting() {
 		CairoDriveCarPresentation p = presentation;
 		return p != null && p.isActive();
@@ -902,6 +914,11 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 					// conclusions about whether the VirtualDisplay rewrite is worth 3-5 days.
 					+ " hwCanvas=" + (useHardwareCanvas
 							? (hardwareCanvasFailed ? "REFUSED" : "on") : "off")
+					// B3. Reported per summary window, not once at startup, because the glance
+					// style is a RENDERING PROPERTY and can be toggled mid-drive from Configure
+					// map. That means one drive can A/B it across 200-frame windows instead of
+					// costing two trips - but only if every window says which style drew it.
+					+ " glanceStyle=" + glanceStyleOn()
 					// The head unit's ACTUAL surface, which nothing was recording. Everything
 					// about whether reducing renderScale is worth it depends on how many pixels
 					// there are to begin with and how many of them a street label gets, and both

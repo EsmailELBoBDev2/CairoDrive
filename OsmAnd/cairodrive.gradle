@@ -296,6 +296,31 @@ def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim
 //
 // CD_AUTO reports which address fallback won. Cairo OSM frequently has no addr:* tags, so a drive
 // full of addr=coords says the DATA is thin rather than the screen being broken.
+// B3. The glance style - a map tuned for looking at once at speed, not for browsing.
+//
+// Named GLANCE and not DRIVING on the patch author's advice: CAIRODRIVE_DRIVING_VIEW already
+// exists and means the tilted camera. Confusing the two in a build log is exactly the kind of
+// thing that wastes a drive.
+//
+// Applied by patches/cairodrive_driving_style.py to the OsmAnd-resources checkout. It injects a
+// rendering property `cairodriveDriving`, OFF by default, and gates three changes on it:
+//   - car POI suppression no longer stops at z17 (58 rules). Upstream already hides benches,
+//     trees, power poles, barriers, shops and office labels for the car profile - then hands them
+//     ALL back above z17, which is precisely the junction-approach zoom OsmAnd's auto-zoom pushes
+//     into as you slow down. The maxzoom cap is an artifact, not the judgement;
+//   - house numbers off in car mode (1 rule). Dozens of numbers per frame in mapped Cairo blocks;
+//   - POI label ink collapsed to one grey pair at z15+ (24 groups). The text section carries 119
+//     distinct label colours as a category code. Useful when browsing, useless at 60 km/h.
+//
+// OFF BY DEFAULT AND IT MUST STAY OFF FOR THE B1 DRIVE. A style change and a render-path change
+// move the same CD_FRAME numbers and cannot be separated in one log.
+//
+// The gate is a rendering property, not a BuildConfig field, so it is toggleable mid-drive from
+// Configure map - which means one drive can A/B it per 200-frame window instead of costing two.
+// CD_FRAME reports glanceStyle= for exactly that reason.
+def glanceStyleEnv = System.getenv("CAIRODRIVE_GLANCE_STYLE")
+def glanceStyle = glanceStyleEnv?.trim() ? glanceStyleEnv.trim() : "false"
+
 def placeDetailsEnv = System.getenv("CAIRODRIVE_PLACE_DETAILS")
 def placeDetails = placeDetailsEnv?.trim() ? placeDetailsEnv.trim() : "true"
 

@@ -164,6 +164,10 @@ jobs:
           # survives - it is the only font in the manifest covering Arabic script, so losing it
           # would turn every Cairo street label into empty boxes.
           python3 android/patches/cairodrive_trim_assets.py resources
+          # B3. Injects the glance style, gated on a rendering property that is OFF by default -
+          # so this runs unconditionally and changes nothing until the switch is turned on in
+          # Configure map. Applying it always keeps the two CI jobs producing identical styles.
+          python3 android/patches/cairodrive_driving_style.py resources/rendering_styles/default.render.xml
 
       # Checked out for EVERY core flavor, not just legacy. The OpenGL flavor takes its
       # *rendering* core from a prebuilt AAR, but the native *routing* library
@@ -553,6 +557,10 @@ jobs:
           # survives - it is the only font in the manifest covering Arabic script, so losing it
           # would turn every Cairo street label into empty boxes.
           python3 android/patches/cairodrive_trim_assets.py resources
+          # B3. Injects the glance style, gated on a rendering property that is OFF by default -
+          # so this runs unconditionally and changes nothing until the switch is turned on in
+          # Configure map. Applying it always keeps the two CI jobs producing identical styles.
+          python3 android/patches/cairodrive_driving_style.py resources/rendering_styles/default.render.xml
 
       # Checked out for EVERY core flavor, not just legacy. The OpenGL flavor takes its
       # *rendering* core from a prebuilt AAR, but the native *routing* library
