@@ -551,6 +551,54 @@ public class OsmAndLocationProvider implements SensorEventListener {
 	}
 
 	/**
+	 * N3. Holds the DISPLAYED position still while the car is genuinely stopped.
+	 *
+	 * <p>This lives here, and not where the stationary filter was first put, because of where the
+	 * arrow actually comes from. {@code PointLocationLayer.getPointLocation} reads
+	 * {@code locationProvider.getLastStaleKnownLocation()}, which returns {@code this.location} -
+	 * the field assigned two lines above. The filter in {@code MapViewTrackingUtilities} only ever
+	 * gated that class's own {@code myLocation}, which drives map CENTRING and rotation.
+	 *
+	 * <p>So the original placement stopped the map drifting under a parked car and left the arrow
+	 * jittering on top of it - half the fix, and the visible half was the half that was missing.
+	 * Both are wanted: the map filter stays where it is, and this holds the icon.
+	 *
+	 * <p>Same separation as everything else here: routing consumed the raw fix above, so a held
+	 * position cannot suppress a reroute. It is also applied AFTER the map matcher, so a stopped
+	 * car holds whatever position was last agreed rather than reverting to a raw one.
+	 */
+	@Nullable
+	private net.osmand.Location holdWhileStationary(@Nullable net.osmand.Location displayLocation) {
+		if (displayLocation == null) {
+			return null;
+		}
+		try {
+			net.osmand.plus.cairodrive.CairoDriveStationary filter = displayStationary;
+			boolean degraded = net.osmand.plus.cairodrive.CairoDriveLogger.getInstance().isGnssDegraded();
+			if (filter.isStationary(displayLocation, degraded)) {
+				net.osmand.Location held = heldLocation;
+				if (held != null) {
+					return held;
+				}
+				// First frozen fix becomes the anchor: freezing onto nothing would be worse than
+				// not freezing at all.
+				heldLocation = displayLocation;
+				return displayLocation;
+			}
+			heldLocation = null;
+		} catch (Throwable ignored) {
+		}
+		return displayLocation;
+	}
+
+	/** Separate instance from the map-centring one: they gate different things and must not share
+	 *  a consecutive-fix counter. */
+	private final net.osmand.plus.cairodrive.CairoDriveStationary displayStationary =
+			new net.osmand.plus.cairodrive.CairoDriveStationary();
+	@Nullable
+	private net.osmand.Location heldLocation;
+
+	/**
 	 * N6. Corrects only what is DISPLAYED.
 	 * <p>
 	 * Called after {@code setLocationForRouting} has already handed the untouched fix to
@@ -755,6 +803,7 @@ public class OsmAndLocationProvider implements SensorEventListener {
 		if (carNavigationSession != null && carNavigationSession.hasStarted()) {
 			carNavigationSession.updateLocation(location);
 			this.location = applyMatchedPosition(location, updatedLocation);
+			this.location = holdWhileStationary(this.location);
 			updateLocation(this.location);
 		}
 	}
@@ -801,6 +850,7 @@ public class OsmAndLocationProvider implements SensorEventListener {
 		// fed `location`, not `this.location`, so its output can never become its own input.
 		feedMapMatcher(location);
 		this.location = applyMatchedPosition(location, updatedLocation);
+		this.location = holdWhileStationary(this.location);
 
 		// Update information
 		updateLocation(this.location);

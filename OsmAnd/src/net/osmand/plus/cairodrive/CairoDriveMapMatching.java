@@ -292,7 +292,7 @@ public final class CairoDriveMapMatching {
 
 	// -------------------------------------------------------- display consumption
 	//
-	// Everything below governs CairoDriveMapMatchService.applyToDisplay - the ONLY consumer of a match.
+	// Everything below governs CairoDriveMatchedPosition - the ONLY consumer of a match.
 	// All of it was simulated first (n6_applysim.py, 250 traces per scenario, on the same
 	// flyover-over-street layout and the same measured 55/45 degraded/healthy fix mix as
 	// n6_matchsim.py, with the service's admission gate and a 10% worker-busy drop rate

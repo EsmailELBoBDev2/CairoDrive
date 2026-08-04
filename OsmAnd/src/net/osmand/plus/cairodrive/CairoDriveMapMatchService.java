@@ -208,6 +208,9 @@ public class CairoDriveMapMatchService {
 		}
 		gateValid = false;
 		lastMatch = null;
+		// The consumer holds no positional state, only the log rate-limit. Clearing it means the
+		// first decision after a route change is reported rather than swallowed by the interval.
+		CairoDriveMatchedPosition.getInstance(app).reset();
 	}
 
 	private synchronized Handler handler() {

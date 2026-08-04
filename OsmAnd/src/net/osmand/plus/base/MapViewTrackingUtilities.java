@@ -239,10 +239,13 @@ public class MapViewTrackingUtilities implements OsmAndLocationListener, IMapLoc
 		OsmAndTaskManager.executeTask(new DetectRegionTask(app, onRegionDetected), latLon);
 	}
 
-	@Override
 	private final net.osmand.plus.cairodrive.CairoDriveStationary stationary =
 			new net.osmand.plus.cairodrive.CairoDriveStationary();
 
+	// The @Override belongs to updateLocation (OsmAndLocationListener), not to the field above.
+	// Inserting the stationary filter's field between the annotation and the method it annotated
+	// left @Override on a field declaration, which does not compile.
+	@Override
 	public void updateLocation(Location location) {
 		// N3. Do not move the map while the car is genuinely stopped.
 		//

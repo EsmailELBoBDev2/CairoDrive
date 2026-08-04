@@ -146,7 +146,7 @@ public class CairoDriveMapMatcher {
 		/**
 		 * 31-coordinates of the RAW fix this match was computed from, and its timestamp.
 		 *
-		 * <p>These exist for {@link CairoDriveMapMatchService#applyToDisplay}, not for the log. The service is
+		 * <p>These exist for {@link CairoDriveMatchedPosition}, not for the log. The service is
 		 * asynchronous and DROPS fixes while the worker is busy, so by the time a consumer reads
 		 * {@link CairoDriveMapMatchService#getLastMatch()} the car has already moved. Without the
 		 * source fix there is no way to ask how far, and a match is only meaningful near the
@@ -159,7 +159,7 @@ public class CairoDriveMapMatcher {
 		/**
 		 * 31-coordinates of the two ends of the matched road segment.
 		 *
-		 * <p>Also for {@link CairoDriveMapMatchService#applyToDisplay}. Carrying the SEGMENT rather than only the
+		 * <p>Also for {@link CairoDriveMatchedPosition}. Carrying the SEGMENT rather than only the
 		 * matched point is what lets a later fix be re-projected onto the same road instead of
 		 * being teleported back to where the car was when the match was computed. That difference
 		 * is the whole of the along-track staleness error - see the class javadoc there.
