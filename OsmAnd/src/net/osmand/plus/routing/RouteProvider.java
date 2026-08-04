@@ -1029,6 +1029,10 @@ public class RouteProvider {
 					// and "it was never skipped" - and the flag is set on two different contexts, so
 					// the second one silently not being set is a real way for it to be a no-op.
 					.append(" skipPriv=").append(ctx.skipPrivateAccessCheck ? 1 : 0)
+					// Which arm of the A/B this calculation was. Reported from what the config actually
+					// asked for, not from the flag, so an uneven split shows up as data rather than
+					// silently skewing the comparison.
+					.append(" alt=").append(RoutePlannerFrontEnd.wasAlternativesUsed() ? 1 : 0)
 					.append(" warm=").append(warmHHContext ? 1 : 0)
 					.append(" reuse=").append(reuseCount)
 					.append(" setup=").append(ms(setupNanos))

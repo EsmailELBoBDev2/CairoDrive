@@ -65,11 +65,44 @@ public class RoutePlannerFrontEnd {
 	 */
 	public static boolean CALCULATE_ALTERNATIVES = false;
 
+	/**
+	 * Alternate alternatives ON and OFF on successive calculations, instead of holding one setting
+	 * for a whole drive.
+	 *
+	 * <p>This is what makes the featuremeasurable at all. Held constant, every CD_ROUTE_TIMING
+	 * line on a drive carries the same setting, so there is no baseline to compare `search`
+	 * against except a different drive on different roads in different traffic - which is not a
+	 * comparison. Alternating gives both arms within one drive, minutes apart, on the same roads.
+	 *
+	 * <p>It is safe to vary per calculation because it is an INPUT to the search, not state: the
+	 * config object is rebuilt for every call, nothing caches across calls, and the main route is
+	 * unaffected either way. The only difference is whether the engine is also asked for
+	 * alternatives.
+	 *
+	 * <p>The counter is deliberately not thread-local or synchronised. Route calculations are
+	 * serialised onto one executor, and even if two ever overlapped the worst case is an uneven
+	 * split between the two arms - which the log reports rather than hides, because every line
+	 * carries its own alt= value.
+	 */
+	public static boolean ALTERNATE_ALTERNATIVES = false;
+
+	private static int alternativesCallCounter;
+
+	/** What the LAST built config actually asked for - CD_ROUTE_TIMING reports this, not the flag. */
+	private static volatile boolean lastAlternativesUsed;
+
+	public static boolean wasAlternativesUsed() {
+		return lastAlternativesUsed;
+	}
+
 	public static HHRoutingConfig defaultHHConfig() {
 		HHRoutingConfig config = HHRoutingConfig.astar(0)
 				.calcDetailed(HHRoutingConfig.CALCULATE_ALL_DETAILED)
 				.applyCalculateMissingMaps(RoutePlannerFrontEnd.CALCULATE_MISSING_MAPS);
-		if (CALCULATE_ALTERNATIVES) {
+		boolean useAlternatives = CALCULATE_ALTERNATIVES
+				|| (ALTERNATE_ALTERNATIVES && (alternativesCallCounter++ % 2 == 1));
+		lastAlternativesUsed = useAlternatives;
+		if (useAlternatives) {
 			config = config.calcAlternative();
 		}
 		return config;

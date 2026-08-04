@@ -217,6 +217,21 @@ def hwCanvas = hwCanvasEnv?.trim() ? hwCanvasEnv.trim() : "true"
 def routeAlternativesEnv = System.getenv("CAIRODRIVE_ROUTE_ALTERNATIVES")
 def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim() : "false"
 
+// Item 7, resolved. Instead of holding alternatives on or off for a whole drive - which leaves no
+// baseline to compare `search` against except a different drive on different roads in different
+// traffic - ALTERNATE them per calculation. One drive then contains both arms, minutes apart, on
+// the same roads, and every CD_ROUTE_TIMING line carries its own alt= so the two are separable.
+//
+// This is what makes item 7 shippable in the same drive as B1 and the repair probe rather than
+// waiting for a drive of its own: the confound was never the feature, it was holding the setting
+// constant. Safe to vary per call because it is an INPUT to the search and not state - the config
+// object is rebuilt every time and nothing caches across calls.
+//
+// Set CAIRODRIVE_ROUTE_ALTERNATIVES=true to force it on for every calculation instead, or
+// CAIRODRIVE_ALTERNATE_ALTERNATIVES=false to switch the A/B off entirely.
+def alternateAltEnv = System.getenv("CAIRODRIVE_ALTERNATE_ALTERNATIVES")
+def alternateAlternatives = alternateAltEnv?.trim() ? alternateAltEnv.trim() : "true"
+
 def lockExternalApiEnv = System.getenv("CAIRODRIVE_LOCK_EXTERNAL_API")
 def lockExternalApi = lockExternalApiEnv?.trim() ? lockExternalApiEnv.trim() : "true"
 
@@ -304,6 +319,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_PRESENTATION", presentation
 			buildConfigField "boolean", "CAIRODRIVE_LOCK_EXTERNAL_API", lockExternalApi
 			buildConfigField "boolean", "CAIRODRIVE_ROUTE_ALTERNATIVES", routeAlternatives
+			buildConfigField "boolean", "CAIRODRIVE_ALTERNATE_ALTERNATIVES", alternateAlternatives
 		}
 		release {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
@@ -318,6 +334,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_PRESENTATION", presentation
 			buildConfigField "boolean", "CAIRODRIVE_LOCK_EXTERNAL_API", lockExternalApi
 			buildConfigField "boolean", "CAIRODRIVE_ROUTE_ALTERNATIVES", routeAlternatives
+			buildConfigField "boolean", "CAIRODRIVE_ALTERNATE_ALTERNATIVES", alternateAlternatives
 		}
 	}
 }
