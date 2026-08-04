@@ -967,6 +967,35 @@ public class RouteProvider {
 	 * If {@code setup} is small and {@code search} dominates on a warm line, the remaining latency is in the
 	 * engine and not in this cache.
 	 */
+	/**
+	 * Straight-line metres from the start of this calculation to its destination. Not the road
+	 * distance - that is not known until the search finishes, and the point here is to have the
+	 * INPUT size to plot the search time against.
+	 */
+	private static long straightLineDistance(@NonNull RouteCalculationParams params) {
+		if (params.start == null || params.end == null) {
+			return -1;
+		}
+		return Math.round(MapUtils.getDistance(params.start.getLatitude(), params.start.getLongitude(),
+				params.end.getLatitude(), params.end.getLongitude()));
+	}
+
+	/**
+	 * Whether upstream's route-repair path found a reusable tail, as {@code none} or the number of
+	 * segments it would have reused. Expected to be {@code none} on every line of every log this
+	 * device produces - which is exactly why it is worth printing once rather than assuming
+	 * forever. If it is ever anything else, the static reading behind the plan above is wrong.
+	 */
+	private static String recalculationEndDescription(@NonNull RoutePlannerFrontEnd router,
+	                                                  @NonNull RoutingContext ctx) {
+		try {
+			return router.getRecalculationEnd(ctx) != null ? "found" : "none";
+		} catch (Throwable t) {
+			// Diagnostics must never be able to fail a route calculation.
+			return "err";
+		}
+	}
+
 	private void logRouteCalculationTiming(@NonNull RouteCalculationParams params,
 	                                       @NonNull RoutePlannerFrontEnd router,
 	                                       @NonNull RoutingContext ctx,
@@ -992,6 +1021,31 @@ public class RouteProvider {
 					.append(" reuse=").append(reuseCount)
 					.append(" setup=").append(ms(setupNanos))
 					.append(" search=").append(ms(searchNanos))
+					// THE FALSIFICATION PROBE. Free, and it decides a multi-day question.
+					//
+					// A code map plus upstream issue #19737 both say the same thing: every
+					// deviation here runs a FULL search to the destination. OsmAnd's route-repair
+					// mechanism (getRecalculationEnd) is bypassed by the HH C++ branch, which
+					// passes a hardcoded null, and would not fire anyway below its 20 km
+					// threshold. HERE ships the repair technique as returnToRoute() and documents
+					// it as existing to avoid a costly recalculation; TomTom ships it as
+					// continuous replanning with a 1 km cutoff that doubles on repeated deviation.
+					// So the obvious move is to reroute to a point ~500 m ahead ON the old route
+					// and splice the tail back on.
+					//
+					// That whole plan rests on ONE unmeasured assumption: that a short route is
+					// proportionally cheaper on this device. It might not be - HH's cost is
+					// dominated by loading and searching the network around each endpoint, and if
+					// that fixed cost dominates, a 500 m route costs nearly what an 8 km one does
+					// and the entire idea collapses.
+					//
+					// These two numbers test it for nothing. Cairo reroutes happen at naturally
+					// varying distances-to-destination, so one ordinary drive plots `search`
+					// against `straightM` by itself. A flat line kills the plan before a week is
+					// spent on it; a sloped one justifies building it. Six hypotheses have already
+					// been spent guessing at this router - this one gets measured first.
+					.append(" straightM=").append(straightLineDistance(params))
+					.append(" recalcEnd=").append(recalculationEndDescription(router, ctx))
 					// OsmAnd's own verdict on whether the fast Highway-Hierarchy path actually
 					// worked - which nothing here was recording. engine=hh-cpp only says which
 					// planner was ASKED; this says what happened. SUCCESS means the precomputed
