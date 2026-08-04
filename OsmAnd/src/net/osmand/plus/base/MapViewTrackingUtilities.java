@@ -257,6 +257,18 @@ public class MapViewTrackingUtilities implements OsmAndLocationListener, IMapLoc
 		if (location != null) {
 			stationary.countFix();
 		}
+		// N6: correct the DISPLAYED position onto the road the matcher believes the car is on.
+		// Same separation as the stationary filter below and for the same reason - routing, the
+		// off-route test and the ETA all still see the raw fix. A matcher that is wrong would
+		// otherwise cause REROUTES, which is far worse than an arrow a few metres off.
+		// No-op unless CAIRODRIVE_MAP_MATCHING is on, and it refuses on staleness before quality.
+		if (location != null) {
+			try {
+				location = net.osmand.plus.cairodrive.CairoDriveMapMatchService
+						.getInstance(app).applyToDisplay(location);
+			} catch (Throwable ignored) {
+			}
+		}
 		if (location != null && stationary.isStationary(location,
 				net.osmand.plus.cairodrive.CairoDriveLogger.getInstance().isGnssDegraded())) {
 			return;

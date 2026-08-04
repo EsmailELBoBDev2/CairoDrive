@@ -90,6 +90,10 @@ public class CairoDriveMapMatchService {
 	private long environmentBuiltAt;
 
 	private volatile CairoDriveMapMatcher.Match lastMatch;
+	/** The fix the match was computed FROM - the staleness test needs it, not the arrival time. */
+	private volatile long lastMatchFixTime;
+	private volatile double lastMatchLat;
+	private volatile double lastMatchLon;
 
 	// Sampling gate. Touched only by the caller's thread, guarded by the busy flag for publication.
 	private double gateLat;
@@ -134,6 +138,96 @@ public class CairoDriveMapMatchService {
 	@Nullable
 	public CairoDriveMapMatcher.Match getLastMatch() {
 		return CairoDriveMapMatching.isEnabled() ? lastMatch : null;
+	}
+
+	/**
+	 * Corrects a location for DISPLAY, or returns it unchanged.
+	 *
+	 * <h3>Display only, and that separation is load-bearing</h3>
+	 *
+	 * The corrected position must never become the input to off-route detection, the ETA or route
+	 * recalculation. A matcher that is wrong would then cause REROUTES, and a spurious reroute is
+	 * far worse than an arrow a few metres off the true road. This mirrors what
+	 * {@code CairoDriveStationary} already does: raw fixes for logic, corrected positions for what
+	 * is drawn.
+	 *
+	 * <h3>Why staleness is the real hazard, not accuracy</h3>
+	 *
+	 * The matcher runs on a worker thread and DROPS fixes when it is busy, by design - a queue
+	 * would turn a slow patch into a growing backlog of stale positions. So the newest match can
+	 * easily be two fixes behind, and snapping the current position onto a road chosen for where
+	 * the car was three seconds ago would put the arrow somewhere it has already left. Both gates
+	 * below are about that, not about whether the match was good.
+	 *
+	 * @return a corrected copy, or {@code location} itself when no correction is applied.
+	 */
+	@NonNull
+	public Location applyToDisplay(@NonNull Location location) {
+		CairoDriveMapMatcher.Match match = getLastMatch();
+		if (match == null) {
+			return location;
+		}
+		String reject = null;
+		long now = location.getTime() > 0 ? location.getTime() : System.currentTimeMillis();
+		long ageMs = now - lastMatchFixTime;
+		double movedM = MapUtils.getDistance(lastMatchLat, lastMatchLon,
+				location.getLatitude(), location.getLongitude());
+		if (ageMs > MAX_MATCH_AGE_MS) {
+			reject = "stale ageMs=" + ageMs;
+		} else if (movedM > MAX_SOURCE_DRIFT_M) {
+			// The car has moved on since the fix this match was computed from. Applying it now
+			// would drag the arrow backwards toward a road chosen for a position already left.
+			reject = "drifted movedM=" + Math.round(movedM);
+		} else if (match.settledDepth < MIN_SETTLED_DEPTH) {
+			// settledDepth, not confidence. The posterior can be high while the surviving
+			// hypotheses still disagree about where the car has BEEN - and on a flyover that
+			// disagreement is precisely the question. Convergence depth is the honest signal.
+			reject = "unsettled depth=" + match.settledDepth;
+		} else if (match.offsetM > MAX_CORRECTION_M) {
+			// A correction this large is not a lane, it is a different road. If the matcher is
+			// right the driver will see it on the next fix anyway; if it is wrong this would be a
+			// visible jump. Refuse rather than teleport.
+			reject = "tooFar offsetM=" + Math.round(match.offsetM);
+		}
+		if (reject != null) {
+			logApplied(false, reject, 0);
+			return location;
+		}
+		Location corrected = new Location(location);
+		corrected.setLatitude(match.lat);
+		corrected.setLongitude(match.lon);
+		logApplied(true, null, match.offsetM);
+		return corrected;
+	}
+
+	/** A match older than this describes a position the car has left. */
+	private static final long MAX_MATCH_AGE_MS = 2_500;
+	/** ...and so does one whose source fix is this far behind the current one. */
+	private static final double MAX_SOURCE_DRIFT_M = 40.0;
+	/** Viterbi convergence depth required before the match is trusted to move the arrow. */
+	private static final int MIN_SETTLED_DEPTH = 3;
+	/** Beyond this a "correction" is a different road, not a lane. */
+	private static final double MAX_CORRECTION_M = 35.0;
+
+	private long lastAppliedLogAt;
+	private int appliedCount;
+	private int rejectedCount;
+
+	private void logApplied(boolean applied, String reason, double offsetM) {
+		if (applied) {
+			appliedCount++;
+		} else {
+			rejectedCount++;
+		}
+		long now = System.currentTimeMillis();
+		if (now - lastAppliedLogAt < 10_000) {
+			return;
+		}
+		lastAppliedLogAt = now;
+		CairoDriveLogger.getInstance().log("CD_MATCH", "applied=" + applied
+				+ (applied ? " movedM=" + String.format(java.util.Locale.US, "%.1f", offsetM)
+				: " reason=" + reason)
+				+ " appliedTotal=" + appliedCount + " rejectedTotal=" + rejectedCount);
 	}
 
 	/**
@@ -203,6 +297,7 @@ public class CairoDriveMapMatchService {
 		}
 		gateValid = false;
 		lastMatch = null;
+		lastMatchFixTime = 0;
 	}
 
 	private synchronized Handler handler() {
@@ -272,6 +367,9 @@ public class CairoDriveMapMatchService {
 				disagreements++;
 			}
 			lastMatch = match;
+			lastMatchFixTime = fix.time;
+			lastMatchLat = fix.lat;
+			lastMatchLon = fix.lon;
 		}
 
 		logMatch(match, elapsedMs);
