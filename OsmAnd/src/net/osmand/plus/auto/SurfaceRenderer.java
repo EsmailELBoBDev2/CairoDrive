@@ -727,6 +727,13 @@ public final class SurfaceRenderer implements DefaultLifecycleObserver, MapRende
 					+ " maxMs=" + frameWallMaxMs + " slow=" + slowFrameCount
 					+ " overscan=" + surfaceWidthMultiply
 					+ " renderScale=" + renderScale
+					// The head unit's ACTUAL surface, which nothing was recording. Everything
+					// about whether reducing renderScale is worth it depends on how many pixels
+					// there are to begin with and how many of them a street label gets, and both
+					// were being estimated from the car's spec sheet. dpi is what OsmAnd sizes
+					// map text from, so label height in pixels is dp * dpi/160 * renderScale.
+					+ " surface=" + getWidth() + "x" + getHeight()
+					+ " dpi=" + getDpi()
 					+ " avgLock=" + (lockSumMs / frameCount)
 					+ " avgRead=" + (readSumMs / frameCount)
 					+ " avgBlit=" + (blitSumMs / frameCount)
