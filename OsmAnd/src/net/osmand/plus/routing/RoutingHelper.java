@@ -133,6 +133,13 @@ public class RoutingHelper {
 		this.route = route;
 		// Evidence of deviating from the previous route says nothing about this one.
 		offRouteHysteresis.reset();
+		// N6: the same argument. A Viterbi history is about a journey that no longer exists, and
+		// while BROKEN_CHAIN_GAP_MS would recover on its own, it would do so only after 20 s of
+		// driving on stale hypotheses. No-op when map matching is off.
+		try {
+			net.osmand.plus.cairodrive.CairoDriveMapMatchService.getInstance(app).reset();
+		} catch (Throwable ignored) {
+		}
 		// The speed ratio is deliberately NOT reset here. A reroute mid-trip is the same driver on
 		// the same roads a minute later, and throwing the ratio away would put the estimate back to
 		// the modelled speed exactly when the driver is most likely to be looking at it. It is only

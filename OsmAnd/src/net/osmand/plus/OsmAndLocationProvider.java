@@ -522,6 +522,17 @@ public class OsmAndLocationProvider implements SensorEventListener {
 	}
 
 	private void updateLocation(net.osmand.Location location) {
+		// N6. Offline HMM map matching. OFF unless the build defines CAIRODRIVE_MAP_MATCHING;
+		// when off this is a volatile boolean read and nothing else. This is the single funnel
+		// both setLocation() and setLocationFromService() pass through, so it sees the raw fix
+		// stream once - which is what the matcher needs, and why it is not hooked further down
+		// where CairoDriveStationary has already suppressed the stationary fixes.
+		// Everything past this call happens on the matcher's own background thread; see
+		// CairoDriveMapMatchService.
+		if (net.osmand.plus.cairodrive.CairoDriveMapMatching.isEnabled()) {
+			net.osmand.plus.cairodrive.CairoDriveMapMatchService
+					.getInstance(app).onLocation(location);
+		}
 		for (OsmAndLocationListener listener : locationListeners) {
 			listener.updateLocation(location);
 		}

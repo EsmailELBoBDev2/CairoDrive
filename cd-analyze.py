@@ -244,6 +244,37 @@ def eta(rows):
     print("  last: %s" % ds[-1])
 
 
+def matching(rows):
+    section("CD_MATCH - map matching (N6). Off by default; empty is expected unless enabled")
+    lines = rows.get("CD_MATCH", [])
+    if not lines:
+        print("  no CD_MATCH lines - CAIRODRIVE_MAP_MATCHING was off, or no fixes arrived.")
+        return
+    ds = [kv(l) for l in lines if "conf=" in l]
+    if not ds:
+        print("  lines present but none parsed. Sample: %s" % lines[0][:120])
+        return
+    dis = [d for d in ds if d.get("disagree") == "true"]
+    deg = [d for d in ds if d.get("degraded") == "true"]
+    confs = [num(d, "conf") for d in ds if num(d, "conf") is not None]
+    mss = [num(d, "ms") for d in ds if num(d, "ms") is not None]
+    print("  fixes matched      %d" % len(ds))
+    print("  disagreed w/ nearest %d (%.1f%%)  <- these are the whole point" % (
+        len(dis), 100.0 * len(dis) / len(ds)))
+    print("  on degraded fixes  %d (%.1f%%)" % (len(deg), 100.0 * len(deg) / len(ds)))
+    if confs:
+        print("  confidence         mean %.2f  min %.2f" % (sum(confs) / len(confs), min(confs)))
+    if mss:
+        print("  latency            mean %.0f ms  worst %.0f ms" % (sum(mss) / len(mss), max(mss)))
+        if max(mss) > 150:
+            print("  *** over 150 ms: the watchdog latches the feature off after 5 such fixes.")
+    # The simulation predicted ~93% correct vs ~66% for nearest - a LOT of disagreement that is
+    # right. A near-zero disagreement rate would mean the correction is not firing at all.
+    if len(dis) < 0.05 * len(ds):
+        print("  NOTE: very little disagreement. Either the roads here are unambiguous, or the")
+        print("        degraded-fix correction is not engaging - check degraded= above.")
+
+
 def misc(rows):
     section("EVERYTHING ELSE")
     for tag, hint in (("CD_TRIP", "head unit accepted the manoeuvre card during reroute?"),
@@ -280,6 +311,7 @@ def main():
     layers(rows)
     routing(rows)
     reroute(rows)
+    matching(rows)
     eta(rows)
     misc(rows)
     print("\n" + BAR)

@@ -342,6 +342,37 @@ def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim
 // device, because the phone that would validate the priors is the phone running the code:
 // utterance start/end are timed end-to-end and folded into a per-script rate. CD_VOICE reports
 // turnLead= and ttsSample=.
+// N6. Map matching - snap the car to the road it is most likely ON, not the nearest one.
+//
+// Built OFFLINE as an HMM/Viterbi over the .obf road data already loaded by the router, NOT as a
+// call to a Roads API. The online version was rejected on five grounds, and the fourth is the one
+// that settles it: a network matcher fails exactly where it is needed, because tunnels and the
+// undersides of elevated roads are where mobile signal is worst AND where satsUsed is already 0.
+//
+// THE SIMULATION PRODUCED A FINDING THAT CHANGED THE DESIGN. An HMM that believes
+// Location.getAccuracy() is no better than nearest-road snapping - and on a street trace it is
+// WORSE:
+//
+//     matcher            all fixes   under flyover   degraded fixes
+//     nearest-road           66.1%           61.6%           57.0%
+//     HMM, no correction     65.4%           61.9%           57.7%
+//     HMM with correction    92.7%           97.3%           91.1%
+//
+// The gain comes from REFUSING TO BELIEVE the accuracy float, not from the Viterbi. That follows
+// directly from this device's own measurement: 55% of the 2026-08-04 drive's fixes reported
+// 2.1-2.5 m accuracy with satsUsed=0 - a Wi-Fi/cell position wearing a satellite fix's error bar.
+// DEGRADED_SIGMA_MULT=8 treats those as 32 m, which is the knee of the measured curve.
+//
+// OFF by default, and nothing consumes the match yet: the service computes and logs only, so
+// CD_MATCH disagree= answers "how often would this have moved the car, and was it right" BEFORE
+// anything depends on it. Same order CairoDriveStationary used.
+//
+// Cost containment is hard rather than hopeful: one fix in flight at a time and the next is
+// DROPPED rather than queued, a dedicated background thread, its own RoutingContext, and a
+// watchdog that latches the whole feature off for the process after 5 fixes over 150 ms.
+def mapMatchingEnv = System.getenv("CAIRODRIVE_MAP_MATCHING")
+def mapMatching = mapMatchingEnv?.trim() ? mapMatchingEnv.trim() : "false"
+
 def speechLeadEnv = System.getenv("CAIRODRIVE_SPEECH_LEAD")
 def speechLead = speechLeadEnv?.trim() ? speechLeadEnv.trim() : "true"
 
@@ -455,6 +486,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_SPECULATE", speculate
 			buildConfigField "boolean", "CAIRODRIVE_PLACE_DETAILS", placeDetails
 			buildConfigField "boolean", "CAIRODRIVE_SPEECH_LEAD", speechLead
+			buildConfigField "boolean", "CAIRODRIVE_MAP_MATCHING", mapMatching
 		}
 		release {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
@@ -474,6 +506,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_SPECULATE", speculate
 			buildConfigField "boolean", "CAIRODRIVE_PLACE_DETAILS", placeDetails
 			buildConfigField "boolean", "CAIRODRIVE_SPEECH_LEAD", speechLead
+			buildConfigField "boolean", "CAIRODRIVE_MAP_MATCHING", mapMatching
 		}
 	}
 }
