@@ -433,6 +433,9 @@ public class RoutePlannerFrontEnd {
 		}
 		targets.add(end);
 		OsmandRegions osmandRegions = PlatformUtil.getOsmandRegions();
+		// Times the pre-search block below - see RouteCalculationProgress.timeToPrepare. Diagnostic
+		// only; nothing branches on it.
+		long prepareStartNanos = System.nanoTime();
 		if (CALCULATE_MISSING_MAPS) {
 			MissingMapsCalculator calculator = new MissingMapsCalculator(osmandRegions);
 			if (calculator.checkIfThereAreMissingMaps(ctx, start, targets, hhRoutingConfig != null)) {
@@ -448,6 +451,10 @@ public class RoutePlannerFrontEnd {
 		}
 		if (hhRoutingConfig != null && ctx.calculationMode != RouteCalculationMode.BASE) {
 			calculateRegionsWithAllRoutePoints(ctx, osmandRegions, start, targets);
+			// Closed here rather than at the end of the method: everything after this point is the
+			// search, which `calc` and `search` already price. Measuring past it would double-count
+			// and hide the very thing this field exists to isolate.
+			ctx.calculationProgress.timeToPrepare = System.nanoTime() - prepareStartNanos;
 			if (ctx.nativeLib == null || hhRoutingType == HHRoutingType.JAVA) {
 				HHNetworkRouteRes r = runHHRoute(ctx, start, targets);
 				boolean hasAnyMissingMaps = ctx.calculationProgress.hasAnyMissingMaps();

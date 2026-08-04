@@ -1061,6 +1061,12 @@ public class RouteProvider {
 					// which is how five hypotheses came to be tested against the wrong number.
 					.append(" fast=").append(fastRoutingStatus(progress));
 			if (progress != null) {
+				// The pre-search block: missing-maps check, private-access probe, region lookup for
+				// all route points. On the HH C++ path `find` is structurally 0 - that path never
+				// resolves start segments in Java - and `routingTime` is only ~15-20% of `search`,
+				// so most of a 4-8 s reroute has had no bucket at all. This is the half of it that
+				// can be timed without touching the native library.
+				sb.append(" pre=").append(ms(progress.timeToPrepare));
 				sb.append(" find=").append(ms(progress.timeToFindInitialSegments))
 						.append(" load=").append(ms(progress.timeToLoad))
 						.append(" headers=").append(ms(progress.timeToLoadHeaders))

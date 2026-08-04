@@ -19,6 +19,7 @@ import androidx.car.app.navigation.model.Trip.Builder;
 import androidx.core.graphics.drawable.IconCompat;
 
 import net.osmand.Location;
+import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.helpers.TargetPointsHelper;
@@ -91,14 +92,55 @@ public class TripHelper {
 		return lastCurrentRoad;
 	}
 
+	/** Latched after the host rejects a populated trip once - see {@link #buildTrip}. */
+	private static boolean keepCardUnsupported;
+
 	@NonNull
 	public Trip buildTrip(Location currentLocation, float density) {
+		boolean routeBeingCalculated = routingHelper.isRouteBeingCalculated();
+		// Do not blank the manoeuvre card while a route is being recalculated.
+		//
+		// Upstream sets loading and clears the step, so for the whole 4-8 s of a Cairo reroute the
+		// head unit loses the turn arrow, the distance to the turn, the street name and the lanes,
+		// and shows an indeterminate spinner. The voice is silent over the same window
+		// (RoutingHelper interrupts prompts while inRecalc) and the arrow un-snaps from the route.
+		// Together that reads as the app having frozen rather than as the app working - and it is
+		// what "everything looked fine on the phone but nothing was showing on the head unit" was
+		// describing.
+		//
+		// setupTrip already knows what to draw here: when isDeviatedFromRoute it builds a
+		// TurnType.OFFR manoeuvre with the live deviation distance, which is exactly the honest
+		// thing to show and cannot be mistaken for a turn instruction. That branch was simply
+		// unreachable during recalculation because of the short-circuit this replaces.
+		//
+		// The user-visible wait is not the 4-8 s search either - it is the off-route hysteresis
+		// window (up to 12 s) plus the search, so it comfortably passes the point where a blank
+		// screen stops reading as latency and starts reading as a fault.
+		if (routeBeingCalculated && !keepCardUnsupported) {
+			try {
+				return buildTrip(currentLocation, density, false);
+			} catch (Throwable t) {
+				// androidx.car.app may require the step and destination lists to be empty when a
+				// Trip is marked loading. That cannot be verified from this tree - the car-app
+				// sources are not here - and a throw on the head unit mid-drive is far worse than a
+				// spinner. So the populated trip is attempted, and the first rejection latches the
+				// upstream behaviour back for the rest of the session.
+				keepCardUnsupported = true;
+				CairoDriveLogger.getInstance().log("CD_TRIP",
+						"host rejected a populated trip while loading ("
+								+ t.getClass().getSimpleName() + ") - reverting to the spinner");
+			}
+		}
+		return buildTrip(currentLocation, density, routeBeingCalculated);
+	}
+
+	@NonNull
+	private Trip buildTrip(Location currentLocation, float density, boolean loading) {
 		Trip.Builder tripBuilder = new Trip.Builder();
 		updateDestination(tripBuilder);
 
-		boolean routeBeingCalculated = routingHelper.isRouteBeingCalculated();
-		tripBuilder.setLoading(routeBeingCalculated);
-		if (!routeBeingCalculated) {
+		tripBuilder.setLoading(loading);
+		if (!loading) {
 			setupTrip(tripBuilder, currentLocation, density);
 		} else {
 			lastStep = null;

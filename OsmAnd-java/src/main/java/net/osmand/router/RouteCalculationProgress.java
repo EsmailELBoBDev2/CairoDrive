@@ -38,6 +38,23 @@ public class RouteCalculationProgress implements Serializable {
 	public long timeToLoadHeaders = 0;
 	public long timeToFindInitialSegments = 0;
 	public long timeToCalculate = 0;
+	/**
+	 * Nanoseconds spent in searchRoute BEFORE the search itself: the missing-maps check, the
+	 * private-access probe, and the region lookup for all route points.
+	 *
+	 * <p>Fork-specific, diagnostic only. It exists because that block is the largest part of a
+	 * route calculation with no counter of its own. On the HH C++ path `routingTime` is only about
+	 * 15-20% of the measured `search`, and `find` is zero because that path never resolves start
+	 * segments in Java - so most of a 4-8 s Cairo reroute is currently unattributed. This block is
+	 * one of the two candidates, and it is the one that can be timed without touching the native
+	 * library.
+	 *
+	 * <p>What makes it worth suspecting rather than merely worth measuring: the region lookups run
+	 * roughly four times per calculation over essentially two points, and each one falls through to
+	 * a synchronized binary search over regions.ocbf through a RandomAccessFile plus a polygon
+	 * ray-cast, because the quad-tree that would make it fast is never built on Android.
+	 */
+	public long timeToPrepare = 0;
 	
 	public int distinctLoadedTiles = 0;
 	public int maxLoadedTiles = 0;
