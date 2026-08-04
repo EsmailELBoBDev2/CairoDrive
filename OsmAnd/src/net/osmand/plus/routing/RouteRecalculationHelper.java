@@ -422,6 +422,123 @@ class RouteRecalculationHelper {
 	 *
 	 * @return a complete spliced route to the real destination, or null.
 	 */
+	// ITEM 6. Speculative precompute.
+	//
+	// Affordable only because item 4 exists. A full 8 km search per junction is ~13% duty cycle on
+	// one of this phone's two big cores, continuously, on a device already at 46.9 ms/frame - which
+	// is why this was blocked. A 600 m repair is a different order of cost, so precomputing one
+	// while the CPU is otherwise idle is a trade worth making.
+	//
+	// This is where an offline app can genuinely beat Google rather than catch up: Google pays per
+	// routing query, so speculation is a line item and Mapbox's own alternatives feature runs on a
+	// 5-minute interval for exactly that reason. Here it costs CPU and nothing else.
+	//
+	// Serialised on the SAME executor as real calculations, never a second thread:
+	// BinaryMapIndexReader holds one RandomAccessFile with a mutable stream position, so two
+	// concurrent Java-side searches corrupt each other. Bailing when a real calculation is queued
+	// is what keeps a speculative search from ever delaying a real one.
+	private static final long SPECULATE_MIN_INTERVAL_MS = 45_000;
+	private static final int SPECULATE_VALID_MS = 120_000;
+	private static final int SPECULATE_MATCH_M = 120;
+
+	private long lastSpeculationAt;
+	@Nullable
+	private RouteCalculationResult speculativeRoute;
+	private long speculativeAt;
+	@Nullable
+	private LatLon speculativeFrom;
+
+	/**
+	 * Called after a route is set. Precomputes the repair the driver would need if they miss the
+	 * next turn, so that deviation costs a lookup instead of a search.
+	 */
+	void speculate(@NonNull RouteProvider provider, @NonNull RouteCalculationParams params,
+	               @NonNull RouteCalculationResult route) {
+		if (!BuildConfig.CAIRODRIVE_SPECULATE || !BuildConfig.CAIRODRIVE_ROUTE_REPAIR) {
+			return;
+		}
+		try {
+			long now = System.currentTimeMillis();
+			if (now - lastSpeculationAt < SPECULATE_MIN_INTERVAL_MS || isRouteBeingCalculated()) {
+				return;
+			}
+			// The point a driver reaches by MISSING the next turn: keep going past it. Approximated
+			// as a point further along the current route than the turn, which is where a missed
+			// turn most often leaves you on a Cairo grid.
+			Object[] ahead = route.getLocationAheadAlongRoute(SPECULATE_AHEAD_M);
+			if (ahead == null) {
+				return;
+			}
+			Location from = (Location) ahead[0];
+			lastSpeculationAt = now;
+			long startedAt = System.currentTimeMillis();
+			Object[] rejoinAhead = route.getLocationAheadAlongRoute(SPECULATE_AHEAD_M + REPAIR_PROBE_REJOIN_M);
+			if (rejoinAhead == null) {
+				return;
+			}
+			Location rejoinLoc = (Location) rejoinAhead[0];
+			int rejoinIndex = (Integer) rejoinAhead[2];
+
+			RouteCalculationParams specParams = new RouteCalculationParams();
+			specParams.start = from;
+			specParams.end = params.end;
+			specParams.mode = params.mode;
+			specParams.ctx = params.ctx;
+			specParams.leftSide = params.leftSide;
+			specParams.fast = params.fast;
+			specParams.calculationProgress = new RouteCalculationProgress();
+
+			RouteCalculationResult precomputed = provider.calculateRepairRoute(specParams, route,
+					new LatLon(rejoinLoc.getLatitude(), rejoinLoc.getLongitude()), rejoinIndex);
+			long elapsedMs = System.currentTimeMillis() - startedAt;
+			if (precomputed != null && precomputed.isCalculated()) {
+				speculativeRoute = precomputed;
+				speculativeAt = now;
+				speculativeFrom = new LatLon(from.getLatitude(), from.getLongitude());
+			}
+			CairoDriveLogger.getInstance().log("CD_SPECULATE", "precomputed"
+					+ " ok=" + (precomputed != null && precomputed.isCalculated())
+					+ " ms=" + elapsedMs
+					+ " aheadM=" + SPECULATE_AHEAD_M);
+		} catch (Throwable t) {
+			CairoDriveLogger.getInstance().log("CD_SPECULATE",
+					"failed " + t.getClass().getSimpleName());
+		}
+	}
+
+	/** Distance past the next turn a missed turn typically leaves the driver. */
+	private static final int SPECULATE_AHEAD_M = 400;
+
+	/**
+	 * Returns a precomputed route if one was made for roughly where the driver now is. Consumed
+	 * once - a stale speculative route is worse than none, and reusing it twice is how it becomes
+	 * stale.
+	 */
+	@Nullable
+	private RouteCalculationResult takeSpeculation(@NonNull Location start) {
+		RouteCalculationResult cached = speculativeRoute;
+		LatLon from = speculativeFrom;
+		if (cached == null || from == null) {
+			return null;
+		}
+		speculativeRoute = null;
+		speculativeFrom = null;
+		if (System.currentTimeMillis() - speculativeAt > SPECULATE_VALID_MS) {
+			CairoDriveLogger.getInstance().log("CD_SPECULATE", "discarded stale");
+			return null;
+		}
+		double d = MapUtils.getDistance(from.getLatitude(), from.getLongitude(),
+				start.getLatitude(), start.getLongitude());
+		if (d > SPECULATE_MATCH_M) {
+			CairoDriveLogger.getInstance().log("CD_SPECULATE",
+					"discarded missM=" + Math.round(d));
+			return null;
+		}
+		CairoDriveLogger.getInstance().log("CD_SPECULATE",
+				"HIT missM=" + Math.round(d) + " - reroute served with no search at all");
+		return cached;
+	}
+
 	@Nullable
 	RouteCalculationResult tryRepairRoute(@NonNull RouteProvider provider,
 	                                      @NonNull RouteCalculationParams params) {
@@ -429,6 +546,14 @@ class RouteRecalculationHelper {
 			return null;
 		}
 		try {
+			// Item 6 first: if a route was already precomputed for roughly here, this reroute
+			// costs a lookup instead of a search.
+			if (params.start != null) {
+				RouteCalculationResult speculated = takeSpeculation(params.start);
+				if (speculated != null) {
+					return speculated;
+				}
+			}
 			RouteCalculationResult previous = params.previousToRecalculate;
 			// Only a deviation reroute. Never a first calculation, never with intermediates (their
 			// indices are rebuilt from the location list and a splice invalidates that), never a
@@ -795,6 +920,7 @@ class RouteRecalculationHelper {
 				} else {
 					routingThreadHelper.setNewRoute(prev, res, params.start);
 					// AFTER the driver already has their route, never before.
+					routingThreadHelper.speculate(provider, params, res);
 					// Shadow probe only when the live repair did NOT run. Once the repair is real,
 					// timing a second one would just burn a search to re-measure what `repair USED`
 					// already reports - and would do it on the same worker the next reroute needs.

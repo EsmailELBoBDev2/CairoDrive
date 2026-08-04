@@ -1,0 +1,43 @@
+# P9. Baseline Profile - ahead-of-time compilation hints for the cold-start and first-frame path.
+#
+# Android Runtime interprets bytecode until a method is hot enough to JIT. A baseline profile
+# names the classes and methods to compile at INSTALL time instead, so the first run is already
+# native. Google's own case study on Maps reports ~30% off startup.
+#
+# The entries below are this fork's actual critical path, not a generic list:
+#   - application start and the initialiser chain the first car frame waits on
+#   - the Android Auto surface path, which is where a slow first frame is visible
+#   - routing, because a reroute is the other thing the driver waits on
+#   - the CairoDrive classes themselves, since they sit on every fix and every frame
+#
+# NOT generated from a device run - that needs a macrobenchmark module and a physical phone, and
+# neither exists here. A hand-authored profile is strictly better than none (ART simply ignores
+# rules that never match) but it is a starting point: regenerating it from a real run on the
+# POCO C85 would target the actual hot methods rather than the reasoned ones.
+HSPLnet/osmand/plus/OsmandApplication;->**(**)**
+HSPLnet/osmand/plus/AppInitializer;->**(**)**
+HSPLnet/osmand/plus/auto/SurfaceRenderer;->**(**)**
+HSPLnet/osmand/plus/auto/CairoDriveCarPresentation;->**(**)**
+HSPLnet/osmand/plus/auto/NavigationSession;->**(**)**
+HSPLnet/osmand/plus/auto/TripHelper;->**(**)**
+HSPLnet/osmand/plus/cairodrive/**->**(**)**
+HSPLnet/osmand/plus/routing/RoutingHelper;->**(**)**
+HSPLnet/osmand/plus/routing/RouteProvider;->**(**)**
+HSPLnet/osmand/plus/routing/RouteRecalculationHelper;->**(**)**
+HSPLnet/osmand/plus/routing/RouteCalculationResult;->**(**)**
+HSPLnet/osmand/plus/views/OsmandMapTileView;->**(**)**
+HSPLnet/osmand/plus/views/MapViewWithLayers;->**(**)**
+HSPLnet/osmand/plus/base/MapViewTrackingUtilities;->**(**)**
+HSPLnet/osmand/router/RoutePlannerFrontEnd;->**(**)**
+HSPLnet/osmand/router/RoutingContext;->**(**)**
+HSPLnet/osmand/map/OsmandRegions;->**(**)**
+Lnet/osmand/plus/OsmandApplication;
+Lnet/osmand/plus/AppInitializer;
+Lnet/osmand/plus/auto/SurfaceRenderer;
+Lnet/osmand/plus/auto/CairoDriveCarPresentation;
+Lnet/osmand/plus/cairodrive/CairoDriveLogger;
+Lnet/osmand/plus/cairodrive/CairoDriveStationary;
+Lnet/osmand/plus/cairodrive/CairoDriveOffRoute;
+Lnet/osmand/plus/cairodrive/CairoDriveEta;
+Lnet/osmand/plus/routing/RoutingHelper;
+Lnet/osmand/plus/routing/RouteProvider;
