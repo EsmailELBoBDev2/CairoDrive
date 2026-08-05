@@ -422,12 +422,6 @@ public final class AzureRouteWeatherProvider {
 		}
 	}
 
-	/** The last alert text seen this session, or null. Non-blocking, for a status readout. */
-	@Nullable
-	public static String lastAlertSummary() {
-		return lastAlertSummary;
-	}
-
 	/**
 	 * Alerts change on the scale of a weather bulletin, not a drive. Longer than the route poll
 	 * because re-asking every ten minutes would spend the shared cap on an answer that is the same

@@ -83,18 +83,14 @@ public final class AddressLookup {
 		return null;
 	}
 
-	/**
-	 * True when the app may cache and store the string {@link #describe} returned.
-	 *
-	 * <p>Callers that keep anything must ask. The two providers differ on this - Geoapify permits
-	 * storage outright, LocationIQ's free tier allows 48 hours - and rather than push the
-	 * strictest rule in the stack onto everything, the chain simply never caches a LocationIQ
-	 * result. Since the fallback is only reached when the primary failed, and a failed primary is
-	 * not something to remember anyway, this costs nothing real.
-	 */
-	public static boolean cacheable() {
-		return GeoapifyProvider.hasKey();
-	}
+	// There is deliberately no cacheable() here.
+	//
+	// One was written, asking whether the string describe() returned may be stored - Geoapify
+	// permits it outright, LocationIQ's free tier caps it at 48 hours. Nothing ever called it,
+	// because nothing in this chain caches anything: every result goes straight to its caller and
+	// is dropped. An advisory method that no caller consults is not a safeguard, it is a claim
+	// that one exists. If a cache is ever added here, the LocationIQ term is the reason it must
+	// hold Geoapify results only.
 
 	/**
 	 * As-you-type suggestions, primary only unless it is unavailable.
