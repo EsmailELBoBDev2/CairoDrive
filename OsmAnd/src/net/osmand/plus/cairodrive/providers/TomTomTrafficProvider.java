@@ -1040,6 +1040,10 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 				+ " pace=" + BudgetPacer.describe(used(app, PREF_FLOW_COUNT),
 						FLOW_DAILY_CAP, FLOW_LADDER)
 				+ " appliedS=" + (lastFlowIntervalMs / 1000)
+				// The free-driving horizon too, because when there is no route this is the ONLY
+				// thing distinguishing a fast poll from a slow one, and a log that omitted it
+				// could not explain why two otherwise identical drives paced differently.
+				+ " " + FreeDriveHorizon.describe(app, System.currentTimeMillis())
 				// The distribution is the point of this endpoint: a sweep that is all low-confidence
 				// means the route is on roads TomTom has no probes for, and the ETA correction
 				// should be ignored rather than averaged in. Buckets AND the raw values, because

@@ -195,11 +195,18 @@ public final class BudgetPacer {
 				return 0;
 			}
 			RoutingHelper helper = app.getRoutingHelper();
-			if (helper == null || !helper.isRouteCalculated() || !helper.isFollowingMode()) {
-				return 0;
+			if (helper != null && helper.isRouteCalculated() && helper.isFollowingMode()) {
+				int leftSeconds = helper.getLeftTime();
+				if (leftSeconds > 0) {
+					return (int) (leftSeconds / 60.0 * HORIZON_SLACK);
+				}
 			}
-			int leftSeconds = helper.getLeftTime();
-			return leftSeconds > 0 ? (int) (leftSeconds / 60.0 * HORIZON_SLACK) : 0;
+			// FREE DRIVING: no destination, so no ETA to read. Fall back to the mean-residual-life
+			// estimate over this driver's own past sessions - see FreeDriveHorizon. It applies no
+			// slack of its own because its quantile is already the pessimistic one.
+			long now = System.currentTimeMillis();
+			FreeDriveHorizon.onFreeDriveFix(app, now);
+			return FreeDriveHorizon.estimateRemainingMinutes(app, now);
 		} catch (Throwable t) {
 			// Never let the pacer break on a routing-state race. Zero means "fall back to the
 			// ladder", which is the behaviour that was already verified.
