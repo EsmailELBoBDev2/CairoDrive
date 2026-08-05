@@ -174,8 +174,12 @@ public class QuickActionButtonState extends MapButtonState {
 
 	@NonNull
 	@Override
-	public ButtonAppearanceParams createAppearanceParams(@Nullable Boolean nightMode) {
-		ButtonAppearanceParams appearanceParams = super.createAppearanceParams(nightMode);
+	public ButtonAppearanceParams createAppearanceParams(@Nullable Boolean nightMode,
+	                                                      @Nullable ButtonAppearanceParams into) {
+		// Overriding the buffer-taking form rather than the one-argument one, so the override
+		// applies on BOTH paths. Overriding only the short form would leave MapButton's per-frame
+		// calls going to the base implementation and silently losing the default-icon rule.
+		ButtonAppearanceParams appearanceParams = super.createAppearanceParams(nightMode, into);
 		if (Algorithms.isEmpty(getSavedIconName())) {
 			appearanceParams.setIconName(getDefaultIconName(nightMode));
 		}

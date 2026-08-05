@@ -101,7 +101,18 @@ public class CompassButtonState extends MapButtonState {
 
 	@NonNull
 	@Override
-	public ButtonAppearanceParams createAppearanceParams(@Nullable Boolean nightMode) {
+	public ButtonAppearanceParams createAppearanceParams(@Nullable Boolean nightMode,
+	                                                      @Nullable ButtonAppearanceParams into) {
+		// P11/8. Overrides the BUFFER-taking form, not the one-argument one.
+		//
+		// Overriding only the short form would leave MapButton's per-frame path calling the base
+		// implementation - which would drop this class's compass-icon rule and quietly show the
+		// wrong needle. The one-argument form in the base class delegates here, so both paths get
+		// this override.
+		//
+		// The intermediate defaultParams still allocates and has to: it is read for four fallback
+		// values AFTER `into` may already alias the object being written, so filling `into` first
+		// would corrupt the fallbacks it is about to read.
 		ButtonAppearanceParams defaultParams = createDefaultAppearanceParams(nightMode);
 
 		String iconName = getSavedIconName();
@@ -121,7 +132,14 @@ public class CompassButtonState extends MapButtonState {
 		if (cornerRadius < 0) {
 			cornerRadius = defaultParams.getCornerRadius();
 		}
-		return new ButtonAppearanceParams(iconName, size, opacity, cornerRadius);
+		if (into == null) {
+			return new ButtonAppearanceParams(iconName, size, opacity, cornerRadius);
+		}
+		into.setIconName(iconName);
+		into.setSize(size);
+		into.setOpacity(opacity);
+		into.setCornerRadius(cornerRadius);
+		return into;
 	}
 
 	@NonNull

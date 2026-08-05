@@ -71,6 +71,8 @@ public abstract class MapButton extends FrameLayoutEx implements OnAttachStateCh
 	protected WidgetsVisibilityHelper visibilityHelper;
 
 	protected ButtonAppearanceParams appearanceParams;
+	/** P11/8. The other half of the swap pair - see update(). Never escapes this instance. */
+	private ButtonAppearanceParams spareParams;
 	protected ButtonAppearanceParams customAppearanceParams;
 
 	protected int strokeWidth;
@@ -181,11 +183,30 @@ public abstract class MapButton extends FrameLayoutEx implements OnAttachStateCh
 
 	@NonNull
 	public ButtonAppearanceParams getAppearanceParams() {
+		return fillAppearanceParams(null);
+	}
+
+	/**
+	 * P11/8. {@link #getAppearanceParams()} with an optional caller-owned buffer.
+	 *
+	 * @param into a buffer this instance owns exclusively, or null to allocate as before
+	 */
+	@NonNull
+	private ButtonAppearanceParams fillAppearanceParams(@Nullable ButtonAppearanceParams into) {
 		MapButtonState buttonState = getButtonState();
 		if (buttonState != null) {
-			return useDefaultAppearance ? buttonState.createDefaultAppearanceParams(nightMode) : buttonState.createAppearanceParams(nightMode);
+			return useDefaultAppearance
+					? buttonState.createDefaultAppearanceParams(nightMode, into)
+					: buttonState.createAppearanceParams(nightMode, into);
 		}
-		return createDefaultAppearanceParams();
+		if (into == null) {
+			return createDefaultAppearanceParams();
+		}
+		into.setIconName("ic_quick_action");
+		into.setSize(BIG_SIZE_DP);
+		into.setOpacity(TRANSPARENT_ALPHA);
+		into.setCornerRadius(ROUND_RADIUS_DP);
+		return into;
 	}
 
 	@Nullable
@@ -286,11 +307,33 @@ public abstract class MapButton extends FrameLayoutEx implements OnAttachStateCh
 		}
 		updateColors(nightMode);
 
-		ButtonAppearanceParams params = getAppearanceParams();
+		// P11/8. Two buffers, swapped - no allocation per button per frame in the steady state.
+		//
+		// The comparison below is why a single reused buffer cannot work: this class KEEPS last
+		// frame's params in `appearanceParams` and diffs the new values against them. Filling that
+		// same object in place would make it compare equal to itself forever and the button would
+		// never redraw again.
+		//
+		// So `spareParams` is filled, compared, and only on a real change do the two references
+		// swap: the freshly filled buffer becomes the retained current, and the previous current
+		// becomes next frame's scratch. Nothing outside this instance ever sees either object -
+		// every other caller of createAppearanceParams still gets a fresh allocation.
+		ButtonAppearanceParams params = fillAppearanceParams(spareParams);
 		if (invalidated || !Algorithms.objectEquals(appearanceParams, params)) {
+			ButtonAppearanceParams previous = appearanceParams;
 			this.appearanceParams = params;
+			// Null on the first change, so the next frame allocates once more and the frame after
+			// that is allocation-free. Not worth special-casing for one object per button.
+			this.spareParams = previous;
 			this.invalidated = false;
 			updateContent();
+		} else {
+			// The unchanged case, and the one that matters most: a button whose appearance never
+			// changes is the common case, and without this line it allocated every single frame
+			// forever, because `spareParams` was only ever set on a change. Nothing retained the
+			// buffer we just filled - the comparison said it matches what is already current - so
+			// it becomes next frame's scratch.
+			this.spareParams = params;
 		}
 		updateCustomDrawable();
 	}

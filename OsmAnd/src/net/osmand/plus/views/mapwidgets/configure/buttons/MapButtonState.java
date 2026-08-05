@@ -90,8 +90,49 @@ public abstract class MapButtonState {
 
 	public abstract boolean isEnabled();
 
+	/**
+	 * P11/8. Writes the four values into {@code into}, or allocates when it is null.
+	 *
+	 * <p><b>This is deliberately not a cache, and the distinction is the whole point.</b> A cache
+	 * hands the SAME instance to every caller, and that breaks two things here: this class returns
+	 * a mutable object that {@code QuickActionButtonState} rewrites, and
+	 * {@code DefaultButtonsAppearanceFragment} calls this twice specifically to hold a current and
+	 * an original copy to diff - aliasing those would silently kill change detection.
+	 *
+	 * <p>Passing a buffer inverts the ownership instead. The caller supplies storage it alone
+	 * owns, so nothing is shared and every existing caller that passes nothing behaves exactly as
+	 * before. Only {@code MapButton}, which draws every button every frame, opts in - and it
+	 * carries two buffers rather than one, because it compares this frame's values against the
+	 * ones it kept from last frame. One buffer would compare equal to itself forever and the
+	 * button would stop redrawing.
+	 */
+	@NonNull
+	private static ButtonAppearanceParams applyTo(@Nullable ButtonAppearanceParams into,
+	                                              @Nullable String iconName, int size,
+	                                              float opacity, int cornerRadius) {
+		if (into == null) {
+			return new ButtonAppearanceParams(iconName, size, opacity, cornerRadius);
+		}
+		into.setIconName(iconName);
+		into.setSize(size);
+		into.setOpacity(opacity);
+		into.setCornerRadius(cornerRadius);
+		return into;
+	}
+
 	@NonNull
 	public ButtonAppearanceParams createDefaultAppearanceParams(@Nullable Boolean nightMode) {
+		return createDefaultAppearanceParams(nightMode, null);
+	}
+
+	/**
+	 * P11/8. As above, but fills {@code into} when the caller owns a buffer to write into.
+	 *
+	 * <p>See {@link #applyTo} for why this exists and why it is opt-in rather than a cache.
+	 */
+	@NonNull
+	public ButtonAppearanceParams createDefaultAppearanceParams(@Nullable Boolean nightMode,
+	                                                            @Nullable ButtonAppearanceParams into) {
 		MapButtonsHelper buttonsHelper = app.getMapButtonsHelper();
 		int size = buttonsHelper.getDefaultSizePref().get();
 		if (size <= 0) {
@@ -105,7 +146,7 @@ public abstract class MapButtonState {
 		if (cornerRadius < 0) {
 			cornerRadius = getDefaultCornerRadius();
 		}
-		return new ButtonAppearanceParams(getDefaultIconName(nightMode), size, opacity, cornerRadius);
+		return applyTo(into, getDefaultIconName(nightMode), size, opacity, cornerRadius);
 	}
 
 	@LayoutRes
@@ -183,6 +224,17 @@ public abstract class MapButtonState {
 	 * "already bounded by an early return" was the wrong reason for the right conclusion.
 	 */
 	public ButtonAppearanceParams createAppearanceParams(@Nullable Boolean nightMode) {
+		return createAppearanceParams(nightMode, null);
+	}
+
+	/**
+	 * P11/8. As above, but writes into a caller-owned buffer when one is supplied.
+	 *
+	 * @param into a buffer the CALLER owns exclusively, or null to allocate as before
+	 */
+	@NonNull
+	public ButtonAppearanceParams createAppearanceParams(@Nullable Boolean nightMode,
+	                                                      @Nullable ButtonAppearanceParams into) {
 		MapButtonsHelper buttonsHelper = app.getMapButtonsHelper();
 
 		String iconName = getSavedIconName();
@@ -210,7 +262,7 @@ public abstract class MapButtonState {
 				cornerRadius = getDefaultCornerRadius();
 			}
 		}
-		return new ButtonAppearanceParams(iconName, size, opacity, cornerRadius);
+		return applyTo(into, iconName, size, opacity, cornerRadius);
 	}
 
 	@NonNull
