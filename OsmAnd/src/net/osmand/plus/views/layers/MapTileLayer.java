@@ -35,7 +35,6 @@ import net.osmand.plus.settings.backend.OsmandSettings;
 import net.osmand.plus.settings.backend.preferences.CommonPreference;
 import net.osmand.plus.views.MapTileAdapter;
 import net.osmand.plus.views.OsmandMapTileView;
-import net.osmand.plus.views.YandexTrafficAdapter;
 import net.osmand.plus.views.corenative.NativeCoreContext;
 import net.osmand.plus.views.layers.base.BaseMapLayer;
 import net.osmand.util.Algorithms;
@@ -197,10 +196,17 @@ public class MapTileLayer extends BaseMapLayer {
 	public void setMap(@Nullable ITileSource map) {
 		MapTileAdapter target = null;
 		if (map instanceof TileSourceTemplate) {
-			if (TileSourceManager.RULE_YANDEX_TRAFFIC.equals(map.getRule())) {
-				map = null;
-				target = new YandexTrafficAdapter();
-			} else {
+			// The Yandex traffic branch is gone along with YandexTrafficAdapter. It called the
+			// undocumented internal host core-jams-rdr.maps.yandex.net, which is not a public API
+			// and was never authorised; and Yandex has no jam data for Egypt at all - no jam
+			// scoring outside Russia/CIS/Turkiye, and Egypt is not in the Navigator routing
+			// country list. So it was an unauthorised call that could not have returned anything
+			// useful in the only city this fork is driven in.
+			//
+			// A tile source carrying rule=yandex_traffic now falls through to the ordinary raster
+			// path, which is the correct outcome: it renders as whatever tiles it points at, or
+			// nothing, instead of silently reaching a host nobody asked it to contact.
+			{
 				this.map = map;
 				long paramMin = map.getParamMin();
 				long paramMax = map.getParamMax();

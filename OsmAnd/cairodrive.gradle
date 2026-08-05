@@ -423,6 +423,9 @@ def speechLead = speechLeadEnv?.trim() ? speechLeadEnv.trim() : "true"
 def glanceStyleEnv = System.getenv("CAIRODRIVE_GLANCE_STYLE")
 def glanceStyle = glanceStyleEnv?.trim() ? glanceStyleEnv.trim() : "true"
 
+// ALL ON at the owner's explicit direction. Each still carries its own flag and its own
+// log tag, so a bad one is identifiable from the drive log and removable with one
+// environment variable - the property whose absence forced the mass revert last time.
 // PLACES: Place Details ON, the other four OFF at the owner's instruction - "remember them
 // for later". The code stays; only the defaults change, so re-enabling any one of them is a
 // single environment variable rather than re-implementing it.
@@ -476,39 +479,39 @@ def openWeatherKeyEnv = System.getenv("CAIRODRIVE_OPENWEATHER_KEY")
 def openWeatherKey = openWeatherKeyEnv?.trim() ? openWeatherKeyEnv.trim() : ""
 
 def tomtomTrafficEnv = System.getenv("CAIRODRIVE_TOMTOM_TRAFFIC")
-def tomtomTraffic = tomtomTrafficEnv?.trim() ? tomtomTrafficEnv.trim() : "false"
+def tomtomTraffic = tomtomTrafficEnv?.trim() ? tomtomTrafficEnv.trim() : "true"
 
 def weatherHazardEnv = System.getenv("CAIRODRIVE_WEATHER_HAZARD")
-def weatherHazard = weatherHazardEnv?.trim() ? weatherHazardEnv.trim() : "false"
+def weatherHazard = weatherHazardEnv?.trim() ? weatherHazardEnv.trim() : "true"
 
 // No key, no quota, no network - so it costs nothing to leave available. Still defaults off so it
 // arrives on its own drive like everything else.
 def sunGlareEnv = System.getenv("CAIRODRIVE_SUN_GLARE")
-def sunGlare = sunGlareEnv?.trim() ? sunGlareEnv.trim() : "false"
+def sunGlare = sunGlareEnv?.trim() ? sunGlareEnv.trim() : "true"
 
 // The one that changes BEHAVIOUR rather than pixels: a reported closure ahead makes the OFFLINE
 // router go around it, via the impassable-roads nogo points RouteProvider already feeds the native
 // engine. Off by default and separately gated from the traffic provider, because a bad closure
 // applied as a permanent nogo is the worst failure mode in this whole stack.
 def trafficRoutingEnv = System.getenv("CAIRODRIVE_TRAFFIC_ROUTING")
-def trafficRouting = trafficRoutingEnv?.trim() ? trafficRoutingEnv.trim() : "false"
+def trafficRouting = trafficRoutingEnv?.trim() ? trafficRoutingEnv.trim() : "true"
 
 def placesDetailsEnv = System.getenv("CAIRODRIVE_PLACES_DETAILS")
 def placesDetails = placesDetailsEnv?.trim() ? placesDetailsEnv.trim() : "true"
 
 def placesPhotosEnv = System.getenv("CAIRODRIVE_PLACES_PHOTOS")
-def placesPhotos = placesPhotosEnv?.trim() ? placesPhotosEnv.trim() : "false"
+def placesPhotos = placesPhotosEnv?.trim() ? placesPhotosEnv.trim() : "true"
 
 def placesReviewsEnv = System.getenv("CAIRODRIVE_PLACES_REVIEWS")
-def placesReviews = placesReviewsEnv?.trim() ? placesReviewsEnv.trim() : "false"
+def placesReviews = placesReviewsEnv?.trim() ? placesReviewsEnv.trim() : "true"
 
 // Watch this one WHILE TYPING, not after. It is the feature that runs per keystroke, and the
 // previous attempt's worst behaviour showed up in the search box rather than on the map.
 def placesAutocompleteEnv = System.getenv("CAIRODRIVE_PLACES_AUTOCOMPLETE")
-def placesAutocomplete = placesAutocompleteEnv?.trim() ? placesAutocompleteEnv.trim() : "false"
+def placesAutocomplete = placesAutocompleteEnv?.trim() ? placesAutocompleteEnv.trim() : "true"
 
 def placesNearbyEnv = System.getenv("CAIRODRIVE_PLACES_NEARBY")
-def placesNearby = placesNearbyEnv?.trim() ? placesNearbyEnv.trim() : "false"
+def placesNearby = placesNearbyEnv?.trim() ? placesNearbyEnv.trim() : "true"
 
 def placeDetailsEnv = System.getenv("CAIRODRIVE_PLACE_DETAILS")
 def placeDetails = placeDetailsEnv?.trim() ? placeDetailsEnv.trim() : "true"

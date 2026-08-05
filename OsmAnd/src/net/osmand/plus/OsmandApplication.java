@@ -255,6 +255,26 @@ public class OsmandApplication extends MultiDexApplication {
 		// initialisation itself. No-op unless BuildConfig.CAIRODRIVE_FULL_LOGGING is set.
 		CairoDriveLogger.getInstance().init(this);
 
+		// The provider stack. Registration is side-effect free and safe this early; install()
+		// arbitrates one provider per capability and writes the CD_PROVIDERS line saying which
+		// won - which is what lets a drive log answer "who actually served this".
+		//
+		// AFTER the logger init above, deliberately: the logger is a silent no-op until its writer
+		// thread exists, so installing earlier would still arbitrate correctly but would lose the
+		// one line that makes the arbitration auditable.
+		try {
+			net.osmand.plus.cairodrive.providers.CairoDriveProviders.register(
+					net.osmand.plus.cairodrive.providers.TomTomTrafficProvider.getInstance());
+			net.osmand.plus.cairodrive.providers.CairoDriveProviders.register(
+					net.osmand.plus.cairodrive.providers.OpenWeatherHazardProvider.getInstance());
+			net.osmand.plus.cairodrive.providers.CairoDriveProviders.register(
+					net.osmand.plus.cairodrive.providers.SunGlareProvider.getInstance());
+			net.osmand.plus.cairodrive.providers.CairoDriveProviders.install(this);
+		} catch (Throwable t) {
+			// A provider failing to register must never take the app down with it.
+			CairoDriveLogger.getInstance().log("CD_PROVIDERS", "install failed", t);
+		}
+
 		LifecycleObserver appLifecycleObserver = new DefaultLifecycleObserver() {
 			@Override
 			public void onStart(@NonNull LifecycleOwner owner) {

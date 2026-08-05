@@ -204,6 +204,7 @@ class RouteRecalculationHelper {
 		// Score the fresh route sooner than the usual 3-minute tick, but with a debounce so the
 		// GPS churn around a reroute cannot fire a billed request per fix.
 		GoogleTrafficHelper.onNewRoute();
+		net.osmand.plus.cairodrive.providers.TomTomTrafficProvider.onNewRoute();
 		if (res.initialCalculation) {
 			app.runInUIThread(() -> routingHelper.recalculateRouteDueToSettingsChange(false));
 		}

@@ -313,6 +313,8 @@ jobs:
         env:
           APP_EDITION: ${{ steps.variant.outputs.app_edition }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          CAIRODRIVE_TOMTOM_KEY: ${{ secrets.CAIRODRIVE_TOMTOM_KEY }}
+          CAIRODRIVE_OPENWEATHER_KEY: ${{ secrets.CAIRODRIVE_OPENWEATHER_KEY }}
           APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
           BUNDLE_TASK: ${{ steps.variant.outputs.bundle_task }}
         run: ./gradlew --no-daemon --stacktrace "${BUNDLE_TASK}"
@@ -387,6 +389,8 @@ jobs:
         env:
           APP_EDITION: ${{ steps.variant.outputs.app_edition }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          CAIRODRIVE_TOMTOM_KEY: ${{ secrets.CAIRODRIVE_TOMTOM_KEY }}
+          CAIRODRIVE_OPENWEATHER_KEY: ${{ secrets.CAIRODRIVE_OPENWEATHER_KEY }}
           APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
           APK_RELEASE_TASK: ${{ steps.variant.outputs.apk_release_task }}
         run: ./gradlew --no-daemon --stacktrace "${APK_RELEASE_TASK}"
@@ -742,6 +746,8 @@ jobs:
         env:
           APP_EDITION: ${{ steps.variant.outputs.app_edition }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          CAIRODRIVE_TOMTOM_KEY: ${{ secrets.CAIRODRIVE_TOMTOM_KEY }}
+          CAIRODRIVE_OPENWEATHER_KEY: ${{ secrets.CAIRODRIVE_OPENWEATHER_KEY }}
           APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
           CAIRODRIVE_KEYSTORE_FILE: ${{ steps.keystore.outputs.path }}
           CAIRODRIVE_KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -788,6 +794,8 @@ jobs:
         env:
           APP_EDITION: ${{ steps.variant.outputs.app_edition }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          CAIRODRIVE_TOMTOM_KEY: ${{ secrets.CAIRODRIVE_TOMTOM_KEY }}
+          CAIRODRIVE_OPENWEATHER_KEY: ${{ secrets.CAIRODRIVE_OPENWEATHER_KEY }}
           APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
           CAIRODRIVE_KEYSTORE_FILE: ${{ steps.keystore.outputs.path }}
           CAIRODRIVE_KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}

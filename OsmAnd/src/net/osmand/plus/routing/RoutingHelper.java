@@ -272,6 +272,11 @@ public class RoutingHelper {
 		// Bumps the generation so any fetch still in flight discards its result instead of
 		// resurrecting traffic for a route that no longer exists.
 		GoogleTrafficHelper.reset(app);
+		// Same contract: drop route-anchored state and orphan any fetch still in flight. The
+		// hazard banner deliberately survives - dust is a property of the sky, not of the route.
+		net.osmand.plus.cairodrive.providers.CairoDriveProviders.resetRouteState();
+		net.osmand.plus.cairodrive.providers.TrafficAwareRouting.onRouteCleared(app);
+		net.osmand.plus.cairodrive.providers.SunGlareProvider.reset(app);
 		routeWasFinished = false; // Prevent stale "arrived" state from leaking into the next navigation session
 		route = new RouteCalculationResult("");
 		isDeviatedFromRoute = false;
@@ -601,6 +606,18 @@ public class RoutingHelper {
 			// Live traffic on the route. Self-gating and self-throttling: with the feature off or
 			// no key compiled in this returns on the first line and costs nothing per fix.
 			GoogleTrafficHelper.onLocationUpdate(this, currentLocation);
+			// The provider stack. Each of these is the same shape as the line above: a self-gating,
+			// self-throttling entry point that returns immediately when its flag is off or its key
+			// is absent, so a default build pays one boolean read per fix for the lot.
+			//
+			// Ordered cheapest-first on purpose. Sun glare is pure arithmetic and no network at
+			// all; the weather poller is minutes apart; TomTom is the only one that can spend a
+			// billed request, and TrafficAwareRouting runs last because it CONSUMES what the
+			// others published rather than fetching anything itself.
+			net.osmand.plus.cairodrive.providers.SunGlareProvider.onLocationUpdate(app, currentLocation);
+			net.osmand.plus.cairodrive.providers.OpenWeatherHazardProvider.onLocationUpdate(app, currentLocation);
+			net.osmand.plus.cairodrive.providers.TomTomTrafficProvider.onLocationUpdate(this, currentLocation);
+			net.osmand.plus.cairodrive.providers.TrafficAwareRouting.onLocationUpdate(this, currentLocation);
 			if (!route.isEmpty()) {
 				lastGoodRouteLocation = currentLocation;
 				// Feed the ETA calibrator the modelled speed the router expects for the segment
