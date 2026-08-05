@@ -66,6 +66,20 @@ public final class AzureRouteWeatherProvider {
 	private static final String TRACE_TAG = "CD_ROUTEWX";
 
 	private static final String ROUTE_WEATHER_API = "https://atlas.microsoft.com/weather/route/json";
+	/**
+	 * The SAME subscription key, a different endpoint, and the same 250,000/month pool.
+	 *
+	 * <p>Checked online August 2026: global coverage, sourced from official government
+	 * meteorological agencies and regional providers via AccuWeather, empty {@code results[]} when
+	 * there is nothing. For Cairo that means a khamsin or sandstorm warning issued by the Egyptian
+	 * Meteorological Authority - an OFFICIAL declaration, which is a categorically different kind
+	 * of evidence from this app inferring dust from particulate ratios and a visibility reading.
+	 *
+	 * <p>Not fetching it while already holding the key would have been leaving the best dust
+	 * signal in the entire stack on the table.
+	 */
+	private static final String SEVERE_ALERTS_API =
+			"https://atlas.microsoft.com/weather/severe/alerts/json";
 	private static final String API_VERSION = "1.1";
 
 	private static final int CONNECT_TIMEOUT_MS = 8000;
@@ -132,18 +146,33 @@ public final class AzureRouteWeatherProvider {
 			return;
 		}
 		long now = System.currentTimeMillis();
-		if (lastPollMs != 0 && now - lastPollMs < MIN_INTERVAL_MS) {
+		boolean routeDue = lastPollMs == 0 || now - lastPollMs >= MIN_INTERVAL_MS;
+		boolean alertsDue = lastAlertPollMs == 0 || now - lastAlertPollMs >= ALERT_INTERVAL_MS;
+		if (!routeDue && !alertsDue) {
 			return;
 		}
-		net.osmand.plus.routing.RouteCalculationResult route = helper.getRoute();
-		if (route == null) {
+		// Alerts do not need a route; route weather does. Working that out HERE rather than
+		// inside the worker keeps the thread from being started for a job that has nothing to do.
+		List<Location> ahead = null;
+		int remainingMinutes = 0;
+		if (routeDue) {
+			net.osmand.plus.routing.RouteCalculationResult route = helper.getRoute();
+			if (route != null) {
+				List<Location> locations = new java.util.ArrayList<>(route.getRouteLocations());
+				if (locations.size() >= 2) {
+					ahead = locations;
+					remainingMinutes = Math.max(0, helper.getLeftTime() / 60);
+				}
+			}
+		}
+		if (ahead == null && !alertsDue) {
 			return;
 		}
-		List<Location> ahead = new java.util.ArrayList<>(route.getRouteLocations());
-		if (ahead.size() < 2) {
-			return;
-		}
-		int remainingMinutes = Math.max(0, helper.getLeftTime() / 60);
+		double lat = location.getLatitude();
+		double lon = location.getLongitude();
+		List<Location> routeAhead = ahead;
+		int minutes = remainingMinutes;
+		boolean wantAlerts = alertsDue;
 		synchronized (AzureRouteWeatherProvider.class) {
 			if (inFlight) {
 				return;
@@ -153,9 +182,16 @@ public final class AzureRouteWeatherProvider {
 		Thread t = new Thread(() -> {
 			android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
 			try {
-				checkRoute(app, ahead, remainingMinutes);
+				if (routeAhead != null) {
+					checkRoute(app, routeAhead, minutes);
+				}
+				if (wantAlerts) {
+					// Free driving included, unlike the route call above - a government sandstorm
+					// warning is about the sky over the car, not about a destination.
+					severeAlerts(app, lat, lon);
+				}
 			} catch (Throwable th) {
-				LOG.info("Azure route weather failed: " + th.getClass().getSimpleName());
+				LOG.info("Azure weather failed: " + th.getClass().getSimpleName());
 			} finally {
 				inFlight = false;
 			}
@@ -316,6 +352,92 @@ public final class AzureRouteWeatherProvider {
 			return -1;
 		}
 	}
+
+	// ------------------------------------------------------------ severe weather alerts
+
+	/**
+	 * Official severe-weather alerts for a point, as a short human-readable line, or null.
+	 *
+	 * <p>BLOCKING. Shares the daily cap with the route call on purpose - they are the same key,
+	 * the same account and the same bill, and a cap that only counted one of two endpoints would
+	 * bound nothing.
+	 *
+	 * <p>Free driving IS served here, unlike the route weather. A government sandstorm warning is
+	 * about the sky over the car, not about a destination the driver may not have entered.
+	 */
+	@Nullable
+	public static String severeAlerts(@NonNull OsmandApplication app, double lat, double lon) {
+		if (!hasKey() || !app.getSettings().isInternetConnectionAvailable()) {
+			return null;
+		}
+		long now = System.currentTimeMillis();
+		if (lastAlertPollMs != 0 && now - lastAlertPollMs < ALERT_INTERVAL_MS) {
+			return null;
+		}
+		if (!claim(app)) {
+			ApiHealth.recordSkipped(ApiHealth.Api.AZURE_MAPS, ApiHealth.Skip.BUDGET_SPENT);
+			return null;
+		}
+		lastAlertPollMs = now;
+		String url = String.format(Locale.US, "%s?api-version=%s&query=%.5f,%.5f&subscription-key=%s",
+				SEVERE_ALERTS_API, API_VERSION, lat, lon, BuildConfig.CAIRODRIVE_AZURE_MAPS_KEY);
+		String body = get(url);
+		if (body == null) {
+			return null;
+		}
+		try {
+			JSONArray results = new JSONObject(body).optJSONArray("results");
+			if (results == null || results.length() == 0) {
+				// The overwhelmingly common case, and it is logged. A silent nothing is
+				// indistinguishable from a provider that never ran, which is the failure this
+				// codebase keeps repeating.
+				CairoDriveLog.log(TRACE_TAG, "azure severe alerts: none active here");
+				lastAlertSummary = null;
+				return null;
+			}
+			StringBuilder sb = new StringBuilder();
+			for (int i = 0; i < results.length() && sb.length() < 200; i++) {
+				JSONObject alert = results.getJSONObject(i);
+				String description = alert.optString("description", "");
+				if (Algorithms.isEmpty(description)) {
+					JSONObject d = alert.optJSONObject("description");
+					description = d != null ? d.optString("english", "") : "";
+				}
+				String category = alert.optString("category", "");
+				if (Algorithms.isEmpty(description) && Algorithms.isEmpty(category)) {
+					continue;
+				}
+				if (sb.length() > 0) {
+					sb.append("; ");
+				}
+				sb.append(Algorithms.isEmpty(description) ? category : description);
+			}
+			lastAlertSummary = sb.length() == 0 ? null : sb.toString();
+			CairoDriveLog.log(TRACE_TAG, "azure severe alerts: " + results.length()
+					+ " active - " + (lastAlertSummary != null ? lastAlertSummary : "unnamed"));
+			return lastAlertSummary;
+		} catch (Throwable t) {
+			LOG.info("Azure severe alerts parse failed: " + t.getClass().getSimpleName());
+			return null;
+		}
+	}
+
+	/** The last alert text seen this session, or null. Non-blocking, for a status readout. */
+	@Nullable
+	public static String lastAlertSummary() {
+		return lastAlertSummary;
+	}
+
+	/**
+	 * Alerts change on the scale of a weather bulletin, not a drive. Longer than the route poll
+	 * because re-asking every ten minutes would spend the shared cap on an answer that is the same
+	 * string it was ten minutes ago.
+	 */
+	private static final long ALERT_INTERVAL_MS = 30 * 60 * 1000L;
+
+	private static volatile long lastAlertPollMs;
+	@Nullable
+	private static volatile String lastAlertSummary;
 
 	private static boolean claim(@NonNull OsmandApplication app) {
 		try {

@@ -358,7 +358,7 @@ public final class OpenWeatherHazardProvider implements CairoDriveProviders.Prov
 		// Read, never fetched: this is whatever the independent provider last saw on its own
 		// schedule. Making the dust decision wait on a second network round trip would delay the
 		// warning it is there to make more trustworthy.
-		reading.secondOpinion = TomorrowWeatherProvider.corroboratesLowVisibility();
+		reading.secondOpinion = TomorrowWeatherProvider.dustCorroboration();
 
 		CairoDriveProviders.HazardBanner banner = evaluate(reading);
 		CairoDriveLogger.getInstance().log(TRACE_TAG, describe(reading, banner));

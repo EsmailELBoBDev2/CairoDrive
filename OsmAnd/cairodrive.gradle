@@ -493,10 +493,17 @@ def mapillaryToken = mapillaryTokenEnv?.trim() ? mapillaryTokenEnv.trim() : ""
 // BestTime.app - popular times / "how busy right now". The one field the owner asked for that
 // Google's Places API does not expose at any price.
 //
-// TWO keys, and the distinction is the entire cost model: the PRIVATE key is used on the POST that
-// GENERATES a forecast and burns credits, the PUBLIC key on the GETs that re-read an already
-// generated one for free. BestTimeProvider generates a venue at most once and reads it back
-// thereafter; a POST per tap would be the exact blow-up the Places rules already guard against.
+// The PRIVATE key is used on the POST that GENERATES a forecast and burns credits. A POST per tap
+// would be the exact blow-up the Places rules already guard against, so a venue is generated at
+// most once.
+//
+// The PUBLIC key is declared below and read by NOTHING but the session header, and that is
+// correct rather than an oversight. It exists for the GET-by-id that re-reads an already generated
+// forecast - which BestTime bills at 1 credit. BestTimeProvider instead stores the whole week
+// locally on the one POST and answers every later lookup from that, across restarts, at zero
+// credits and with no request at all. The local cache is strictly cheaper than the endpoint the
+// public key unlocks, so wiring it would ADD cost. Left declared so the session header can still
+// report whether the owner has one.
 def bestTimePrivateEnv = System.getenv("CAIRODRIVE_BESTTIME_PRIVATE_KEY")
 def bestTimePrivate = bestTimePrivateEnv?.trim() ? bestTimePrivateEnv.trim() : ""
 

@@ -65,6 +65,8 @@ public final class GeoapifyProvider {
 
 	private static final String REVERSE_API = "https://api.geoapify.com/v1/geocode/reverse";
 	private static final String AUTOCOMPLETE_API = "https://api.geoapify.com/v1/geocode/autocomplete";
+	/** Same key, third endpoint. 800+ OSM categories; billed per 20 places returned. */
+	private static final String PLACES_API = "https://api.geoapify.com/v2/places";
 
 	private static final int CONNECT_TIMEOUT_MS = 6000;
 	private static final int READ_TIMEOUT_MS = 8000;
@@ -76,6 +78,17 @@ public final class GeoapifyProvider {
 	 */
 	private static final int REVERSE_DAILY_CAP = 120;
 	private static final int AUTOCOMPLETE_DAILY_CAP = 300;
+	/** Small: this is a deliberate driver action, not something polled. */
+	private static final int NEARBY_DAILY_CAP = 60;
+
+	/** One credit's worth. More than anyone reads from a car, and the next 20 cost another. */
+	private static final int NEARBY_LIMIT = 20;
+
+	/**
+	 * Beyond this a "nearby" result is not nearby. Also bounds the work the provider does for a
+	 * query someone made by mistake.
+	 */
+	private static final int MAX_NEARBY_RADIUS_M = 15000;
 
 	/**
 	 * Typing debounce. Geoapify bills per REQUEST, so this number is the cost model: at 350 ms a
@@ -96,6 +109,8 @@ public final class GeoapifyProvider {
 	private static final String PREF_REV_COUNT = "cairodrive_geoapify_rev_count";
 	private static final String PREF_AC_DAY = "cairodrive_geoapify_ac_day";
 	private static final String PREF_AC_COUNT = "cairodrive_geoapify_ac_count";
+	private static final String PREF_NEARBY_DAY = "cairodrive_geoapify_nearby_day";
+	private static final String PREF_NEARBY_COUNT = "cairodrive_geoapify_nearby_count";
 
 	private static volatile long lastTypingRequestMs;
 
@@ -240,6 +255,79 @@ public final class GeoapifyProvider {
 					+ out.size() + " result(s)");
 		} catch (Throwable t) {
 			LOG.info("Geoapify autocomplete parse failed: " + t.getClass().getSimpleName());
+		}
+		return out;
+	}
+
+	// ------------------------------------------------------------ nearby places
+
+	/**
+	 * Places of a category within a radius - "petrol near me", "pharmacy near me".
+	 *
+	 * <p>The SAME key that already serves addresses, on a different endpoint. Google's Nearby
+	 * Search sits at a deliberate quota of <b>zero</b> in the console, so this capability has no
+	 * other source in the app at all; the offline .obf has POIs but is missing exactly the
+	 * informal, unbranded businesses that make up much of Cairo.
+	 *
+	 * <p>Billing shape worth knowing: Geoapify charges per 20 PLACES returned, not per request, so
+	 * the limit below is the cost. 20 is one credit and is already more than anyone reads from a
+	 * car.
+	 *
+	 * <p>BLOCKING. Empty list when unavailable, never null - the caller cannot act differently on
+	 * "no petrol stations" and "no provider" anyway.
+	 */
+	@NonNull
+	public static List<Suggestion> nearby(@NonNull OsmandApplication app, @NonNull LatLon at,
+	                                      @NonNull String categories, int radiusMetres) {
+		List<Suggestion> out = new ArrayList<>();
+		if (!hasKey()) {
+			ApiHealth.recordSkipped(ApiHealth.Api.GEOAPIFY, ApiHealth.Skip.NO_KEY);
+			return out;
+		}
+		if (!app.getSettings().isInternetConnectionAvailable()) {
+			ApiHealth.recordSkipped(ApiHealth.Api.GEOAPIFY, ApiHealth.Skip.NO_INTERNET);
+			return out;
+		}
+		if (!claim(app, PREF_NEARBY_DAY, PREF_NEARBY_COUNT, NEARBY_DAILY_CAP)) {
+			ApiHealth.recordSkipped(ApiHealth.Api.GEOAPIFY, ApiHealth.Skip.BUDGET_SPENT);
+			CairoDriveLog.log(TRACE_TAG, "geoapify nearby skipped - daily cap " + NEARBY_DAILY_CAP);
+			return out;
+		}
+		int radius = Math.max(200, Math.min(radiusMetres, MAX_NEARBY_RADIUS_M));
+		String url = String.format(Locale.US,
+				"%s?categories=%s&filter=circle:%.6f,%.6f,%d&bias=proximity:%.6f,%.6f"
+						+ "&limit=%d&lang=%s&apiKey=%s",
+				PLACES_API, categories, at.getLongitude(), at.getLatitude(), radius,
+				at.getLongitude(), at.getLatitude(), NEARBY_LIMIT, lang(app),
+				BuildConfig.CAIRODRIVE_GEOAPIFY_KEY);
+		String body = get(url, ApiHealth.Api.GEOAPIFY);
+		if (body == null) {
+			return out;
+		}
+		try {
+			// This endpoint answers in GeoJSON - `features`, each with `properties` and a
+			// `geometry` - NOT the flat `results` the geocoding endpoints return with format=json.
+			// Same provider, same key, different shape.
+			JSONArray features = new JSONObject(body).optJSONArray("features");
+			for (int i = 0; features != null && i < features.length(); i++) {
+				JSONObject props = features.getJSONObject(i).optJSONObject("properties");
+				if (props == null || !props.has("lat") || !props.has("lon")) {
+					continue;
+				}
+				String label = props.optString("name", "");
+				if (Algorithms.isEmpty(label)) {
+					label = props.optString("formatted", "");
+				}
+				if (Algorithms.isEmpty(label)) {
+					continue;
+				}
+				out.add(new Suggestion(label,
+						new LatLon(props.getDouble("lat"), props.getDouble("lon"))));
+			}
+			CairoDriveLog.log(TRACE_TAG, "geoapify nearby " + categories + " r=" + radius
+					+ "m -> " + out.size() + " place(s)");
+		} catch (Throwable t) {
+			LOG.info("Geoapify places parse failed: " + t.getClass().getSimpleName());
 		}
 		return out;
 	}

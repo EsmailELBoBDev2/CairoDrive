@@ -92,8 +92,19 @@ public final class TomorrowWeatherProvider {
 	private static final String PREF_DAY = "cairodrive_tomorrow_day";
 	private static final String PREF_COUNT = "cairodrive_tomorrow_count";
 
+	/**
+	 * Same threshold and same ratio as OpenWeatherHazardProvider's PM signal, deliberately.
+	 *
+	 * <p>Two providers judging "is this coarse mineral dust" against different numbers would
+	 * disagree by construction, and the disagreement would say nothing about the air.
+	 */
+	private static final double DUST_PM10_PM25_RATIO = 3.0;
+	private static final double DUST_PM10_FLOOR_UGM3 = 75.0;
+
 	private static volatile long lastPollMs;
 	private static volatile int lastVisibilityM = -1;
+	private static volatile double lastPm10 = -1;
+	private static volatile double lastPm25 = -1;
 	private static volatile long lastReadingMs;
 
 	private TomorrowWeatherProvider() {
@@ -134,6 +145,52 @@ public final class TomorrowWeatherProvider {
 			return Corroboration.UNKNOWN;
 		}
 		return lastVisibilityM <= VISIBILITY_LOW_M ? Corroboration.AGREES : Corroboration.DISAGREES;
+	}
+
+	/** The independent coarse-particle ratio, or -1 when air-quality fields were not served. */
+	public static double pmRatio() {
+		return lastPm10 >= 0 && lastPm25 > 0 ? lastPm10 / lastPm25 : -1;
+	}
+
+	/**
+	 * Does the independent source's particulate reading also look like mineral dust?
+	 *
+	 * <p>Second half of the free second opinion. Same one-directional rule as visibility: it can
+	 * only ever soften the warning, never raise it, and UNKNOWN - which is what a plan that does
+	 * not serve air-quality layers produces - changes nothing.
+	 */
+	@NonNull
+	public static Corroboration corroboratesDustParticles() {
+		if (!hasKey() || lastPm10 < 0 || lastPm25 <= 0 || readingAgeMs() > 2 * POLL_INTERVAL_MS) {
+			return Corroboration.UNKNOWN;
+		}
+		boolean dusty = lastPm10 >= DUST_PM10_FLOOR_UGM3 && pmRatio() >= DUST_PM10_PM25_RATIO;
+		return dusty ? Corroboration.AGREES : Corroboration.DISAGREES;
+	}
+
+	/**
+	 * The two independent checks combined into the single answer the dust decision consumes.
+	 *
+	 * <p>Deliberately generous towards raising the warning: <b>any</b> agreement blocks the
+	 * downgrade, and DISAGREES is only returned when the independent source actually looked at
+	 * something and saw nothing dusty in any of it. So the softer outcome requires positive
+	 * evidence of calm air rather than merely a lack of evidence for dust.
+	 *
+	 * <p>The asymmetry is the same one the whole hazard design rests on. A dust warning that is
+	 * one shade too loud costs a little credibility; one that was quietly softened on a thin
+	 * signal, on a day when visibility really was collapsing, costs more than that.
+	 */
+	@NonNull
+	public static Corroboration dustCorroboration() {
+		Corroboration vis = corroboratesLowVisibility();
+		Corroboration pm = corroboratesDustParticles();
+		if (vis == Corroboration.AGREES || pm == Corroboration.AGREES) {
+			return Corroboration.AGREES;
+		}
+		if (vis == Corroboration.UNKNOWN && pm == Corroboration.UNKNOWN) {
+			return Corroboration.UNKNOWN;
+		}
+		return Corroboration.DISAGREES;
 	}
 
 	public enum Corroboration {
@@ -213,10 +270,18 @@ public final class TomorrowWeatherProvider {
 		}
 		lastPollMs = now;
 
-		// fields is pinned to the two core layers actually used. Asking for everything would work
-		// on this plan but makes the response, and any future plan change, larger than the job.
+		// The particulate fields ride the SAME request for the SAME one unit of quota. That is the
+		// whole reason they are here: OpenWeather's dust decision rests on three signals, and two
+		// of them - the condition code and the PM10:PM2.5 ratio - can now be checked against a
+		// different vendor for no extra cost at all. Asking for one field and ignoring a free
+		// second opinion on another would be leaving the request half spent.
+		//
+		// Air-quality layers may not be served on every plan. That is handled by reading them as
+		// optional below rather than by not asking: a field that does not come back simply leaves
+		// that corroboration UNKNOWN, which is already a first-class state here.
 		String url = String.format(Locale.US,
-				"%s?location=%.5f,%.5f&fields=visibility,windGust&units=metric&apikey=%s",
+				"%s?location=%.5f,%.5f&fields=visibility,windGust,particulateMatter10,"
+						+ "particulateMatter25&units=metric&apikey=%s",
 				REALTIME_API, lat, lon, BuildConfig.CAIRODRIVE_TOMORROW_KEY);
 		String body = get(url);
 		if (body == null) {
@@ -233,10 +298,16 @@ public final class TomorrowWeatherProvider {
 			// factor of 1000 would make every reading look like a dust storm.
 			double km = values.getDouble("visibility");
 			lastVisibilityM = (int) Math.round(km * 1000);
+			// Optional, and absence is not a failure - see the note on the request above.
+			lastPm10 = values.optDouble("particulateMatter10", -1);
+			lastPm25 = values.optDouble("particulateMatter25", -1);
 			lastReadingMs = System.currentTimeMillis();
 			double gust = values.optDouble("windGust", -1);
 			CairoDriveLog.log(TRACE_TAG, "tomorrow.io visibility=" + lastVisibilityM + " m"
 					+ (gust >= 0 ? String.format(Locale.US, " gust=%.1f m/s", gust) : "")
+					+ (lastPm10 >= 0 ? String.format(Locale.US, " pm10=%.1f", lastPm10) : "")
+					+ (lastPm25 >= 0 ? String.format(Locale.US, " pm2_5=%.1f", lastPm25) : "")
+					+ (pmRatio() >= 0 ? String.format(Locale.US, " ratio=%.2f", pmRatio()) : "")
 					+ " (independent second opinion)");
 		} catch (Throwable t) {
 			LOG.info("Tomorrow.io parse failed: " + t.getClass().getSimpleName());

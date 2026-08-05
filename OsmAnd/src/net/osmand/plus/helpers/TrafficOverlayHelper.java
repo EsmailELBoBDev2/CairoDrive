@@ -72,6 +72,30 @@ public class TrafficOverlayHelper {
 				install(app, "HERE Traffic (flow)",
 						"https://traffic.maps.hereapi.com/v3/flow/mc/{0}/{1}/{2}/256/png?apiKey=" + hereKey, 10);
 			}
+			// The OpenWeather key was already shipping for the dust banner, and the SAME key
+			// serves free raster weather tiles on a static URL template. Two layers, chosen for a
+			// car in Cairo rather than for completeness:
+			//
+			//   clouds_new  - the only one that ever shows anything in this city most of the year
+			//   wind_new    - khamsin is a WIND event, and the wind field is what says whether the
+			//                 dust is arriving or leaving, which no point reading can tell you
+			//
+			// Precipitation, pressure and temperature are deliberately omitted: rain is a handful
+			// of days a year here and the other two do not change a driving decision.
+			//
+			// This only INSTALLS the sources - nothing renders until the driver picks one from the
+			// overlay menu. That matters because CD_FRAME already measures `over` at 25.9 ms, 61%
+			// of a 46.9 ms frame, and PROVIDERS.md 3.3 warns that a raster overlay lands in exactly
+			// that bucket. Available, off, and to be judged on avgOver before and after.
+			String openWeatherKey = BuildConfig.CAIRODRIVE_OPENWEATHER_KEY;
+			if (!Algorithms.isEmpty(openWeatherKey)) {
+				install(app, "OpenWeather Clouds",
+						"https://tile.openweathermap.org/map/clouds_new/{0}/{1}/{2}.png?appid="
+								+ openWeatherKey, 30);
+				install(app, "OpenWeather Wind",
+						"https://tile.openweathermap.org/map/wind_new/{0}/{1}/{2}.png?appid="
+								+ openWeatherKey, 30);
+			}
 		}, "cairo-tile-sources");
 		t.setPriority(Thread.MIN_PRIORITY);
 		t.start();
