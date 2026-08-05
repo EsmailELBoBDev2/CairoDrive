@@ -122,10 +122,10 @@ except ValueError:
     check("16-bit depth raises", True)
 
 print("\nKEEP list is honoured by wanted()")
-check("mm_amenity_fuel.png skipped", not gi.wanted("mm_amenity_fuel.png"))
-check("mm_amenity_pharmacy.png skipped", not gi.wanted("mm_amenity_pharmacy.png"))
-check("mm_shop_bakery.png targeted", gi.wanted("mm_shop_bakery.png"))
-check("non-png ignored", not gi.wanted("mm_shop_bakery.svg"))
+check("mx_amenity_fuel.png skipped", not gi.wanted("mx_amenity_fuel.png"))
+check("mx_amenity_pharmacy.png skipped", not gi.wanted("mx_amenity_pharmacy.png"))
+check("mx_shop_bakery.png targeted", gi.wanted("mx_shop_bakery.png"))
+check("non-png ignored", not gi.wanted("mx_shop_bakery.svg"))
 check("unrelated prefix ignored", not gi.wanted("h_red_shield.png"))
 
 print("\n%d failure(s)" % len(fails))

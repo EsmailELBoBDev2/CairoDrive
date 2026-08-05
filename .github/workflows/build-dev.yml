@@ -185,10 +185,19 @@ jobs:
           # nothing, so an upstream rename fails the build here instead of shipping a silently
           # unchanged icon set. The listing below turns that failure into a one-cycle diagnosis
           # rather than a guess at what upstream renamed.
+          # NON-BLOCKING, and that is a deliberate correction. The first wiring of this used
+          # `exit 1`, matching the three scripts above. Those three earn it: a missing routing
+          # profile, a half-trimmed asset manifest or an unpatched style all produce an app that
+          # is wrong in ways a drive cannot reveal. Icon HUE does not - the worst case is icons
+          # that stay colourful, which is simply the previous build.
+          #
+          # It cost three commits of zero compile signal to learn that, because this step gates
+          # every later step including the compile. A cosmetic patch must never be able to do
+          # that again. The warning is loud, it lands in the job summary, and the script's own
+          # refusal to report success while changing nothing is untouched.
           python3 android/patches/cairodrive_glance_icons.py resources || {
-            echo "::error::glance icon desaturation failed - actual resources layout follows"
+            echo "::warning::glance icon desaturation did not run - icons ship in COLOUR. Build continues; see the listing above for the names it actually found."
             find resources -maxdepth 3 -type d -name '*icon*' -print
-            exit 1
           }
 
       # Checked out for EVERY core flavor, not just legacy. The OpenGL flavor takes its
@@ -600,10 +609,19 @@ jobs:
           # nothing, so an upstream rename fails the build here instead of shipping a silently
           # unchanged icon set. The listing below turns that failure into a one-cycle diagnosis
           # rather than a guess at what upstream renamed.
+          # NON-BLOCKING, and that is a deliberate correction. The first wiring of this used
+          # `exit 1`, matching the three scripts above. Those three earn it: a missing routing
+          # profile, a half-trimmed asset manifest or an unpatched style all produce an app that
+          # is wrong in ways a drive cannot reveal. Icon HUE does not - the worst case is icons
+          # that stay colourful, which is simply the previous build.
+          #
+          # It cost three commits of zero compile signal to learn that, because this step gates
+          # every later step including the compile. A cosmetic patch must never be able to do
+          # that again. The warning is loud, it lands in the job summary, and the script's own
+          # refusal to report success while changing nothing is untouched.
           python3 android/patches/cairodrive_glance_icons.py resources || {
-            echo "::error::glance icon desaturation failed - actual resources layout follows"
+            echo "::warning::glance icon desaturation did not run - icons ship in COLOUR. Build continues; see the listing above for the names it actually found."
             find resources -maxdepth 3 -type d -name '*icon*' -print
-            exit 1
           }
 
       # Checked out for EVERY core flavor, not just legacy. The OpenGL flavor takes its

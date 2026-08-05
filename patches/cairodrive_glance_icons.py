@@ -64,11 +64,18 @@ DARKEN = 0.35
 MARKER_KEY = b"cairodrive"
 MARKER_VAL = b"glance-icons-v1"
 
-# Icon families to desaturate. Deliberately narrow: only classes whose COLOUR carries nothing a
-# driver acts on. Anything whose colour IS the information stays untouched - see KEEP below.
-TARGET_PREFIXES = (
-    "mm_shop", "mm_amenity", "mm_leisure", "mm_tourism", "mm_craft", "mm_office",
-    "mm_sport", "mm_natural", "mm_historic", "mm_man_made", "mm_landuse",
+# OSM CATEGORY tokens to desaturate. Deliberately narrow: only classes whose COLOUR carries
+# nothing a driver acts on. Anything whose colour IS the information stays untouched - see KEEP.
+#
+# Matched as a category TOKEN rather than as a filename prefix, and that is a correction rather
+# than a style preference. The first version listed prefixes - "mm_shop", "mm_amenity" and so on -
+# which assumed a renderer prefix this script had never actually seen. It matched zero files and
+# failed the build. The leading token is upstream's business and it varies by icon set (mm_, mx_,
+# and others live side by side); the CATEGORY is the part that carries the meaning being selected
+# on. Matching the category makes this correct for any prefix, including ones added later.
+TARGET_CATEGORIES = (
+    "shop", "amenity", "leisure", "tourism", "craft", "office",
+    "sport", "natural", "historic", "man_made", "landuse",
 )
 
 # Never touched, and each for a reason a driver would recognise.
@@ -255,7 +262,10 @@ def wanted(name):
     low = name.lower()
     if any(k in low for k in KEEP):
         return False
-    return any(low.startswith(p) for p in TARGET_PREFIXES)
+    # Underscore-delimited so "amenity" matches mx_amenity_bar but not a file merely containing
+    # the letters, and so multi-word categories like man_made still match exactly.
+    padded = "_" + low[:-len(".png")] + "_"
+    return any(("_" + cat + "_") in padded for cat in TARGET_CATEGORIES)
 
 
 def main():
@@ -278,10 +288,21 @@ def main():
         fail("no style-icons directory under %s. Upstream may have moved the icon set - re-check "
              "this script against the checkout rather than silently doing nothing." % root)
 
-    targets = sorted(n for n in os.listdir(icon_dir) if wanted(n))
+    present = sorted(os.listdir(icon_dir))
+    targets = [n for n in present if wanted(n)]
     if not targets:
-        fail("matched 0 icons in %s. The naming convention has changed; re-check TARGET_PREFIXES "
-             "rather than shipping a build that reports success and changes nothing." % icon_dir)
+        # Print what is actually there before giving up. The previous version said only "0 matched"
+        # and the naming it expected was wrong, so the failure carried no way to fix itself and
+        # cost a full CI cycle to learn one directory listing. A sample of real filenames makes
+        # the next correction a certainty rather than a second guess.
+        pngs = [n for n in present if n.endswith(".png")]
+        sys.stderr.write("cairodrive_glance_icons: %d files in %s, %d of them .png\n"
+                         % (len(present), icon_dir, len(pngs)))
+        sys.stderr.write("cairodrive_glance_icons: first 40 png names actually present:\n")
+        for n in pngs[:40]:
+            sys.stderr.write("cairodrive_glance_icons:   %s\n" % n)
+        fail("matched 0 icons in %s. Compare the names above against TARGET_CATEGORIES rather "
+             "than shipping a build that reports success and changes nothing." % icon_dir)
 
     # Convert everything in memory FIRST. A half-converted icon set is a map with two visual
     # languages on it, and unlike the XML patches there is no re-checkout-free way back.
