@@ -437,6 +437,11 @@ public final class BestTimeProvider {
 			conn.setFixedLengthStreamingMode(0);
 			conn.connect();
 			int code = conn.getResponseCode();
+			if (code != HttpURLConnection.HTTP_OK) {
+				ApiHealth.recordFailure(ApiHealth.Api.BESTTIME, code, null);
+			} else {
+				ApiHealth.recordOk(ApiHealth.Api.BESTTIME);
+			}
 			InputStream in = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
 			if (in == null) {
 				return null;

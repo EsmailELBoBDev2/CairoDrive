@@ -487,10 +487,14 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 			if (code != HttpURLConnection.HTTP_OK) {
 				// 403 here almost always means the key's Android app restriction does not
 				// match this build's package name and signing certificate.
-				LOG.error(TRACE_TAG + " request failed: HTTP " + code + " "
-						+ read(connection.getErrorStream()));
+				String body = read(connection.getErrorStream());
+				net.osmand.plus.cairodrive.providers.ApiHealth.recordFailure(
+						net.osmand.plus.cairodrive.providers.ApiHealth.Api.GOOGLE_PLACES, code, body);
+				LOG.error(TRACE_TAG + " request failed: HTTP " + code + " " + body);
 				return null;
 			}
+			net.osmand.plus.cairodrive.providers.ApiHealth.recordOk(
+					net.osmand.plus.cairodrive.providers.ApiHealth.Api.GOOGLE_PLACES);
 			return read(connection.getInputStream());
 		} catch (IOException | RuntimeException e) {
 			LOG.error(TRACE_TAG + " request failed", e);

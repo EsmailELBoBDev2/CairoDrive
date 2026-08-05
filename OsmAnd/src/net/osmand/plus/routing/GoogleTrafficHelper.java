@@ -331,6 +331,11 @@ public class GoogleTrafficHelper {
 		try {
 			OsmandSettings settings = app.getSettings();
 			if (!settings.GOOGLE_TRAFFIC_ON_ROUTE.get() || Algorithms.isEmpty(apiKey(app))) {
+				net.osmand.plus.cairodrive.providers.ApiHealth.recordSkipped(
+						net.osmand.plus.cairodrive.providers.ApiHealth.Api.GOOGLE_ROUTES,
+						Algorithms.isEmpty(apiKey(app))
+								? net.osmand.plus.cairodrive.providers.ApiHealth.Skip.NO_KEY
+								: net.osmand.plus.cairodrive.providers.ApiHealth.Skip.DISABLED);
 				return;
 			}
 			if (!helper.isFollowingMode() || !settings.isInternetConnectionAvailable()) {
@@ -476,6 +481,11 @@ public class GoogleTrafficHelper {
 		// common case. Logging it as "budget spent" would report the feature dead every minute
 		// while it was working exactly as designed.
 		boolean exhausted = spansUsed >= SPANS_DAILY_CAP && delayPoolGone;
+		if (exhausted) {
+			net.osmand.plus.cairodrive.providers.ApiHealth.recordSkipped(
+					net.osmand.plus.cairodrive.providers.ApiHealth.Api.GOOGLE_ROUTES,
+					net.osmand.plus.cairodrive.providers.ApiHealth.Skip.BUDGET_SPENT);
+		}
 		if (exhausted && !budgetExhaustedLogged) {
 			budgetExhaustedLogged = true;
 			LOG.info(TRACE_TAG + " daily budget spent (spans=" + spansUsed
@@ -765,9 +775,14 @@ public class GoogleTrafficHelper {
 			}
 			int code = connection.getResponseCode();
 			if (code != HttpURLConnection.HTTP_OK) {
-				LOG.info(TRACE_TAG + " HTTP " + code + " " + read(connection.getErrorStream()));
+				String body = read(connection.getErrorStream());
+				net.osmand.plus.cairodrive.providers.ApiHealth.recordFailure(
+						net.osmand.plus.cairodrive.providers.ApiHealth.Api.GOOGLE_ROUTES, code, body);
+				LOG.info(TRACE_TAG + " HTTP " + code + " " + body);
 				return null;
 			}
+			net.osmand.plus.cairodrive.providers.ApiHealth.recordOk(
+					net.osmand.plus.cairodrive.providers.ApiHealth.Api.GOOGLE_ROUTES);
 			return read(connection.getInputStream());
 		} catch (Throwable t) {
 			LOG.info(TRACE_TAG + " request failed", t);

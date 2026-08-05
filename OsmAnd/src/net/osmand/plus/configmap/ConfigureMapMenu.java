@@ -264,6 +264,27 @@ public class ConfigureMapMenu {
 
 		// Google Routes live traffic on the navigated route - deliberate opt-in (billed + ToS-gray),
 		// so it is off by default and the toggle only appears when the build carries a key. Without
+		// API status. Always present, unlike every toggle around it, and that is the point: the
+		// question it answers - "why am I not seeing anything" - is asked exactly when a provider
+		// is missing its key, which is also when a key-gated menu item would be hidden.
+		adapter.addItem(new ContextMenuItem("map.layers.cairo_api_status")
+				.setTitleId(R.string.cairo_api_status, activity)
+				.setDescription(activity.getString(R.string.cairo_api_status_desc))
+				.setIcon(R.drawable.ic_action_info_dark)
+				.setListener((uiAdapter, view, item, isChecked) -> {
+					new androidx.appcompat.app.AlertDialog.Builder(activity)
+							.setTitle(R.string.cairo_api_status)
+							.setMessage(net.osmand.plus.cairodrive.providers.ApiHealth.summary())
+							.setPositiveButton(R.string.shared_string_ok, null)
+							.show();
+					// Also into the drive log, so the same picture survives the dialog closing and
+					// can be read afterwards against the drive it belonged to.
+					CairoDriveLog.log("APISTATUS",
+							net.osmand.plus.cairodrive.providers.ApiHealth.summary()
+									.replace('\n', ' | '));
+					return false;
+				}));
+
 		// this item the preference is unreachable and the whole live-traffic stack stays inert.
 		if (!Algorithms.isEmpty(BuildConfig.CAIRODRIVE_ROUTES_KEY)) {
 			selected = settings.GOOGLE_TRAFFIC_ON_ROUTE.get();

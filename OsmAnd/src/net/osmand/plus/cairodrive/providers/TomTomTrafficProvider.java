@@ -550,6 +550,10 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 		}
 		try {
 			if (!INSTANCE.isAvailable(app)) {
+				ApiHealth.Skip why = Algorithms.isEmpty(BuildConfig.CAIRODRIVE_TOMTOM_KEY)
+						? ApiHealth.Skip.NO_KEY : ApiHealth.Skip.DISABLED;
+				ApiHealth.recordSkipped(ApiHealth.Api.TOMTOM_FLOW, why);
+				ApiHealth.recordSkipped(ApiHealth.Api.TOMTOM_INCIDENTS, why);
 				return;
 			}
 			// Re-checked per endpoint rather than once for the provider: winning INCIDENTS does not
@@ -830,6 +834,7 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 		if (response.code != HttpURLConnection.HTTP_OK) {
 			// Note what is NOT logged: the URL. It carries the key in a query parameter, and the
 			// redaction in CairoDriveLogger only filters the logcat pump, not direct log() calls.
+			ApiHealth.recordFailure(ApiHealth.Api.TOMTOM_INCIDENTS, response.code, response.body);
 			CairoDriveLogger.getInstance().log(TRACE_TAG, "incidents http=" + response.code
 					+ " mode=" + (following ? "nav" : "free")
 					+ " ms=" + elapsed + " bbox=" + bbox + " lang=" + language
@@ -880,6 +885,7 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 			return;
 		}
 
+		ApiHealth.recordOk(ApiHealth.Api.TOMTOM_INCIDENTS);
 		CairoDriveProviders.publishIncidents(generation, incidents);
 		CairoDriveLogger.getInstance().log(TRACE_TAG, "incidents http=200 ms=" + elapsed
 				// The MODE, because the two are otherwise only distinguishable by reverse-engineering
@@ -1048,6 +1054,7 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 			Response response = request(url);
 			lastCode = response.code;
 			if (response.code != HttpURLConnection.HTTP_OK) {
+				ApiHealth.recordFailure(ApiHealth.Api.TOMTOM_FLOW, response.code, response.body);
 				failures++;
 				handleHttpFailure(response.code, null);
 				continue;

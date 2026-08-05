@@ -591,9 +591,11 @@ public final class OpenWeatherHazardProvider implements CairoDriveProviders.Prov
 				// hours to enable a new one - and 429 means the free allowance is gone. Both are
 				// worth seeing in a drive log, which is why the status is logged even though the
 				// body is not.
+				ApiHealth.recordFailure(ApiHealth.Api.OPENWEATHER, code, null);
 				LOG.info(TRACE_TAG + " " + label + " HTTP " + code);
 				return null;
 			}
+			ApiHealth.recordOk(ApiHealth.Api.OPENWEATHER);
 			return read(connection.getInputStream());
 		} catch (Throwable t) {
 			LOG.info(TRACE_TAG + " " + label + " request failed", t);
