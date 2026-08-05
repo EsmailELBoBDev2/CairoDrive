@@ -197,14 +197,15 @@ public final class TrafficAwareRouting {
 	private static final double SLOW_SPEED_RATIO = 0.65;
 
 	/**
-	 * How many TomTom-sample-equivalents one Google span is worth.
+	 * How much more Google's route-measured stretch counts than TomTom's area-sampled one.
 	 *
-	 * <p>Google measures the road THIS CAR IS ON; TomTom samples fixed points across the city that
-	 * are only incidentally on the route. For an ETA about this route, the route-specific
-	 * observation is worth more - but not infinitely more, or one span would swamp six honest
-	 * samples and a single mis-graded stretch would move the whole estimate.
+	 * <p>Google measured the road THIS CAR IS ON; TomTom sampled fixed points that are only
+	 * incidentally on the route. For an ETA about this route the route-specific figure is worth
+	 * more - but not infinitely more, because TomTom's samples are real speed observations while
+	 * Google's are an interpretation of a congestion band. 2:1 lets Google lead without letting a
+	 * single mis-graded stretch erase six honest measurements.
 	 */
-	private static final int GOOGLE_SPAN_WEIGHT = 2;
+	private static final int GOOGLE_WEIGHT = 2;
 
 	/**
 	 * Google's snapshot, or null unless it is on, live and fresh.
@@ -324,48 +325,111 @@ public final class TrafficAwareRouting {
 				counted++;
 			}
 
-			// Google's congestion spans, merged in beside TomTom's flow samples.
-			//
-			// They are not redundant with each other and that is the whole reason both are here.
-			// TomTom samples a handful of fixed points across the city on a timer - broad, cheap,
-			// and only incidentally on the route. Google returns spans measured ALONG THE ROUTE
-			// THIS CAR IS DRIVING, which is exactly the population the ETA is about. So Google is
-			// weighted higher per observation, and TomTom is what keeps answering when the Google
-			// budget is spent or the snapshot has aged out.
-			//
-			// Averaged as speed ratios in the same pool rather than combined afterwards, because
-			// the arithmetic below inverts the MEAN - and mean-then-invert is not the same as
-			// invert-then-mean. Mixing two already-inverted stretches would overstate the delay.
-			GoogleTrafficHelper.TrafficSnapshot google = freshGoogleSnapshot();
-			if (google != null) {
-				for (GoogleTrafficHelper.CongestionSpan span : google.spans) {
-					if (span == null) {
-						continue;
-					}
-					// Google grades congestion, it does not publish a speed. These are the ratios
-					// its own colour bands correspond to: a red TRAFFIC_JAM stretch moves at
-					// roughly a quarter of free flow, an orange SLOW one at about two thirds.
-					double ratio = span.jam ? JAM_SPEED_RATIO : SLOW_SPEED_RATIO;
-					for (int i = 0; i < GOOGLE_SPAN_WEIGHT; i++) {
-						ratioSum += ratio;
-						counted++;
-					}
-				}
-			}
-
-			if (counted < MIN_FLOW_SAMPLES) {
-				return 1.0;
-			}
+			// TomTom's own stretch: point samples, so a mean is the best available estimator.
 			// delayRatio() is a SPEED ratio - 1.0 free-flowing, 0.25 crawling - so a leg takes
 			// LONGER by dividing, not by multiplying. Inverting this by accident turns a jam into an
 			// improved ETA, which is the one arithmetic mistake here that looks plausible on screen.
-			double mean = ratioSum / counted;
-			double stretch = Math.min(MAX_ETA_STRETCH, 1.0 / mean);
+			double tomtomStretch = counted >= MIN_FLOW_SAMPLES
+					? Math.max(1.0, 1.0 / (ratioSum / counted))
+					: 0;
+
+			double googleStretch = googleStretch(freshGoogleSnapshot());
+
+			double stretch;
+			if (googleStretch > 0 && tomtomStretch > 0) {
+				// Both talking. Google is weighted higher because it measured THIS ROUTE, while
+				// TomTom sampled fixed points that are only incidentally on it - but not
+				// infinitely higher, because TomTom's samples are real observations and Google's
+				// bands are an interpretation of a colour.
+				stretch = (GOOGLE_WEIGHT * googleStretch + tomtomStretch) / (GOOGLE_WEIGHT + 1);
+			} else if (googleStretch > 0) {
+				stretch = googleStretch;
+			} else if (tomtomStretch > 0) {
+				stretch = tomtomStretch;
+			} else {
+				return 1.0;
+			}
+			stretch = Math.min(MAX_ETA_STRETCH, stretch);
 			return stretch > 1.0 ? stretch : 1.0;
 		} catch (Throwable t) {
 			// An ETA is not allowed to be the thing that breaks navigation.
 			return 1.0;
 		}
+	}
+
+	/**
+	 * Google's spans as a time multiplier, weighted by how much of the route they actually cover.
+	 *
+	 * <h3>Why this is not an average of speed ratios</h3>
+	 *
+	 * The first version of this pooled Google's bands in with TomTom's samples and took a mean. A
+	 * sensitivity sweep killed it: two jam spans with no TomTom data produced a mean ratio of 0.25
+	 * and therefore a 4x stretch - <b>+90 minutes on a 45-minute drive</b> - because a mean treats
+	 * two spans as if they were the entire route. They are not. A jam covering 800 m of a 20 km
+	 * route costs the time lost over 800 m, and nothing at all over the other 19.2 km.
+	 *
+	 * <p>So this computes the physical thing instead. Time is distance over speed, summed:
+	 * <pre>
+	 *   multiplier = freeFraction + jamFraction/JAM_RATIO + slowFraction/SLOW_RATIO
+	 * </pre>
+	 * A route entirely in a jam gives 1/0.25 = 4.0, which is correct and is what the
+	 * {@link #MAX_ETA_STRETCH} clamp is for. A route with a 5% jam gives 1.15 - a 15% longer
+	 * journey, which is the right order of magnitude and is what the pooled version could not
+	 * express.
+	 *
+	 * <p>Measured in METRES along the polyline rather than in point counts: Google's polyline
+	 * points are not evenly spaced - they densify through curves and junctions, which is exactly
+	 * where jams are - so counting points would systematically overstate congested coverage.
+	 *
+	 * @return a multiplier >= 1.0, or 0 when there is no usable Google data
+	 */
+	static double googleStretch(@Nullable GoogleTrafficHelper.TrafficSnapshot snapshot) {
+		if (snapshot == null || snapshot.points.size() < 2 || snapshot.spans.isEmpty()) {
+			return 0;
+		}
+		List<LatLon> points = snapshot.points;
+		int n = points.size();
+		double[] cumulative = new double[n];
+		for (int i = 1; i < n; i++) {
+			cumulative[i] = cumulative[i - 1] + MapUtils.getDistance(points.get(i - 1), points.get(i));
+		}
+		double total = cumulative[n - 1];
+		if (total <= 0) {
+			return 0;
+		}
+		double jamM = 0;
+		double slowM = 0;
+		for (GoogleTrafficHelper.CongestionSpan span : snapshot.spans) {
+			if (span == null) {
+				continue;
+			}
+			int from = Math.max(0, Math.min(span.start, n - 1));
+			int to = Math.max(0, Math.min(span.end, n - 1));
+			if (to <= from) {
+				continue;
+			}
+			double length = cumulative[to] - cumulative[from];
+			if (span.jam) {
+				jamM += length;
+			} else {
+				slowM += length;
+			}
+		}
+		// Clamped rather than trusted: overlapping spans in a malformed response could otherwise
+		// make the congested length exceed the route and drive the free fraction negative.
+		double congested = Math.min(total, jamM + slowM);
+		if (congested <= 0) {
+			return 0;
+		}
+		if (jamM + slowM > total) {
+			double scale = total / (jamM + slowM);
+			jamM *= scale;
+			slowM *= scale;
+		}
+		double freeFraction = (total - jamM - slowM) / total;
+		return freeFraction
+				+ (jamM / total) / JAM_SPEED_RATIO
+				+ (slowM / total) / SLOW_SPEED_RATIO;
 	}
 
 	/**
@@ -518,6 +582,67 @@ public final class TrafficAwareRouting {
 	public static Set<Long> appliedIds() {
 		synchronized (LOCK) {
 			return new LinkedHashSet<>(applied.keySet());
+		}
+	}
+
+	/**
+	 * The ETA merge, as one greppable field group.
+	 *
+	 * <p>Every input to the decision, not just the answer. A drive log that says only
+	 * {@code stretch=1.31} cannot tell anyone WHY - whether Google saw a jam, whether TomTom
+	 * disagreed, whether one of them was absent because its budget was spent or its snapshot had
+	 * aged out. Those four situations produce the same single number and need different fixes, and
+	 * the whole method here is to decide from the log rather than from a guess.
+	 *
+	 * <p>{@code src=} is the one to read first: {@code both} / {@code google} / {@code tomtom} /
+	 * {@code none} says which providers were actually talking on this drive.
+	 */
+	@NonNull
+	public static String describeStretch() {
+		if (!BuildConfig.CAIRODRIVE_TRAFFIC_ROUTING) {
+			return "traffic=off";
+		}
+		try {
+			List<CairoDriveProviders.FlowSample> flow = CairoDriveProviders.getFlow();
+			int usable = 0;
+			double ratioSum = 0;
+			for (CairoDriveProviders.FlowSample sample : flow) {
+				if (sample != null && sample.confidence >= MIN_FLOW_CONFIDENCE) {
+					double r = sample.delayRatio();
+					if (r > 0 && !Double.isNaN(r) && !Double.isInfinite(r)) {
+						ratioSum += r;
+						usable++;
+					}
+				}
+			}
+			double tomtom = usable >= MIN_FLOW_SAMPLES ? Math.max(1.0, 1.0 / (ratioSum / usable)) : 0;
+
+			GoogleTrafficHelper.TrafficSnapshot snapshot = freshGoogleSnapshot();
+			double google = googleStretch(snapshot);
+			int jamSpans = 0;
+			int slowSpans = 0;
+			if (snapshot != null) {
+				for (GoogleTrafficHelper.CongestionSpan span : snapshot.spans) {
+					if (span != null) {
+						if (span.jam) {
+							jamSpans++;
+						} else {
+							slowSpans++;
+						}
+					}
+				}
+			}
+			String src = google > 0 && tomtom > 0 ? "both"
+					: google > 0 ? "google" : tomtom > 0 ? "tomtom" : "none";
+			return String.format(Locale.US,
+					"traffic src=%s stretch=%.3f google=%.3f tomtom=%.3f"
+							+ " ttSamples=%d/%d gJam=%d gSlow=%d gAgeS=%d",
+					src, stretchFactor(), google, tomtom, usable, flow.size(),
+					jamSpans, slowSpans,
+					snapshot == null ? -1
+							: (System.currentTimeMillis() - snapshot.spansTimeMs) / 1000);
+		} catch (Throwable t) {
+			return "traffic=error";
 		}
 	}
 
@@ -694,6 +819,29 @@ public final class TrafficAwareRouting {
 			// A road that has dropped out of the data loses its progress towards confirmation, but
 			// NOT its hold if it already earned one - see jamHeldUntil below.
 			jamSeen.keySet().retainAll(seenThisPoll);
+
+			// One line per SNAPSHOT, which is the cadence the decision actually changes on - not
+			// per fix, which would be ~1/s of near-identical lines. This is the line that answers
+			// "why did it avoid that road", and just as often "why did it NOT": a jam sitting at
+			// seen=1 forever means the gate is working and the jam is flickering, which is a
+			// different conclusion from no jam being seen at all.
+			if (CairoDriveLogger.isEnabled()) {
+				StringBuilder counts = new StringBuilder();
+				for (Map.Entry<Long, Integer> e : jamSeen.entrySet()) {
+					if (counts.length() > 0) {
+						counts.append(',');
+					}
+					counts.append(e.getKey()).append(':').append(e.getValue());
+				}
+				CairoDriveLogger.getInstance().log(TRACE_TAG, "jams"
+						+ " ver=" + snapshot.version
+						+ " spans=" + snapshot.spans.size()
+						+ " candidates=" + seenThisPoll.size()
+						+ " needConfirm=" + JAM_CONFIRMATIONS
+						+ " seen=[" + counts + "]"
+						+ " held=" + jamHeldUntil.size()
+						+ " holdMs=" + JAM_HOLD_MS);
+			}
 		}
 
 		for (Map.Entry<Long, Integer> entry : jamSeen.entrySet()) {

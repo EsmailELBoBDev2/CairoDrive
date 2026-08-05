@@ -1007,7 +1007,9 @@ public class RoutingHelper {
 						etaCalibrator.describe(staticSeconds, corrected)
 								+ " leftM=" + getLeftDistance()
 								+ " " + net.osmand.plus.cairodrive.providers.TrafficAwareRouting
-								.describeApplied());
+								.describeApplied()
+								+ " " + net.osmand.plus.cairodrive.providers.TrafficAwareRouting
+								.describeStretch());
 			}
 		}
 		return corrected;
