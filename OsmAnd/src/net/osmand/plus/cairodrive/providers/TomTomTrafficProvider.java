@@ -239,21 +239,20 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	 * 40-minute tail - technically still running at hour twelve, and by then reporting speeds
 	 * measured over half an hour ago. That is coverage on paper only.
 	 *
-	 * <h3>Weighted to the drives that actually happen: mostly 6 h, longest about 12</h3>
+	 * <h3>Peaked at six hours, stepped down past it - not degraded through it</h3>
 	 *
-	 * An earlier version of this ladder reserved its floor for hours 4 to 24 - twenty hours of
-	 * guarantee, of which about eighteen never occur. It was paid for in the only currency
-	 * available, which is coarser data at 6 and 12 hours: the hours that are the entire point.
+	 * An earlier version reserved its floor for hours 4 to 24: twenty hours of guarantee, of which
+	 * about eighteen never occur, paid for in the only currency available - coarser data at six
+	 * hours, the hour that is the entire point.
 	 *
-	 * <p>Rebalanced so the QUALITY window matches the drives: 7-minute sweeps or better run
-	 * unbroken to hour 11.95, and only past twelve does it drop to a 15-minute insurance tail. At
-	 * six hours that is 7 minutes against the previous 10, and the tail past twelve costs nothing
-	 * real because it is a drive length the owner has never done.
+	 * <p>The shape now is a flat best-sustainable rate ACROSS the whole six-hour window rather than
+	 * a slide through it. 143 of the 645 points - 22%, the largest single rung - hold a 5-minute,
+	 * 3-point sweep unbroken from hour two to hour 5.99. A six-hour drive therefore never sees the
+	 * sweep get worse while it is still being driven, which the previous shape did at hour five.
 	 *
-	 * <p>Structurally the reservation is the same idea, just aimed further in: the 15-minute tail
-	 * is solved to cover hours 12 to 24 and reserves 102 of the 645 points; the remaining 543 buy
-	 * the twelve hours in front of it. 1-minute sweeps for 11 minutes, 90 s to minute 29, 2 min to
-	 * the hour, 3 min to hour two, 5 min to hour five, 7 min to hour twelve.
+	 * <p>Past six hours it steps ONCE, to 8 minutes, and holds that to hour twelve. Flow corrects an
+	 * ETA rather than a turn, so that step is a slower poll rather than a worse answer. Only past
+	 * hour twelve is there a 17-minute headroom tail, and that is a drive length not yet taken.
 	 *
 	 * <h3>Why the sweep gets smaller instead of only slower</h3>
 	 *
@@ -267,41 +266,45 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	 * first ten minutes of a drive eat a third of the day, which is affordable exactly once.
 	 */
 	private static final BudgetPacer.Tier[] FLOW_LADDER = {
-			new BudgetPacer.Tier(0.137, 8, 60),
+			new BudgetPacer.Tier(0.149, 8, 60),
 			new BudgetPacer.Tier(0.112, 6, 90),
 			new BudgetPacer.Tier(0.116, 5, 120),
 			new BudgetPacer.Tier(0.124, 4, 180),
-			new BudgetPacer.Tier(0.167, 3, 300),
-			// The workhorse. 19% of the points held at a 7-minute refresh from hour five to hour
-			// twelve, which is where the long end of a real drive sits.
-			new BudgetPacer.Tier(0.186, 2, 420),
-			// Insurance, not service. 15 minutes past hour twelve so a drive longer than any yet
-			// taken still has traffic rather than none.
-			new BudgetPacer.Tier(0.158, 2, 900),
+			// The rung that defines the six-hour drive: 22% of the points holding a 5-minute sweep
+			// unbroken from hour two all the way to 5.99. Nothing degrades inside the window.
+			new BudgetPacer.Tier(0.223, 3, 300),
+			// Past six hours, and deliberately NOT a cliff - 8 minutes is still inside anything
+			// flow is used for, and it holds to hour twelve.
+			new BudgetPacer.Tier(0.140, 2, 480),
+			// Headroom. 17 minutes past hour twelve, a drive length not yet taken.
+			new BudgetPacer.Tier(0.136, 2, 1020),
 	};
 
 	/**
-	 * Incident ladder: 80 requests, 24.7 hours, one request per call. <b>15 minutes at hour six,
-	 * 20 at hour twelve</b>, 40 only past that.
+	 * Incident ladder: 80 requests, 24.8 hours, one request per call. <b>13 minutes at hour six</b>,
+	 * 20 from there to hour 12.7, 45 only past that.
 	 *
 	 * <p>Degrades on interval alone because an incident poll has no resolution to trade - a bbox
 	 * request either covers the city or it does not. That missing second axis is why this stream's
 	 * numbers are so much larger than flow's on a budget only eight times smaller.
 	 *
 	 * <p>80 requests over 1440 minutes is 18 minutes flat with no burst at all, so every fast
-	 * minute early is bought from somewhere later. Aiming the spend at the first twelve hours puts
-	 * that cost where it is cheapest: 15 minutes at hour six and 20 at hour twelve are both well
-	 * inside the lifetime of the thing being watched - a closure or a collision persists for tens
-	 * of minutes to hours - while the 40-minute tail past hour twelve is insurance against a drive
-	 * that has not yet happened.
+	 * minute early is bought from somewhere later. Aiming the spend at the first six hours puts
+	 * that cost where it is cheapest: 4 minutes early rising to 13 at hour six, then 20 held to
+	 * hour 12.7. All of those sit well inside the lifetime of the thing being watched - a closure
+	 * or a collision persists for tens of minutes to hours - so the steps past six hours are a
+	 * slower poll rather than a worse answer, and the 45-minute tail past 12.7 is headroom against
+	 * a drive that has not yet happened.
 	 */
 	private static final BudgetPacer.Tier[] INCIDENT_LADDER = {
-			new BudgetPacer.Tier(0.125, 1, 240),
-			new BudgetPacer.Tier(0.125, 1, 420),
-			new BudgetPacer.Tier(0.150, 1, 660),
-			new BudgetPacer.Tier(0.200, 1, 900),
-			new BudgetPacer.Tier(0.175, 1, 1200),
-			new BudgetPacer.Tier(0.225, 1, 2400),
+			new BudgetPacer.Tier(0.1500, 1, 240),
+			new BudgetPacer.Tier(0.1500, 1, 420),
+			new BudgetPacer.Tier(0.1750, 1, 600),
+			new BudgetPacer.Tier(0.0875, 1, 780),
+			// Past six hours: 20 minutes, held to hour 12.7. Well inside the lifetime of the thing
+			// being watched, so this is a slower poll rather than a worse answer.
+			new BudgetPacer.Tier(0.2250, 1, 1200),
+			new BudgetPacer.Tier(0.2125, 1, 2700),
 	};
 
 	/**

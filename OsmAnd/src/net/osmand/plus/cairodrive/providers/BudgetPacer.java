@@ -30,7 +30,7 @@ import java.util.Locale;
  * "two long drives" and "one continuous drive of the same length" identically, which is correct
  * because the cap is daily rather than per-trip.
  *
- * <h3>The tail is INSURANCE; the guarantee is aimed at hour twelve</h3>
+ * <h3>The tail is HEADROOM; the ladder peaks at hour six</h3>
  *
  * An early shape degraded monotonically towards whatever interval made the arithmetic reach 24
  * hours - 70 minutes for incidents, 120 for spans. That satisfies "still running at hour thirteen"
@@ -40,22 +40,29 @@ import java.util.Locale;
  * <p>The fix for that was a floor the ladder could never degrade past. The fix was then aimed at
  * the wrong hours: it reserved the floor for hours 4 to 24, buying twenty hours of guarantee of
  * which about eighteen never happen, and paying for it in the only currency there is - coarser
- * data at 6 and 12 hours. The owner drives about six hours typically and has never exceeded
- * twelve, so that is exactly backwards.
+ * data at the hours that do. The owner drives about six hours typically and has never exceeded
+ * twelve.
  *
- * <p>Now the QUALITY WINDOW is hours 0-12 and the last rung is a thin insurance tail past it:
+ * <p>So the ladders PEAK at six hours and step down past it WITHOUT a cliff, because "past six
+ * hours" still has to mean current data rather than a stopped clock:
  *
  * <pre>
- *   stream             45 m  /  2 h  /  6 h  / 12 h  |  tail past 12 h   covers
- *   TomTom flow         2 m  /  5 m  /  7 m  /  7 m  |     15 m          24.7 h
- *   TomTom incidents    7 m  / 11 m  / 15 m  / 20 m  |     40 m          24.7 h
- *   Google delay        2 m  /  4 m  / 10 m  / 10 m  |     30 m          25.0 h
- *   Google spans       25 m  / 25 m  / 45 m  / 45 m  |    120 m          24.2 h
+ *   stream            45 m /  2 h /  4 h /  6 h |  8 h / 12 h | past 12 h  covers
+ *   TomTom flow        2 m /  5 m /  5 m /  5 m |  8 m /  8 m |   17 m     24.4 h
+ *   TomTom incidents   4 m /  7 m / 10 m / 13 m | 20 m / 20 m |   45 m     24.8 h
+ *   Google delay       2 m /  4 m /  5 m /  5 m | 11 m / 11 m |   41 m     24.3 h
+ *   Google spans      25 m / 25 m / 25 m / 45 m | 45 m / 45 m |  120 m     24.2 h
  * </pre>
  *
- * Every figure inside the window improved against the floor-at-hour-four shape - flow 10 to 7 at
- * six hours, incidents 26 to 15, delay 16 to 10, spans 65 to 45 - and the whole cost landed past
- * hour twelve.
+ * The shape is deliberate. One long rung holds the best sustainable rate FLAT across the whole
+ * six-hour window - 5-minute flow sweeps from hour two, 5-minute delay polls from hour 2.4 -
+ * rather than degrading through it, so nothing gets worse while the drive is still in progress.
+ * Then each stream steps ONCE, to a rate still inside what its data is used for, and holds that to
+ * hour twelve. Only past twelve is there a headroom tail.
+ *
+ * <p>Spans is the exception and is left alone: 32 requests a day cannot be improved early without
+ * collapsing the 8-12 hour band, so it keeps the arrangement holding 45 minutes across all of it.
+ * The cheap DELAY stream carries freshness on that route instead.
  *
  * <h3>Why the numbers differ so much between streams</h3>
  *
@@ -63,7 +70,8 @@ import java.util.Locale;
  * cap gives a hard flat maximum of 2.2 min for flow, 18 min for incidents, 9 min for delay and 45
  * min for spans - and any burst at all pushes the tail above that. Flow stays tightest because it
  * degrades on a SECOND axis: dropping a sweep from 8 sample points to 2 costs spatial resolution,
- * not freshness, so it holds a 7-minute refresh for a quarter of the cost. Spans has no second
+ * not freshness, so it holds a 5-minute refresh through hour six for a fraction of the
+ * cost. Spans has no second
  * axis and only 32 requests, so its figures are near the arithmetic limit rather than a choice -
  * which is why the layer's paint TTL follows the tier instead of the colours blinking off, and why
  * the cheap DELAY stream is the one carrying freshness.

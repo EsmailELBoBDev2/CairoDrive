@@ -131,22 +131,29 @@ public class GoogleTrafficHelper {
 	};
 
 	/**
-	 * Delay ladder - the Pro SKU, 5000/month, 161/day, 25.0 hours. <b>10 minutes at both hour six
-	 * and hour twelve</b>, 30 only past that.
+	 * Delay ladder - the Pro SKU, 5000/month, 161/day, 24.3 hours. <b>5 minutes all the way to hour
+	 * six</b>, 11 from there to hour 12.6, 41 only past that.
 	 *
 	 * <p>Rung one is 1 minute, matching the 1-5 minute cadence Google's delay figure moves on.
 	 * This is the cheap tier, so it carries the freshness while spans carry the detail - which is
-	 * why it is worth spending 50 of the 161 requests on a single rung that holds 10 minutes from
-	 * hour five to hour thirteen. That one decision is what keeps the ETA current across the whole
-	 * realistic range of drives; only 24 requests are held back for the insurance tail past it.
+	 * why the single biggest rung here, 43 of the 161 requests, does nothing but hold 5 minutes
+	 * flat from hour 2.4 to hour six. On a stream billed at a fifth of the Enterprise rate that is
+	 * the cheapest available improvement to how a six-hour drive actually feels.
+	 *
+	 * <p>The step past six hours is to 11 minutes, not to a tail: an ETA figure refreshed every 11
+	 * minutes is still worth showing, and it holds until hour 12.6.
 	 */
 	private static final net.osmand.plus.cairodrive.providers.BudgetPacer.Tier[] DELAY_LADDER = {
 			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.155, 1, 60),
 			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.124, 1, 120),
 			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.124, 1, 240),
-			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.137, 1, 360),
-			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.311, 1, 600),
-			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.149, 1, 1800),
+			// 43 of the 161 requests on one rung, holding 5 minutes from hour 2.4 to hour six.
+			// This is the cheap SKU and the single biggest lever on how the six-hour drive feels.
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.267, 1, 300),
+			// Past six hours: 11 minutes to hour 12.6, still inside the 1-5 minute cadence's
+			// usefulness for an ETA figure.
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.224, 1, 660),
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.106, 1, 2460),
 	};
 
 	private static volatile long lastDelayAtMs;
