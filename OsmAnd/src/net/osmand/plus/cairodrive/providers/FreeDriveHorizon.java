@@ -58,6 +58,24 @@ import java.util.Locale;
 public final class FreeDriveHorizon {
 
 	private static final String PREF_HISTOGRAM = "cairodrive_freedrive_hist";
+	/**
+	 * The open session's start and last-fix stamps, persisted.
+	 *
+	 * <h3>Why these cannot live only in memory</h3>
+	 *
+	 * A reopened app with a zeroed session clock believes the drive just started, so the estimator
+	 * conditions on ALL past sessions instead of only the long ones and answers "about ninety
+	 * minutes left" three hours into a long day. A short estimate produces a short interval, which
+	 * polls FASTER and spends faster - the exact under-estimate direction this class is built to
+	 * avoid, reintroduced by a process restart.
+	 *
+	 * <p>Android kills and relaunches this app routinely - Android Auto reconnects, the head unit
+	 * drops - so that is not an edge case, it is the normal way a long drive looks from here. The
+	 * same reasoning as {@code TomTomTrafficProvider.seedCadence}: state that governs spending has
+	 * to outlive the process that spends.
+	 */
+	private static final String PREF_SESSION_START = "cairodrive_freedrive_session_start";
+	private static final String PREF_SESSION_LAST_FIX = "cairodrive_freedrive_session_lastfix";
 
 	/**
 	 * Upper edges in minutes. Log-ish spacing because the interesting resolution is at the short
@@ -81,6 +99,19 @@ public final class FreeDriveHorizon {
 
 	private static volatile long sessionStartMs;
 	private static volatile long lastFixMs;
+	/** Restored from settings once per process, on the first fix. */
+	private static volatile boolean seeded;
+	private static volatile long lastPersistMs;
+	/**
+	 * How often the open session is written to disk.
+	 *
+	 * <p>Not every fix. Fixes arrive about once a second, and a preference commit per fix is a disk
+	 * write per second on the location callback - the kind of cost that turns up later as a stall
+	 * in CD_FRAME. One minute is ample resolution for a rule whose only job is to notice a
+	 * {@value #IDLE_GAP_MS} ms gap: the worst a stale stamp can do is shorten the restored session
+	 * by under a minute.
+	 */
+	private static final long PERSIST_EVERY_MS = 60 * 1000L;
 
 	private FreeDriveHorizon() {
 	}
@@ -95,8 +126,10 @@ public final class FreeDriveHorizon {
 	 */
 	public static void onFreeDriveFix(@Nullable OsmandApplication app, long nowMs) {
 		try {
+			seed(app, nowMs);
 			long last = lastFixMs;
-			if (last == 0 || nowMs - last > IDLE_GAP_MS) {
+			boolean sessionRolled = last == 0 || nowMs - last > IDLE_GAP_MS;
+			if (sessionRolled) {
 				if (last != 0 && sessionStartMs != 0) {
 					int minutes = (int) ((last - sessionStartMs) / 60000L);
 					if (minutes >= EDGES[0] / 2) {
@@ -106,6 +139,12 @@ public final class FreeDriveHorizon {
 				sessionStartMs = nowMs;
 			}
 			lastFixMs = nowMs;
+			// Throttled, except when the session just rolled - that transition is the one worth
+			// writing immediately, because losing it loses a whole recorded session.
+			if (sessionRolled || nowMs - lastPersistMs >= PERSIST_EVERY_MS) {
+				lastPersistMs = nowMs;
+				persistSession(app);
+			}
 		} catch (Throwable t) {
 			// Pacing input only. Never let it touch the fix path.
 		}
@@ -162,6 +201,53 @@ public final class FreeDriveHorizon {
 			return Math.max(0, EDGES[EDGES.length - 1] - elapsed);
 		} catch (Throwable t) {
 			return 0;
+		}
+	}
+
+	/**
+	 * Restores the open session once per process.
+	 *
+	 * <p>A stamp in the future means the clock moved backwards - NTP correcting a head unit that
+	 * booted with a dead RTC - and is discarded, because honouring it would report a negative or
+	 * absurd elapsed time. A stamp older than {@link #IDLE_GAP_MS} is not restored either: that
+	 * session is over, and {@link #onFreeDriveFix} will close and record it on the normal path.
+	 */
+	private static void seed(@Nullable OsmandApplication app, long nowMs) {
+		if (seeded) {
+			return;
+		}
+		seeded = true;
+		if (app == null) {
+			return;
+		}
+		try {
+			OsmandSettings settings = app.getSettings();
+			SettingsAPI api = settings.getSettingsAPI();
+			Object prefs = settings.getPreferences(true);
+			long start = api.getLong(prefs, PREF_SESSION_START, 0);
+			long last = api.getLong(prefs, PREF_SESSION_LAST_FIX, 0);
+			if (start > 0 && start <= nowMs && last > 0 && last <= nowMs) {
+				sessionStartMs = start;
+				lastFixMs = last;
+			}
+		} catch (Throwable t) {
+			// Losing the seed costs a conservative estimate for one session, never a wrong count.
+		}
+	}
+
+	private static void persistSession(@Nullable OsmandApplication app) {
+		if (app == null) {
+			return;
+		}
+		try {
+			OsmandSettings settings = app.getSettings();
+			SettingsAPI api = settings.getSettingsAPI();
+			api.edit(settings.getPreferences(true))
+					.putLong(PREF_SESSION_START, sessionStartMs)
+					.putLong(PREF_SESSION_LAST_FIX, lastFixMs)
+					.commit();
+		} catch (Throwable t) {
+			// Same contract as the histogram write: losing it is free, throwing is not.
 		}
 	}
 
