@@ -52,10 +52,10 @@ import java.util.Locale;
  *   <li><b>Flow</b> ({@code flowSegmentData}, v4) takes a single {@code point} and answers for the
  *       one road segment under it. There is no batch form. A route is therefore N requests, and N
  *       is chosen by us - {@value #FLOW_SAMPLE_POINTS} points a minute at the top of
- *       {@link #FLOW_LADDER}, falling to 2 points every 10 minutes as the day's budget is consumed,
- *       rather than a dense sweep, because flow only corrects an ETA. Sampling the whole route
- *       densely would spend the entire day's allowance inside one drive to move a number the driver
- *       glances at.</li>
+ *       {@link #FLOW_LADDER}, falling to 2 points every 7 minutes by hour twelve as the day's
+ *       budget is consumed, rather than a dense sweep, because flow only corrects an ETA.
+ *       Sampling the whole route densely would spend the entire day's allowance inside one drive
+ *       to move a number the driver glances at.</li>
  * </ul>
  *
  * <h3>Confidence is the reason flow is worth having at all</h3>
@@ -229,7 +229,8 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	private static final int FLOW_DAILY_CAP = 645;
 
 	/**
-	 * Flow ladder: 645 points, 24.1 hours, 100% of the cap, and a <b>10-minute floor</b>.
+	 * Flow ladder: 645 points, 24.7 hours, 100% of the cap, and <b>7 minutes or better all the way
+	 * to hour twelve</b>.
 	 *
 	 * <h3>What this replaces, and why twice</h3>
 	 *
@@ -238,13 +239,21 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	 * 40-minute tail - technically still running at hour twelve, and by then reporting speeds
 	 * measured over half an hour ago. That is coverage on paper only.
 	 *
-	 * <h3>Solved backwards from the floor</h3>
+	 * <h3>Weighted to the drives that actually happen: mostly 6 h, longest about 12</h3>
 	 *
-	 * The floor is 2 points every 10 minutes. It costs 0.2 points a minute, so holding it from the
-	 * end of the burst to hour 24 reserves 239 of the 645 points and leaves 406 for the burst. The
-	 * burst then spends that as fast as it can while still landing on the floor rather than falling
-	 * through it: 1-minute sweeps for 12 minutes, 90 s to minute 32, 2 min to the hour, 3 min to
-	 * hour two, 5 min to hour four, floor thereafter.
+	 * An earlier version of this ladder reserved its floor for hours 4 to 24 - twenty hours of
+	 * guarantee, of which about eighteen never occur. It was paid for in the only currency
+	 * available, which is coarser data at 6 and 12 hours: the hours that are the entire point.
+	 *
+	 * <p>Rebalanced so the QUALITY window matches the drives: 7-minute sweeps or better run
+	 * unbroken to hour 11.95, and only past twelve does it drop to a 15-minute insurance tail. At
+	 * six hours that is 7 minutes against the previous 10, and the tail past twelve costs nothing
+	 * real because it is a drive length the owner has never done.
+	 *
+	 * <p>Structurally the reservation is the same idea, just aimed further in: the 15-minute tail
+	 * is solved to cover hours 12 to 24 and reserves 102 of the 645 points; the remaining 543 buy
+	 * the twelve hours in front of it. 1-minute sweeps for 11 minutes, 90 s to minute 29, 2 min to
+	 * the hour, 3 min to hour two, 5 min to hour five, 7 min to hour twelve.
 	 *
 	 * <h3>Why the sweep gets smaller instead of only slower</h3>
 	 *
@@ -258,37 +267,41 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	 * first ten minutes of a drive eat a third of the day, which is affordable exactly once.
 	 */
 	private static final BudgetPacer.Tier[] FLOW_LADDER = {
-			new BudgetPacer.Tier(0.149, 8, 60),
-			new BudgetPacer.Tier(0.124, 6, 90),
+			new BudgetPacer.Tier(0.137, 8, 60),
+			new BudgetPacer.Tier(0.112, 6, 90),
 			new BudgetPacer.Tier(0.116, 5, 120),
 			new BudgetPacer.Tier(0.124, 4, 180),
-			new BudgetPacer.Tier(0.116, 3, 300),
-			// The floor. 37% of the day's points, held at a 10-minute refresh from hour four to
-			// hour 24. Not a reserve to be eked out - it is the slowest this stream is ever
-			// allowed to get, and the tiers above exist to leave enough budget to guarantee it.
-			new BudgetPacer.Tier(0.371, 2, 600),
+			new BudgetPacer.Tier(0.167, 3, 300),
+			// The workhorse. 19% of the points held at a 7-minute refresh from hour five to hour
+			// twelve, which is where the long end of a real drive sits.
+			new BudgetPacer.Tier(0.186, 2, 420),
+			// Insurance, not service. 15 minutes past hour twelve so a drive longer than any yet
+			// taken still has traffic rather than none.
+			new BudgetPacer.Tier(0.158, 2, 900),
 	};
 
 	/**
-	 * Incident ladder: 80 requests, 24.1 hours, one request per call, <b>26-minute floor</b>.
+	 * Incident ladder: 80 requests, 24.7 hours, one request per call. <b>15 minutes at hour six,
+	 * 20 at hour twelve</b>, 40 only past that.
 	 *
 	 * <p>Degrades on interval alone because an incident poll has no resolution to trade - a bbox
-	 * request either covers the city or it does not. That missing second axis is the whole reason
-	 * this floor is 26 minutes and flow's is 10, on a budget only eight times smaller.
+	 * request either covers the city or it does not. That missing second axis is why this stream's
+	 * numbers are so much larger than flow's on a budget only eight times smaller.
 	 *
-	 * <p>26 is above the 18-minute flat maximum (80 requests / 1440 minutes) rather than below it,
-	 * and that is the cost of having a burst at all: the first 48 minutes at 4-minute polls and the
-	 * next 84 at 7 spend 24 requests, and every one of those has to come out of the tail. The trade
-	 * is sound for this stream specifically - a closure or a collision persists for tens of minutes
-	 * to hours, so a 26-minute poll still catches it, while a jam that formed and cleared inside 26
-	 * minutes was never worth a reroute. It would NOT be sound for flow, which is why flow's floor
-	 * was bought instead of its burst.
+	 * <p>80 requests over 1440 minutes is 18 minutes flat with no burst at all, so every fast
+	 * minute early is bought from somewhere later. Aiming the spend at the first twelve hours puts
+	 * that cost where it is cheapest: 15 minutes at hour six and 20 at hour twelve are both well
+	 * inside the lifetime of the thing being watched - a closure or a collision persists for tens
+	 * of minutes to hours - while the 40-minute tail past hour twelve is insurance against a drive
+	 * that has not yet happened.
 	 */
 	private static final BudgetPacer.Tier[] INCIDENT_LADDER = {
-			new BudgetPacer.Tier(0.150, 1, 240),
-			new BudgetPacer.Tier(0.150, 1, 420),
-			new BudgetPacer.Tier(0.125, 1, 720),
-			new BudgetPacer.Tier(0.575, 1, 1560),
+			new BudgetPacer.Tier(0.125, 1, 240),
+			new BudgetPacer.Tier(0.125, 1, 420),
+			new BudgetPacer.Tier(0.150, 1, 660),
+			new BudgetPacer.Tier(0.200, 1, 900),
+			new BudgetPacer.Tier(0.175, 1, 1200),
+			new BudgetPacer.Tier(0.225, 1, 2400),
 	};
 
 	/**

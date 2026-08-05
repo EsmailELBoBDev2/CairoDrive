@@ -30,44 +30,51 @@ import java.util.Locale;
  * "two long drives" and "one continuous drive of the same length" identically, which is correct
  * because the cap is daily rather than per-trip.
  *
- * <h3>The last rung is a FLOOR, not the bottom of a slide</h3>
+ * <h3>The tail is INSURANCE; the guarantee is aimed at hour twelve</h3>
  *
- * An earlier shape degraded monotonically towards whatever interval made the arithmetic reach 24
+ * An early shape degraded monotonically towards whatever interval made the arithmetic reach 24
  * hours - 70 minutes for incidents, 120 for spans. That satisfies "still running at hour thirteen"
  * and fails the thing the running was for: a two-hour-old congestion colour is not traffic data,
- * it is a decoration. The owner's rule is the stricter one - <i>"give me data fast in the first
- * hours and slow BUT NOT LOSE RELEVANCY after long hours"</i>.
+ * it is a decoration.
  *
- * <p>So each ladder is now solved backwards from a floor interval that is still worth having, and
- * only the budget left over after reserving the floor for the rest of the day is available to the
- * burst. The floor is the LAST tier, it is reached in single-digit hours, and it never degrades
- * again for the remaining twenty:
+ * <p>The fix for that was a floor the ladder could never degrade past. The fix was then aimed at
+ * the wrong hours: it reserved the floor for hours 4 to 24, buying twenty hours of guarantee of
+ * which about eighteen never happen, and paying for it in the only currency there is - coarser
+ * data at 6 and 12 hours. The owner drives about six hours typically and has never exceeded
+ * twelve, so that is exactly backwards.
+ *
+ * <p>Now the QUALITY WINDOW is hours 0-12 and the last rung is a thin insurance tail past it:
  *
  * <pre>
- *   stream             floor        reaches floor   interval at 45 m / 2 h / 6 h / 24 h
- *   TomTom flow        10 m, 2 pts      4.1 h        2 m  /  3 m  / 10 m / 10 m
- *   TomTom incidents   26 m             4.2 h        4 m  /  7 m  / 26 m / 26 m
- *   Google delay       16 m             2.8 h        2 m  /  4 m  / 16 m / 16 m
- *   Google spans       65 m             1.8 h       20 m  / 65 m  / 65 m / 65 m
+ *   stream             45 m  /  2 h  /  6 h  / 12 h  |  tail past 12 h   covers
+ *   TomTom flow         2 m  /  5 m  /  7 m  /  7 m  |     15 m          24.7 h
+ *   TomTom incidents    7 m  / 11 m  / 15 m  / 20 m  |     40 m          24.7 h
+ *   Google delay        2 m  /  4 m  / 10 m  / 10 m  |     30 m          25.0 h
+ *   Google spans       25 m  / 25 m  / 45 m  / 45 m  |    120 m          24.2 h
  * </pre>
  *
- * <h3>Why the floors differ so much</h3>
+ * Every figure inside the window improved against the floor-at-hour-four shape - flow 10 to 7 at
+ * six hours, incidents 26 to 15, delay 16 to 10, spans 65 to 45 - and the whole cost landed past
+ * hour twelve.
+ *
+ * <h3>Why the numbers differ so much between streams</h3>
  *
  * They are not preferences, they are what the budget divides into. 1440 minutes against the daily
  * cap gives a hard flat maximum of 2.2 min for flow, 18 min for incidents, 9 min for delay and 45
- * min for spans - and any burst at all pushes the tail above that. Flow's floor can stay tight
- * because flow degrades on a SECOND axis: dropping a sweep from 8 sample points to 2 costs spatial
- * resolution, not freshness, so the floor holds a 10-minute refresh for a quarter of the cost.
- * Spans has no second axis and only 32 requests, so 65 minutes is close to the arithmetic limit
- * rather than a choice - which is why the layer's paint TTL follows the tier instead of the
- * colours simply blinking off, and why the cheap DELAY stream carries the freshness.
+ * min for spans - and any burst at all pushes the tail above that. Flow stays tightest because it
+ * degrades on a SECOND axis: dropping a sweep from 8 sample points to 2 costs spatial resolution,
+ * not freshness, so it holds a 7-minute refresh for a quarter of the cost. Spans has no second
+ * axis and only 32 requests, so its figures are near the arithmetic limit rather than a choice -
+ * which is why the layer's paint TTL follows the tier instead of the colours blinking off, and why
+ * the cheap DELAY stream is the one carrying freshness.
  *
  * <h3>Coverage, computed rather than hoped for</h3>
  *
- * Each ladder is solved so the integral of (budget slice / units per call) x interval exceeds 24
- * hours while spending exactly 100% of the cap - 24.1 h for flow, 24.1 h incidents, 25.2 h delay,
- * 25.7 h spans. {@link #coverageHours} recomputes it from the constants so a ladder edit that
- * breaks the guarantee shows up in the SESSION header rather than on hour thirteen of a drive.
+ * Each ladder is still solved so the integral of (budget slice / units per call) x interval exceeds
+ * 24 hours while spending exactly 100% of the cap. {@link #coverageHours} recomputes it from the
+ * constants, and {@code tools/cd-ladder-check.py} additionally asserts that every consumer's
+ * staleness window outlasts the slowest poll the ladder can issue - the defect that once left three
+ * of four streams expiring their data before the poll that would have replaced it.
  */
 public final class BudgetPacer {
 

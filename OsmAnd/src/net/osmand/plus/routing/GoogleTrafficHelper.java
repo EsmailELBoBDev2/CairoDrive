@@ -64,9 +64,9 @@ import java.util.List;
  * so the two run on INDEPENDENT {@link net.osmand.plus.cairodrive.providers.BudgetPacer} ladders
  * rather than an interleave - see {@link #claimRequestTier} for why the interleave was wrong. Each
  * ladder is solved backwards from a floor interval it may never degrade past ({@link
- * #SPANS_LADDER} 65 min, {@link #DELAY_LADDER} 16 min) so a 24-hour drive ends on data that is
- * still worth having rather than merely still arriving. Daily caps of {@value #SPANS_DAILY_CAP} and
- * {@value #DELAY_DAILY_CAP} make a maxed 31-day month arithmetically free:
+ * #SPANS_LADDER} 45 min, {@link #DELAY_LADDER} 10 min, both held through hour twelve) so a real
+ * drive ends on data that is still worth having rather than merely still arriving. Daily caps of
+ * {@value #SPANS_DAILY_CAP} and {@value #DELAY_DAILY_CAP} make a maxed 31-day month free:
  * 32x31 = 992 <= 1000 and 160x31 = 4960 <= 5000. The caps are persisted settings, so killing the
  * app does not reset the budget.
  *
@@ -99,45 +99,54 @@ public class GoogleTrafficHelper {
 	private static final long CHECK_INTERVAL_MS = 60 * 1000L;
 
 	/**
-	 * Spans ladder - the Enterprise SKU, 1000/month, 32/day, <b>65-minute floor</b>, 25.7 hours.
+	 * Spans ladder - the Enterprise SKU, 1000/month, 32/day, 24.2 hours. <b>45 minutes from hour
+	 * four to hour twelve</b>, 2 hours only past that.
 	 *
 	 * <p>Rung one is 5 minutes, the fast end of Google's own 5-10 minute traffic-layer refresh:
 	 * fresh as the data allows and no faster, because past that these are the most expensive
 	 * requests in the app buying identical bytes.
 	 *
-	 * <h3>This is the one stream whose floor is set by arithmetic, not by judgement</h3>
+	 * <h3>This is the one stream whose numbers are set by arithmetic, not by judgement</h3>
 	 *
-	 * 32 requests across 1440 minutes is 45 minutes flat with no burst whatsoever. Wanting any fast
-	 * opening at all - 30 minutes of 5-minute polls and 80 more at 20 - spends 10 of the 32 and
-	 * leaves 22 to cover the remaining 22 hours, which is 65 minutes and there is no arrangement of
-	 * this budget that does better. The previous ladder reached hour 24 at 120-minute polls; 65 is
-	 * the honest floor, not a good one.
+	 * 32 requests across 1440 minutes is 45 minutes flat with no burst whatsoever. There is no
+	 * arrangement of 32 requests that makes a 24-hour drive good; there is only a choice of WHICH
+	 * hours get the requests.
 	 *
-	 * <p>Two things make that acceptable rather than merely unavoidable. Spans carry DETAIL - which
-	 * stretch is red - while the delay number carries freshness on the Pro SKU at a 16-minute floor
-	 * for a fifth of the price, so the number stays current even when the colours are an hour old.
-	 * And {@link #spansPaintTtlMs()} tracks this ladder, so the overlay shows the hour-old colours
-	 * instead of blanking; a fixed TTL against this floor would have hidden them 85% of the time.
+	 * <p>So they go where the driving is. 45 minutes holds unbroken from hour four to hour twelve,
+	 * and the 2-hour tail past that is explicitly insurance. The previous shape spent its budget
+	 * reaching a 65-minute figure it then held for twenty-two hours, most of which never happen -
+	 * this is 45 minutes across the whole window that does.
+	 *
+	 * <p>Two things make the tail acceptable rather than merely unavoidable. Spans carry DETAIL -
+	 * which stretch is red - while the delay number carries freshness on the Pro SKU for a fifth of
+	 * the price, so the number stays current even when the colours are old. And
+	 * {@link #spansPaintTtlMs()} tracks this ladder, so the overlay keeps showing the old colours
+	 * instead of blanking; a fixed TTL against this tail would have hidden them 90% of the time.
 	 */
 	private static final net.osmand.plus.cairodrive.providers.BudgetPacer.Tier[] SPANS_LADDER = {
 			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.1875, 1, 300),
-			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.1250, 1, 1200),
-			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.6875, 1, 3900),
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.3125, 1, 1500),
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.3125, 1, 2700),
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.1875, 1, 7200),
 	};
 
 	/**
-	 * Delay ladder - the Pro SKU, 5000/month, 161/day, <b>16-minute floor</b>, 25.2 hours.
+	 * Delay ladder - the Pro SKU, 5000/month, 161/day, 25.0 hours. <b>10 minutes at both hour six
+	 * and hour twelve</b>, 30 only past that.
 	 *
 	 * <p>Rung one is 1 minute, matching the 1-5 minute cadence Google's delay figure moves on.
-	 * This is the cheap tier, so it carries the freshness while spans carry the detail - and that
-	 * division is why the floors are allowed to differ by a factor of four. 84 of the 161 are
-	 * reserved to hold 16 minutes from hour three to hour 24; the other 77 buy the opening.
+	 * This is the cheap tier, so it carries the freshness while spans carry the detail - which is
+	 * why it is worth spending 50 of the 161 requests on a single rung that holds 10 minutes from
+	 * hour five to hour thirteen. That one decision is what keeps the ETA current across the whole
+	 * realistic range of drives; only 24 requests are held back for the insurance tail past it.
 	 */
 	private static final net.osmand.plus.cairodrive.providers.BudgetPacer.Tier[] DELAY_LADDER = {
-			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.186, 1, 60),
-			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.155, 1, 120),
-			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.137, 1, 240),
-			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.522, 1, 960),
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.155, 1, 60),
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.124, 1, 120),
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.124, 1, 240),
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.137, 1, 360),
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.311, 1, 600),
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.149, 1, 1800),
 	};
 
 	private static volatile long lastDelayAtMs;
@@ -153,7 +162,7 @@ public class GoogleTrafficHelper {
 	 * the same argument that keeps {@code CairoDriveProviders.INCIDENTS_TTL_MS} short. So this
 	 * stays at ten minutes regardless of how slowly the ladder is polling: when spans are older
 	 * than this the router simply stops using them and falls back to TomTom flow, which still has
-	 * its own 10-minute floor.
+	 * its own tighter cadence.
 	 */
 	public static final long SNAPSHOT_TTL_MS = 10 * 60 * 1000L;
 
@@ -621,7 +630,7 @@ public class GoogleTrafficHelper {
 					TrafficSnapshot prev = snapshot;
 					// The PAINT ttl, not the decision one. A delay poll rebuilds the snapshot, so a
 					// 10-minute rule here would have thrown the spans away on nearly every delay
-					// poll once the spans ladder reached its 65-minute floor - deleting data the
+					// poll once the spans ladder reached its slow tail - deleting data the
 					// Enterprise SKU had just been billed for. The original spansTimeMs is carried
 					// with them, so the router still applies its own 10-minute gate downstream and
 					// nothing stale reaches a reroute decision.

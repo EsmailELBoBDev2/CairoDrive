@@ -108,16 +108,16 @@ public final class CairoDriveProviders {
 	 *
 	 * <p><b>This is a FLOOR, not the whole rule</b> - see {@link #declareIncidentCadence}. It was
 	 * written when the provider polled every 2-3 minutes flat. It no longer does: TomTom's incident
-	 * ladder paces itself down to a 26-minute floor so the daily budget lasts a 24-hour drive, and
-	 * a fixed four-minute window against a 26-minute poll would mark the data expired for 22 of
-	 * every 26 minutes. The feature would have looked switched off from hour four onwards while the
-	 * budget was being spent exactly as designed.
+	 * ladder paces itself out to 20 minutes by hour twelve and 40 beyond it so the daily budget
+	 * lasts, and a fixed four-minute window against a 40-minute poll would mark the data expired for
+	 * 36 of every 40 minutes. The feature would have looked switched off while the budget was being
+	 * spent exactly as designed.
 	 */
 	public static final long INCIDENTS_TTL_MS = 4 * 60 * 1000L;
 	/**
 	 * Flow only adjusts an ETA, so stale flow shows a wrong number rather than driving down a wrong
 	 * street. Also a floor rather than the whole rule, for the same reason as the incident window
-	 * above: flow paces down to a 10-minute floor, against which four minutes would blank the ETA
+	 * above: flow paces out to 15 minutes, against which four minutes would blank the ETA
 	 * correction for 60% of a long drive.
 	 */
 	public static final long FLOW_TTL_MS = 4 * 60 * 1000L;
