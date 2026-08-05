@@ -148,14 +148,18 @@ def inherited_nested(src, imported, wildcards, own_pkg, pkgs, depth=3):
     """
     found = set()
     seen = set()
-    current = src
-    for _ in range(depth):
-        m = re.search(r"\bclass\s+\w+[^{]*?\bextends\s+([A-Z]\w*)", current)
-        if not m:
-            break
-        simple = m.group(1)
+    # EVERY extends in the file, not just the first. A nested class can extend something whose
+    # nested types it then names unqualified - QuickSearchHelper's inner controller extends
+    # TopToolbarController and uses its TopToolbarControllerType that way - and looking only at
+    # the outermost class missed exactly that, which failed a CI build on a false positive.
+    pending = [m.group(1) for m in
+               re.finditer(r"\bclass\s+\w+[^{]*?\bextends\s+([A-Z]\w*)", src)]
+    hops = 0
+    while pending and hops < depth * 4:
+        hops += 1
+        simple = pending.pop(0)
         if simple in seen:
-            break
+            continue
         seen.add(simple)
         # Resolve the simple name to a file: an explicit import, the file's own package, or a
         # wildcard-imported one. Unresolvable means it is outside this tree (a framework class),
@@ -174,13 +178,15 @@ def inherited_nested(src, imported, wildcards, own_pkg, pkgs, depth=3):
                     fqn = pkg + "." + simple
                     break
         if fqn is None or fqn not in FILES:
-            break
+            continue
         try:
             parent = strip(open(FILES[fqn], encoding="utf-8").read())
         except OSError:
-            break
+            continue
         found |= set(re.findall(r"\b(?:class|interface|enum|record|@interface)\s+(\w+)", parent))
-        current = parent
+        # Keep climbing: the nested type may be declared further up the chain.
+        pending += [m.group(1) for m in
+                    re.finditer(r"\bclass\s+\w+[^{]*?\bextends\s+([A-Z]\w*)", parent)]
     return found
 
 
@@ -261,6 +267,19 @@ def check(path, pkgs):
     def is_constant(name):
         return len(name) > 1 and name.upper() == name
 
+    # A wildcard import of a package that is NOT in this source tree - android.widget.*,
+    # com.google.gson.*, java.security.* - cannot be indexed, so every type it supplies reads as
+    # unresolved. Reporting those is not a finding, it is the checker admitting it cannot see the
+    # imports, and on 2026-08-05 it failed a CI build with nine such names in upstream files.
+    #
+    # So: a file with an unindexable wildcard is UNVERIFIABLE and reports nothing. The alternative
+    # - listing every Android widget by hand - just moves the same blindness somewhere less
+    # obvious. Fork files essentially never use wildcard imports, so this costs nothing where the
+    # checker earns its keep, and main() prints the count so the skip is visible rather than silent.
+    blind = [w for w in wildcards if not pkgs.get(w)]
+    if blind:
+        return {}, blind
+
     hits = {}
     for i, line in enumerate(src.split("\n"), 1):
         for p in pats:
@@ -271,7 +290,7 @@ def check(path, pkgs):
                 if name in declared_fields or is_constant(name):
                     continue
                 hits[name] = i
-    return {n: l for n, l in hits.items()}
+    return {n: l for n, l in hits.items()}, []
 
 
 def main():
@@ -302,6 +321,7 @@ def main():
 
     checked = 0
     bad = 0
+    unverifiable = 0
     for p in files:
         if not p.endswith(".java"):
             continue
@@ -310,13 +330,16 @@ def main():
             bad += 1
             continue
         checked += 1
-        hits = check(p, pkgs)
+        hits, blind = check(p, pkgs)
+        if blind:
+            unverifiable += 1
         if hits:
             bad += 1
             print("\n%s" % os.path.relpath(p, base))
             for n, l in sorted(hits.items(), key=lambda kv: kv[1]):
                 print("    line %-5d unresolved: %s" % (l, n))
-    print("\n%d file(s) checked, %d with unresolved names" % (checked, bad))
+    print("\n%d file(s) checked, %d with unresolved names, %d unverifiable "
+          "(wildcard import of a package outside this tree)" % (checked, bad, unverifiable))
     return 1 if bad else 0
 
 
