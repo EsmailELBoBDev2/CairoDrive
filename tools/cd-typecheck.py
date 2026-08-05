@@ -25,6 +25,7 @@ NullPointerException UnsupportedOperationException IndexOutOfBoundsException
 Thread Runnable Comparable Iterable Override Deprecated SuppressWarnings SafeVarargs
 StringBuilder StringBuffer CharSequence Class ClassLoader Enum Void Cloneable AutoCloseable
 InterruptedException NumberFormatException ArithmeticException ClassCastException
+CloneNotSupportedException NoSuchMethodException NoSuchFieldException ReflectiveOperationException
 ArrayIndexOutOfBoundsException StackOverflowError OutOfMemoryError SecurityException
 FunctionalInterface ThreadLocal Process ProcessBuilder Package Record Runtime Iterable
 """.split())
@@ -193,22 +194,50 @@ def check(path, pkgs):
 
 
 def main():
-    base = sys.argv[1]
-    files = sys.argv[2:]
+    """Args are FILES, resolved against the repo root. There is no positional `base`.
+
+    It used to be `cd-typecheck.py <base> <file>...`, which was a trap. Called the obvious way -
+    `cd-typecheck.py A.java B.java` - it took A.java as the base directory, walked it (a file, so
+    no packages), joined every remaining path onto it, found none of them, and printed a
+    confident "0 file(s) with unresolved names" having checked NOTHING. That happened repeatedly
+    on 2026-08-05 while two real compile errors sat untouched in the tree.
+
+    Hence the two changes that matter here: the count of files actually checked is printed, and a
+    path that does not exist is an error rather than a skip. A checker that cannot distinguish
+    "clean" from "did not run" is worse than no checker, because it is trusted.
+    """
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    args = [a for a in sys.argv[1:] if not a.startswith("-")]
     pkgs = index_packages(base)
+
+    if args:
+        files = [os.path.abspath(a) for a in args]
+    else:
+        files = []
+        for root in ROOTS:
+            for dirpath, _dirnames, filenames in os.walk(os.path.join(base, root)):
+                files.extend(os.path.join(dirpath, n) for n in filenames if n.endswith(".java"))
+        files.sort()
+
+    checked = 0
     bad = 0
-    for f in files:
-        p = os.path.join(base, f)
-        if not p.endswith(".java") or not os.path.exists(p):
+    for p in files:
+        if not p.endswith(".java"):
             continue
+        if not os.path.exists(p):
+            print("  ! no such file: %s" % p)
+            bad += 1
+            continue
+        checked += 1
         hits = check(p, pkgs)
         if hits:
             bad += 1
-            print("\n%s" % f)
+            print("\n%s" % os.path.relpath(p, base))
             for n, l in sorted(hits.items(), key=lambda kv: kv[1]):
                 print("    line %-5d unresolved: %s" % (l, n))
-    print("\n%d file(s) with unresolved names" % bad)
+    print("\n%d file(s) checked, %d with unresolved names" % (checked, bad))
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

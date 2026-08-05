@@ -602,7 +602,7 @@ public final class PlaceDetailsScreen extends BaseAndroidAutoScreen {
 		if (added < budget && details.phone != null) {
 			paneBuilder.addRow(new Row.Builder()
 					.setTitle(details.phone)
-					.addText(getApp().getString(R.string.shared_string_call))
+					.addText(getApp().getString(R.string.cairodrive_place_call))
 					.build());
 			added++;
 		}

@@ -136,8 +136,13 @@ jobs:
           path: android
           # Otherwise the job's GITHUB_TOKEN is left in android/.git/config for the whole
           # build, where every Gradle plugin and every upstream build script can read it.
-          # Nothing here pushes; the only git command is a `rev-parse`.
+          # Nothing here pushes; the git commands are a `rev-parse` and a read-only `diff`.
           persist-credentials: false
+          # The default depth of 1 has no parent commit, so the static-check step could not
+          # work out what this push changed and would fall back to checking nothing. 20 covers
+          # any realistic push without paying for a full clone of a repo this size; the step
+          # degrades to HEAD~1 on its own if `before` is older than that.
+          fetch-depth: 20
 
       - name: Checkout OsmAnd-resources
         uses: actions/checkout@v7
@@ -290,6 +295,48 @@ jobs:
           else
             echo "::warning::GOOGLE_PLACES_API_KEY is not set - search will fall back to the offline OSM index."
           fi
+
+      # Seconds, and it runs BEFORE Gradle. The 2026-08-05 failure was two one-line mistakes -
+      # a resource name that does not exist and an import from the wrong sub-package - and both
+      # cost a full nine-minute build to discover, twice, because each one only surfaces at
+      # javac. These three checkers find that class of error without a toolchain.
+      #
+      # Deliberately not a blocking gate on the R/import check: this runner HAS the resources
+      # submodule, so cd-refcheck sees drawables and colours a local run cannot, and a checker
+      # that can newly fail a build on a machine nobody can reproduce is worse than a noisy log.
+      # The two that are deterministic everywhere do block.
+      - name: Static checks
+        working-directory: android
+        run: |
+          set -euo pipefail
+          # Scoped to what this push CHANGED, not the whole tree. cd-typecheck resolves names
+          # heuristically and cannot see external jars, so a full-tree run reports ~327 files -
+          # gson and java.security wildcard imports, overwhelmingly - and a gate that is red on
+          # a clean tree is a gate everyone learns to ignore. On changed files it is precise.
+          BEFORE="${{ github.event.before }}"
+          if [ -z "${BEFORE}" ] || [ "${BEFORE}" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            BEFORE="HEAD~1"
+          fi
+          if ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            echo "::warning::No usable base commit at depth 20 - skipping the static checks."
+            exit 0
+          fi
+          CHANGED="$(git diff --name-only --diff-filter=d "${BEFORE}" HEAD -- '*.java' || true)"
+          if [ -z "${CHANGED}" ]; then
+            echo "No .java changed in this push - nothing to check."
+            exit 0
+          fi
+          echo "${CHANGED}"
+          # shellcheck disable=SC2086
+          python3 tools/cd-typecheck.py ${CHANGED}
+          # shellcheck disable=SC2086
+          python3 tools/cd-abstract-check.py ${CHANGED}
+          # Whole tree: this one is exact, and its import check needs every file as evidence.
+          # Not blocking - this runner has the resources submodule, so it sees drawables and
+          # colours a local run cannot, and a checker that can newly fail a build on a machine
+          # nobody can reproduce is worse than a noisy log.
+          python3 tools/cd-refcheck.py || echo "::warning::cd-refcheck reported findings - see above"
 
       - name: Configure Gradle memory
         working-directory: android

@@ -8,7 +8,10 @@ import android.graphics.Path;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
-import net.osmand.core.jni.MapRendererView;
+// net.osmand.core.android, not net.osmand.core.jni: the jni package is the raw SWIG binding and
+// has no MapRendererView. Every other layer imports the android wrapper, which is what
+// OsmandMapLayer.getMapRenderer() returns.
+import net.osmand.core.android.MapRendererView;
 import net.osmand.core.jni.PointI;
 import net.osmand.core.jni.QVectorPointI;
 import net.osmand.core.jni.VectorLineBuilder;
