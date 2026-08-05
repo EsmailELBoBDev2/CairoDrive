@@ -158,7 +158,7 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	 * minute {@link CairoDriveProviders#INCIDENTS_TTL_MS} so three or four polls can be lost in an
 	 * underpass before the data expires.
 	 */
-	private static final long INCIDENT_INTERVAL_MS = 60 * 1000L;
+	private static final long INCIDENT_INTERVAL_MS = 90 * 1000L;
 	/** Matches TomTom's own 1-minute data refresh; each tick costs {@value #FLOW_SAMPLE_POINTS} requests. */
 	private static final long FLOW_INTERVAL_MS = 60 * 1000L;
 
@@ -184,7 +184,7 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	private static final double MIN_REMAINING_M = 1500;
 
 	/** 6 - the middle of the 5-8 the corridor can carry without the spacing becoming meaningless. */
-	private static final int FLOW_SAMPLE_POINTS = 12;
+	private static final int FLOW_SAMPLE_POINTS = 10;
 	/**
 	 * A sweep of one point is not a sample of a corridor, it is a single reading presented as one.
 	 * If the budget cannot cover at least this many, the poll is skipped whole and the previous
@@ -193,17 +193,30 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	private static final int FLOW_MIN_POINTS = 3;
 
 	/**
-	 * 400 incident requests a day - about six and a half hours of continuous driving at the
-	 * 1-minute cadence, against roughly 45 minutes of actual daily use. Sized as a CEILING for a
-	 * long day, not as a brake on a normal one: with flow's cap it totals 2200, inside TomTom's
-	 * 2500-per-DAY free tier with room left over.
+	 * 80 a day, and that number is floor(2500/31).
+	 *
+	 * <p><b>TomTom's free tier is 2,500 incident requests per MONTH, not per day.</b> An earlier
+	 * pass had it as daily - a 31x error, taken from a research summary because the pricing page
+	 * itself was unreachable - and briefly shipped a cap of 450/day, which is 13,950 a month
+	 * against a 2,500 allowance. The owner pasted the actual page and it says "Free 2.5K monthly".
+	 *
+	 * <p>So every daily cap here is now floor(monthlyFree / 31): 31 is the longest month, so a cap
+	 * derived from it cannot overrun a shorter one. 80 x 31 = 2,480 of 2,500 - 99.2%, and the
+	 * remaining 20 is the rounding, not a reserve.
+	 *
+	 * <p>At the 90 s cadence that is 120 minutes of driving before it runs dry, against ~45 minutes
+	 * of typical use, so a normal day spends 36% of the month's allowance.
 	 */
-	private static final int INCIDENT_DAILY_CAP = 450;
+	private static final int INCIDENT_DAILY_CAP = 80;
 	/**
-	 * 1800 flow POINTS a day, not polls: 150 sweeps of {@value #FLOW_SAMPLE_POINTS}, so two and a
-	 * half hours of driving. Counted in points because points are what the vendor bills.
+	 * 645 flow POINTS a day, not polls - floor(20000/31), the same monthly-derived rule as the
+	 * incident cap above. 645 x 31 = 19,995 of TomTom's 20,000 per month: 100.0%, to the point
+	 * where the only thing left is the rounding.
+	 *
+	 * <p>Counted in points because points are what the vendor bills, and
+	 * {@value #FLOW_SAMPLE_POINTS} of them go out per sweep.
 	 */
-	private static final int FLOW_DAILY_CAP = 1950;
+	private static final int FLOW_DAILY_CAP = 645;
 
 	/**
 	 * Fraction of the daily budget after which the sweep thins instead of stopping.

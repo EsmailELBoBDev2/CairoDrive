@@ -114,7 +114,7 @@ public class GoogleTrafficHelper {
 	private static final int MAX_INTERMEDIATES = 20;
 	private static final int MIN_REMAINING_M = 1000;
 	private static final int SPANS_DAILY_CAP = 32;
-	private static final int DELAY_DAILY_CAP = 160;
+	private static final int DELAY_DAILY_CAP = 161;
 
 	private static final int TIER_NONE = 0;
 	private static final int TIER_DELAY = 1;
