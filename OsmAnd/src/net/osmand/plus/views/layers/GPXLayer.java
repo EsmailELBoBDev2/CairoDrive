@@ -326,7 +326,21 @@ public class GPXLayer extends OsmandMapLayer implements IContextMenuProvider, IM
 		pointsCache.clear();
 		removeCachedUnselectedTracks(visibleGPXFiles);
 
-		Map<SelectedGpxFile, Long> visibleGPXFilesMap = new HashMap<>();
+		// P11/6, and only half of what that finding asked for.
+		//
+		// The HashMap is skippable: with no visible tracks the loop below never runs, so it stayed
+		// empty and was thrown away next frame. Collections.emptyMap() is safe because this map is
+		// only ever read - `.get` here, `.keySet()` in updateVisibleGpxFiles - and is replaced
+		// wholesale rather than mutated.
+		//
+		// The ArrayList above is NOT skippable and must keep allocating. updateTmpVisibleTrack
+		// calls visibleGPXFiles.add(...), so an immutable empty list would throw. (Worth noting in
+		// passing: on the customObjectsDelegate branch that add() mutates the DELEGATE's own list,
+		// which is an upstream bug, but it is not this change's to fix and pretending otherwise
+		// would hide it.)
+		Map<SelectedGpxFile, Long> visibleGPXFilesMap = visibleGPXFiles.isEmpty()
+				? Collections.emptyMap()
+				: new HashMap<>();
 		boolean pointsModified = false;
 		long pointsToDisplayCount = 0;
 		for (SelectedGpxFile selectedGpxFile : visibleGPXFiles) {

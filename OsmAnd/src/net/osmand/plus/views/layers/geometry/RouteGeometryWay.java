@@ -30,6 +30,7 @@ import net.osmand.shared.ColorPalette;
 import net.osmand.util.Algorithms;
 import net.osmand.util.MapUtils;
 
+import gnu.trove.list.array.TIntArrayList;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -178,7 +179,7 @@ public class RouteGeometryWay extends
 		for (List<DrawPathData31> segmentData : croppedPathData31) {
 
 			Segment segment = new Segment();
-			segment.indexes = new ArrayList<>();
+			segment.indexes = new TIntArrayList();
 			segment.styles = new ArrayList<>();
 
 			for (int pathIndex = 0; pathIndex < segmentData.size(); pathIndex++) {
@@ -211,7 +212,7 @@ public class RouteGeometryWay extends
 
 		// FIXME do we always call on draw?
 		Segment segment = currentCachedSegment != null ? currentCachedSegment : new Segment();
-		segment.indexes = new ArrayList<>();
+		segment.indexes = new TIntArrayList();
 		segment.styles = new ArrayList<>();
 		for (GeometryWayPoint p : points) {
 			segment.indexes.add(p.index);
@@ -472,7 +473,20 @@ public class RouteGeometryWay extends
 
 	private static class Segment {
 		public List<Location> initialLocations = new ArrayList<>();
-		public List<Integer> indexes;
+		/**
+		 * P11/2. A primitive int list, not {@code List<Integer>}.
+		 *
+		 * <p>One {@code Integer} was boxed per ROUTE POINT, every time the geometry was rebuilt -
+		 * the biggest of the boxing findings at roughly 64 KB/s. gnu.trove is already a dependency
+		 * of this module, and {@code TIntArrayList} exposes the same add/size/get shape, so this is
+		 * a type swap rather than a rewrite.
+		 *
+		 * <p>Contained on purpose: {@code Segment} is private static and this field never leaves
+		 * the file. The sibling {@code forceIncludedIndexes} stays a {@code List<Integer>} because
+		 * it crosses into PathGeometryZoom through GeometryWay's API, which is a wider change than
+		 * the allocation justifies.
+		 */
+		public TIntArrayList indexes;
 		public List<GeometryWayStyle<?>> styles;
 
 		public boolean isCompleted() {

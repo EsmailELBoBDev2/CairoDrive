@@ -195,10 +195,46 @@ public class MapControlsLayer extends OsmandMapLayer {
 		addCustomMapButton(mapButton, true, false, false, false);
 	}
 
+	// P11/7. Cache for getAllMapButtons, validated against the backing lists rather than
+	// invalidated by hand.
+	private List<MapButton> cachedAllButtons;
+	private List<MapButton> cachedAllSourceMain;
+	private List<MapButton> cachedAllSourceCustom;
+	private int cachedAllSizeMain;
+	private int cachedAllSizeCustom;
+
+	/**
+	 * P11/7. Same defensive snapshot as before, allocated only when the inputs actually change.
+	 *
+	 * <p>The copy itself is NOT the waste and must stay: {@code button.update()} runs inside the
+	 * loops that consume this, so handing out {@code mapButtons} directly would risk a
+	 * {@code ConcurrentModificationException} on the map HUD. What was wasteful is rebuilding an
+	 * identical snapshot three times a frame when nothing had changed.
+	 *
+	 * <p>Validated rather than invalidated, deliberately. There are seven places that mutate the
+	 * two backing lists - two field replacements at init, two {@code add}s, a replacement in
+	 * {@code removeCustomMapButtons}, and two {@code clear}s - and a scheme that needs a call at
+	 * each is a scheme that silently breaks the day someone adds an eighth. Checking list identity
+	 * plus size covers every one of those shapes: replacement changes identity, add and clear
+	 * change size. A same-size in-place swap would slip through, and none exists here because the
+	 * only removal path replaces the list rather than mutating it.
+	 */
 	@NonNull
 	private List<MapButton> getAllMapButtons() {
+		if (cachedAllButtons != null
+				&& cachedAllSourceMain == mapButtons
+				&& cachedAllSourceCustom == customMapButtons
+				&& cachedAllSizeMain == mapButtons.size()
+				&& cachedAllSizeCustom == customMapButtons.size()) {
+			return cachedAllButtons;
+		}
 		List<MapButton> buttons = new ArrayList<>(mapButtons);
 		buttons.addAll(customMapButtons);
+		cachedAllButtons = buttons;
+		cachedAllSourceMain = mapButtons;
+		cachedAllSourceCustom = customMapButtons;
+		cachedAllSizeMain = mapButtons.size();
+		cachedAllSizeCustom = customMapButtons.size();
 		return buttons;
 	}
 
