@@ -614,6 +614,13 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 			// underneath a request that is already describing it.
 			// Free driving has no route to copy. The box around the car is built in poll()
 			// instead, from the fix that is already in hand.
+			//
+			// NOTE on the copy below: this entry point now runs OUTSIDE RoutingHelper's monitor,
+			// because it was hoisted above the destination check so free driving reaches it at all.
+			// getRouteLocations() is a live sublist view, so a route swap mid-copy can throw here
+			// where it previously could not. That is caught by the enclosing handler and costs one
+			// skipped fix, retried a second later - which is the right trade against never running
+			// without a destination.
 			List<Location> remaining;
 			if (following) {
 				RouteCalculationResult route = helper.getRoute();

@@ -474,6 +474,24 @@ public class RoutingHelper {
 			transportRoutingHelper.setFinalAndCurrentLocation(finalLocation,
 					new LatLon(currentLocation.getLatitude(), currentLocation.getLongitude()));
 		}
+		// The providers that do not need a DESTINATION run here, above the early return below.
+		//
+		// They used to sit further down with the route-anchored ones, which meant none of them ever
+		// ran while free driving: finalLocation is null without a destination, so this method
+		// returned before reaching them. Dust and sun glare are properties of the sky and the hour,
+		// not of a route that may not exist, and a closure or a flooded underpass blocks a road
+		// whether or not the driver told the app where they were going. All three were silently
+		// navigation-only.
+		//
+		// Ordered cheapest-first, as before: glare is pure arithmetic, weather is minutes apart,
+		// TomTom is the only one here that can spend a billed request. Each is a self-gating entry
+		// point that returns on its first line when its flag is off, so a default build still pays
+		// one boolean read per fix for the lot.
+		if (currentLocation != null) {
+			net.osmand.plus.cairodrive.providers.SunGlareProvider.onLocationUpdate(app, currentLocation);
+			net.osmand.plus.cairodrive.providers.OpenWeatherHazardProvider.onLocationUpdate(app, currentLocation);
+			net.osmand.plus.cairodrive.providers.TomTomTrafficProvider.onLocationUpdate(this, currentLocation);
+		}
 		if (finalLocation == null || currentLocation == null || isPublicTransportMode()) {
 			isDeviatedFromRoute = false;
 			return locationProjection;
@@ -620,9 +638,10 @@ public class RoutingHelper {
 			// all; the weather poller is minutes apart; TomTom is the only one that can spend a
 			// billed request, and TrafficAwareRouting runs last because it CONSUMES what the
 			// others published rather than fetching anything itself.
-			net.osmand.plus.cairodrive.providers.SunGlareProvider.onLocationUpdate(app, currentLocation);
-			net.osmand.plus.cairodrive.providers.OpenWeatherHazardProvider.onLocationUpdate(app, currentLocation);
-			net.osmand.plus.cairodrive.providers.TomTomTrafficProvider.onLocationUpdate(this, currentLocation);
+			// Glare, weather and TomTom already ran above the destination check - they work
+			// without one. TrafficAwareRouting stays here because it CONSUMES route state: it
+			// applies flow to the ETA and turns closures into nogo points, neither of which means
+			// anything without a route.
 			net.osmand.plus.cairodrive.providers.TrafficAwareRouting.onLocationUpdate(this, currentLocation);
 			if (!route.isEmpty()) {
 				lastGoodRouteLocation = currentLocation;
