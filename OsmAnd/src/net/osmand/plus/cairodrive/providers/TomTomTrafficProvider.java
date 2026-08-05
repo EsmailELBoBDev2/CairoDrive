@@ -344,17 +344,33 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	 * interval is decided, so declaring here is the one arrangement in which the window cannot
 	 * drift out of step with the poll it is supposed to be covering.
 	 */
-	private static long flowIntervalForBudget(int flowUsed) {
-		long interval = BudgetPacer.tierFor(flowUsed, FLOW_DAILY_CAP, FLOW_LADDER).intervalMs;
+	/**
+	 * Also DECLARES the cadence, and shortens it when the ROUTE says the drive is nearly over.
+	 *
+	 * <p>The ladder alone paces the first hour of a 40-minute commute exactly like the first hour
+	 * of a twelve-hour haul, because from budget-consumed alone the two are identical. The route is
+	 * not fooled - it says "23 minutes to destination" - so {@link BudgetPacer#forHorizon} spends
+	 * the trip's share across the trip's actual length. It is clamped so it can only ever speed up,
+	 * never slow down, which is what keeps every coverage guarantee intact.
+	 */
+	private static long flowIntervalForBudget(int flowUsed, @Nullable OsmandApplication app) {
+		BudgetPacer.Tier tier = BudgetPacer.tierFor(flowUsed, FLOW_DAILY_CAP, FLOW_LADDER);
+		long interval = BudgetPacer.forHorizon(tier.intervalMs, flowUsed, FLOW_DAILY_CAP,
+				tier.unitsPerCall, BudgetPacer.routeHorizonMinutes(app),
+				FLOW_LADDER[0].intervalMs);
 		CairoDriveProviders.declareFlowCadence(interval);
 		lastFlowIntervalMs = interval;
 		return interval;
 	}
 
-	/** Declares the incident cadence for the same reason as {@link #flowIntervalForBudget}. */
-	private static long incidentIntervalForBudget(int incidentUsed) {
-		long interval = BudgetPacer.tierFor(incidentUsed, INCIDENT_DAILY_CAP, INCIDENT_LADDER)
-				.intervalMs;
+	/** Route-aware for the same reason as {@link #flowIntervalForBudget(int, OsmandApplication)}. */
+	private static long incidentIntervalForBudget(int incidentUsed,
+	                                              @Nullable OsmandApplication app) {
+		BudgetPacer.Tier tier = BudgetPacer.tierFor(incidentUsed, INCIDENT_DAILY_CAP,
+				INCIDENT_LADDER);
+		long interval = BudgetPacer.forHorizon(tier.intervalMs, incidentUsed, INCIDENT_DAILY_CAP,
+				tier.unitsPerCall, BudgetPacer.routeHorizonMinutes(app),
+				INCIDENT_LADDER[0].intervalMs);
 		CairoDriveProviders.declareIncidentCadence(interval);
 		lastIncidentIntervalMs = interval;
 		return interval;
@@ -541,10 +557,10 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 				return;
 			}
 			boolean incidentsDue = serveIncidents
-					&& now - lastIncidentPoll >= incidentIntervalForBudget(usedIncidents(app));
+					&& now - lastIncidentPoll >= incidentIntervalForBudget(usedIncidents(app), app);
 			// Budget-aware cadence: past BUDGET_THIN_FRACTION this interval doubles, so the feature
 			// stretches across a long day instead of stopping dead partway through it.
-			long flowInterval = flowIntervalForBudget(usedFlowPoints(app));
+			long flowInterval = flowIntervalForBudget(usedFlowPoints(app), app);
 			boolean flowDue = serveFlow && now - lastFlowPoll >= flowInterval;
 			if (!incidentsDue && !flowDue) {
 				return;
@@ -579,8 +595,8 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 					return;
 				}
 				incidentsDue = serveIncidents
-						&& now - lastIncidentPoll >= incidentIntervalForBudget(usedIncidents(app));
-				flowDue = serveFlow && now - lastFlowPoll >= flowIntervalForBudget(usedFlowPoints(app));
+						&& now - lastIncidentPoll >= incidentIntervalForBudget(usedIncidents(app), app);
+				flowDue = serveFlow && now - lastFlowPoll >= flowIntervalForBudget(usedFlowPoints(app), app);
 				if (!incidentsDue && !flowDue) {
 					return;
 				}
@@ -817,7 +833,11 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 				// stream's design. describe() recomputes coverage from the constants, so a retune
 				// that breaks the guarantee is visible in the drive log rather than on the road.
 				+ " pace=" + BudgetPacer.describe(used(app, PREF_INCIDENT_COUNT),
-						INCIDENT_DAILY_CAP, INCIDENT_LADDER));
+						INCIDENT_DAILY_CAP, INCIDENT_LADDER)
+				// The APPLIED interval as well as the tier's, because they now differ whenever the
+				// route horizon shortened it. Without this a log cannot tell a fast poll that was
+				// the tier from one that was the route.
+				+ " appliedS=" + (lastIncidentIntervalMs / 1000));
 	}
 
 	/**
@@ -1001,6 +1021,7 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 				// alone does not say whether a small sweep was the tier or a partial failure.
 				+ " pace=" + BudgetPacer.describe(used(app, PREF_FLOW_COUNT),
 						FLOW_DAILY_CAP, FLOW_LADDER)
+				+ " appliedS=" + (lastFlowIntervalMs / 1000)
 				// The distribution is the point of this endpoint: a sweep that is all low-confidence
 				// means the route is on roads TomTom has no probes for, and the ETA correction
 				// should be ignored rather than averaged in. Buckets AND the raw values, because

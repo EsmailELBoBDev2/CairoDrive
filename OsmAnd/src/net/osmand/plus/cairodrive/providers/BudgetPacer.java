@@ -1,6 +1,10 @@
 package net.osmand.plus.cairodrive.providers;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+
+import net.osmand.plus.OsmandApplication;
+import net.osmand.plus.routing.RoutingHelper;
 
 import java.util.Locale;
 
@@ -154,6 +158,104 @@ public final class BudgetPacer {
 			minutes += calls * (tier.intervalMs / 60000.0);
 		}
 		return minutes / 60.0;
+	}
+
+	/**
+	 * Slack on the router's ETA. Cairo ETAs run optimistic, and a horizon that is too SHORT is the
+	 * dangerous direction - it would spend for a 40-minute drive that turns out to be 70.
+	 */
+	private static final double HORIZON_SLACK = 1.5;
+	/**
+	 * Share of the remaining daily budget this trip may not touch.
+	 *
+	 * <p>This is what stops a route-aware speed-up from eating a second drive. The budget resets on
+	 * the UTC day, not per trip, so a morning drive that spent everything would leave the evening
+	 * one starting deep down the ladder. A third held back is roughly "one more drive of the same
+	 * length", which matches how the car is actually used.
+	 */
+	private static final double TRIP_RESERVE = 0.34;
+	/** Below this the ETA is noise - a route being recalculated, or the destination in sight. */
+	private static final int MIN_HORIZON_MIN = 5;
+
+	/**
+	 * Minutes of driving the ROUTER says are left, or 0 when it does not know.
+	 *
+	 * <p>The whole point: this is not a prediction. Every published budget-pacing algorithm - the
+	 * ad-serving PID controllers this ladder was modelled on - exists to guess how much of a
+	 * campaign's day is left, because nothing tells them. A navigation app is the rare case where
+	 * the answer is simply available: the route has an ETA, so the pacer can read the drive length
+	 * instead of inferring it from spend rate.
+	 *
+	 * <p>Returns 0 rather than a guess when not navigating. Free-driving has no horizon, and the
+	 * static ladder is the correct behaviour there.
+	 */
+	public static int routeHorizonMinutes(@Nullable OsmandApplication app) {
+		try {
+			if (app == null) {
+				return 0;
+			}
+			RoutingHelper helper = app.getRoutingHelper();
+			if (helper == null || !helper.isRouteCalculated() || !helper.isFollowingMode()) {
+				return 0;
+			}
+			int leftSeconds = helper.getLeftTime();
+			return leftSeconds > 0 ? (int) (leftSeconds / 60.0 * HORIZON_SLACK) : 0;
+		} catch (Throwable t) {
+			// Never let the pacer break on a routing-state race. Zero means "fall back to the
+			// ladder", which is the behaviour that was already verified.
+			return 0;
+		}
+	}
+
+	/**
+	 * The ladder's interval, made FASTER when the route says this drive is short.
+	 *
+	 * <h3>What this fixes</h3>
+	 *
+	 * The ladder is keyed on budget consumed, which is honest but blind: it spends the first hour of
+	 * a 40-minute drive at exactly the same rate as the first hour of a twelve-hour one, because at
+	 * that moment the two are indistinguishable from the budget alone. They are NOT indistinguishable
+	 * from the route - one of them says "23 minutes to destination".
+	 *
+	 * <p>So on a drive short enough that the whole remaining budget comfortably covers it, this
+	 * returns the fastest rung's interval instead of the tier's, and the driver gets 1-minute data
+	 * for a commute that would otherwise have been paced for a day that is not going to happen.
+	 *
+	 * <h3>Why it can only ever help</h3>
+	 *
+	 * It is clamped on both sides. It never returns anything SLOWER than the ladder, so every
+	 * guarantee already proven about coverage and the 24-hour tail still holds unchanged - a long
+	 * drive's horizon is large, the computed interval exceeds the ladder's, and the ladder wins.
+	 * And it never returns anything faster than {@code fastestMs}, the first rung, which is set to
+	 * the data's own refresh rate - so it cannot buy duplicate bytes.
+	 *
+	 * <p>{@link #TRIP_RESERVE} keeps it from spending the day on one trip. Combined with the
+	 * {@link #HORIZON_SLACK} on the ETA, both error directions are biased towards under-spending.
+	 *
+	 * @param remainingMinutes from {@link #routeHorizonMinutes}; 0 disables and returns the ladder
+	 */
+	public static long forHorizon(long ladderIntervalMs, int used, int cap, int unitsPerCall,
+	                              int remainingMinutes, long fastestMs) {
+		if (remainingMinutes < MIN_HORIZON_MIN || cap <= 0 || unitsPerCall <= 0) {
+			return ladderIntervalMs;
+		}
+		double spendable = Math.max(0, cap - used) * (1.0 - TRIP_RESERVE);
+		double affordableCalls = spendable / unitsPerCall;
+		if (affordableCalls < 1) {
+			return ladderIntervalMs;
+		}
+		// The interval that spends exactly the trip's share across exactly the trip's length.
+		long horizonMs = (long) (remainingMinutes * 60_000L / affordableCalls);
+		return Math.max(fastestMs, Math.min(ladderIntervalMs, horizonMs));
+	}
+
+	/** For logging: what {@link #forHorizon} did, and why. */
+	@NonNull
+	public static String describeHorizon(long ladderIntervalMs, long appliedMs,
+	                                     int remainingMinutes) {
+		return String.format(Locale.US, "horizonMin=%d ladderS=%d appliedS=%d %s",
+				remainingMinutes, ladderIntervalMs / 1000, appliedMs / 1000,
+				appliedMs < ladderIntervalMs ? "SPEDUP" : "ladder");
 	}
 
 	/**

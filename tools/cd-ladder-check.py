@@ -130,15 +130,68 @@ def main():
         print(f"{name:20s} {cap:5d} {len(tiers):5d} {fsum:6.3f} {covers/60:6.2f}h "
               f"{floor_s//60:5d}m/{tiers[-1][1]}u {window:>7s}")
 
+    problems += check_horizon()
+
     print()
     for p in problems:
         print("FAIL " + p)
     if problems:
         print(f"\n{len(problems)} problem(s)")
         return 1
-    print("all ladders spend 100%, cover 24 h, degrade monotonically, and every "
-          "staleness window outlasts its poll floor")
+    print("all ladders spend 100%, cover 24 h, degrade monotonically, every staleness window "
+          "outlasts its poll floor,\nand the route-aware speed-up never slows a stream down nor "
+          "outruns rung one")
     return 0
+
+
+def check_horizon():
+    """BudgetPacer.forHorizon must only ever SPEED UP, and never past rung one.
+
+    That two-sided clamp is the entire safety argument for reading the router's ETA: it is why
+    every coverage proof above still holds unchanged with the speed-up switched on. If a refactor
+    breaks the clamp, a long drive could be paced by a wrong ETA and run dry - so the property is
+    re-derived here from the constants rather than trusted.
+    """
+    src = read(os.path.join(ROOT, "OsmAnd", "src", "net", "osmand", "plus", "cairodrive",
+                            "providers", "BudgetPacer.java"))
+    def const(name, default):
+        m = re.search(r"\b" + name + r"\s*=\s*([0-9.]+)\s*;", src)
+        return float(m.group(1)) if m else default
+    slack = const("HORIZON_SLACK", 1.5)
+    reserve = const("TRIP_RESERVE", 0.34)
+    min_h = const("MIN_HORIZON_MIN", 5)
+
+    def for_horizon(ladder_ms, used, cap, units, remaining_min, fastest_ms):
+        if remaining_min < min_h or cap <= 0 or units <= 0:
+            return ladder_ms
+        calls = max(0, cap - used) * (1.0 - reserve) / units
+        if calls < 1:
+            return ladder_ms
+        return max(fastest_ms, min(ladder_ms, int(remaining_min * 60000 / calls)))
+
+    bad = []
+    for (name, lfile, lname, cname, _tf, _tn, _s) in STREAMS:
+        lsrc = read(lfile)
+        tiers = find_ladder(lsrc, lname)
+        cap = find_const(lsrc, cname)
+        if not tiers or not cap:
+            continue
+        fastest = tiers[0][2] * 1000
+        for used in range(0, cap + 1, max(1, cap // 12)):
+            acc, tier = 0.0, tiers[-1]
+            for t in tiers:
+                acc += t[0]
+                if used < cap * acc:
+                    tier = t
+                    break
+            lad = tier[2] * 1000
+            for eta in (0, 5, 20, 45, 90, 180, 360, 720, 1440):
+                got = for_horizon(lad, used, cap, tier[1], int(eta * slack), fastest)
+                if got > lad:
+                    bad.append(f"{name}: horizon SLOWED the stream (used={used} eta={eta}m)")
+                if got < fastest:
+                    bad.append(f"{name}: horizon outran rung one (used={used} eta={eta}m)")
+    return sorted(set(bad))
 
 
 if __name__ == "__main__":

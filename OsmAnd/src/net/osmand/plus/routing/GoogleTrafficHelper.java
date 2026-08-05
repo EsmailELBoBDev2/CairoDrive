@@ -404,8 +404,16 @@ public class GoogleTrafficHelper {
 		// of running out partway through one. A 45-minute drive never leaves the first two rungs of
 		// either ladder, so the common case is unchanged.
 		long now = System.currentTimeMillis();
-		long spansInterval = net.osmand.plus.cairodrive.providers.BudgetPacer
-				.tierFor(spansUsed, SPANS_DAILY_CAP, SPANS_LADDER).intervalMs;
+		// Route-aware: shorten when the router says the drive is nearly over. Clamped so it can
+		// only speed up, never slow down, and never past rung one - which for the Enterprise SKU
+		// is also the point past which it would be buying identical bytes.
+		int horizonMin = net.osmand.plus.cairodrive.providers.BudgetPacer.routeHorizonMinutes(app);
+		net.osmand.plus.cairodrive.providers.BudgetPacer.Tier spansTier =
+				net.osmand.plus.cairodrive.providers.BudgetPacer
+						.tierFor(spansUsed, SPANS_DAILY_CAP, SPANS_LADDER);
+		long spansInterval = net.osmand.plus.cairodrive.providers.BudgetPacer.forHorizon(
+				spansTier.intervalMs, spansUsed, SPANS_DAILY_CAP, spansTier.unitsPerCall,
+				horizonMin, SPANS_LADDER[0].intervalMs);
 		// Republished for spansPaintTtlMs(), which must widen as this widens or the overlay blanks
 		// between polls late in a drive.
 		lastSpansIntervalMs = spansInterval;
@@ -415,8 +423,12 @@ public class GoogleTrafficHelper {
 			settings.GOOGLE_TRAFFIC_REQUEST_COUNT.set(spansUsed + 1);
 			return TIER_SPANS;
 		}
-		long delayInterval = net.osmand.plus.cairodrive.providers.BudgetPacer
-				.tierFor(delayUsed, DELAY_DAILY_CAP, DELAY_LADDER).intervalMs;
+		net.osmand.plus.cairodrive.providers.BudgetPacer.Tier delayTier =
+				net.osmand.plus.cairodrive.providers.BudgetPacer
+						.tierFor(delayUsed, DELAY_DAILY_CAP, DELAY_LADDER);
+		long delayInterval = net.osmand.plus.cairodrive.providers.BudgetPacer.forHorizon(
+				delayTier.intervalMs, delayUsed, DELAY_DAILY_CAP, delayTier.unitsPerCall,
+				horizonMin, DELAY_LADDER[0].intervalMs);
 		if (!delayPoolGone && now - lastDelayAtMs >= delayInterval) {
 			lastDelayAtMs = now;
 			settings.GOOGLE_TRAFFIC_DELAY_REQUEST_COUNT.set(delayUsed + 1);
@@ -424,8 +436,12 @@ public class GoogleTrafficHelper {
 				CairoDriveLogger.getInstance().log(TRACE_TAG, "pace delay "
 						+ net.osmand.plus.cairodrive.providers.BudgetPacer
 						.describe(delayUsed, DELAY_DAILY_CAP, DELAY_LADDER)
+						+ " " + net.osmand.plus.cairodrive.providers.BudgetPacer
+						.describeHorizon(delayTier.intervalMs, delayInterval, horizonMin)
 						+ " spans " + net.osmand.plus.cairodrive.providers.BudgetPacer
-						.describe(spansUsed, SPANS_DAILY_CAP, SPANS_LADDER));
+						.describe(spansUsed, SPANS_DAILY_CAP, SPANS_LADDER)
+						+ " " + net.osmand.plus.cairodrive.providers.BudgetPacer
+						.describeHorizon(spansTier.intervalMs, spansInterval, horizonMin));
 			}
 			return TIER_DELAY;
 		}
