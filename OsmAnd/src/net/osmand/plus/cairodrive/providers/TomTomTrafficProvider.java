@@ -10,12 +10,12 @@ import net.osmand.data.LatLon;
 import net.osmand.osm.io.NetworkUtils;
 import net.osmand.plus.BuildConfig;
 import net.osmand.plus.OsmandApplication;
+import net.osmand.plus.api.SettingsAPI;
 import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.routing.RouteCalculationResult;
 import net.osmand.plus.routing.RoutingHelper;
 import net.osmand.plus.settings.backend.ApplicationMode;
 import net.osmand.plus.settings.backend.OsmandSettings;
-import net.osmand.plus.settings.backend.preferences.CommonPreference;
 import net.osmand.util.Algorithms;
 import net.osmand.util.MapUtils;
 
@@ -232,16 +232,28 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 
 	// ------------------------------------------------------------------ persisted budget keys
 	//
-	// Registered lazily through OsmandSettings.registerIntPreference rather than declared as
-	// fields in OsmandSettings, so this provider carries its own state and adds nothing to a file
-	// three other agents are also editing. registerIntPreference returns the ALREADY registered
-	// preference when the id exists, so if these are later promoted to proper OsmandSettings
-	// fields the lookups below silently start returning those instead - same ids, same values, no
-	// migration and no double accounting.
+	// Read and written through SettingsAPI against the GLOBAL preference object directly, rather
+	// than through OsmandSettings.registerIntPreference.
+	//
+	// registerIntPreference looks the tempting option - it is one line and it hands back an
+	// already-registered preference on a second call - but it also does
+	// `registeredPreferences.put(id, p)` on a plain LinkedHashMap that OsmandSettings shares across
+	// the whole app. These counters are claimed on the polling worker, so registering from here is
+	// a structural mutation of that map from a background thread while the UI thread is registering
+	// its own preferences and while backup/settings-export code is ITERATING it. The failure is a
+	// ConcurrentModificationException or a lost entry on a settings screen, arriving nowhere near
+	// this file and with nothing in the drive log to connect it back.
+	//
+	// SettingsAPI writes to exactly the same store an IntPreference.makeGlobal() would - see
+	// IntPreference.setValue - so the values are byte-identical if these are ever promoted to real
+	// OsmandSettings fields. The only thing given up is the registry entry, which this feature has
+	// no use for: nothing displays these and nothing backs them up.
 
 	private static final String PREF_DAY = "tomtom_traffic_request_day";
 	private static final String PREF_INCIDENT_COUNT = "tomtom_traffic_incident_request_count";
 	private static final String PREF_FLOW_COUNT = "tomtom_traffic_flow_request_count";
+	private static final String PREF_LAST_INCIDENT_MS = "tomtom_traffic_last_incident_ms";
+	private static final String PREF_LAST_FLOW_MS = "tomtom_traffic_last_flow_ms";
 
 	// ------------------------------------------------------------------ state
 	// Touched from the GPS thread (which may be the main thread) and from the worker.
@@ -261,10 +273,8 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	private static volatile boolean keyRejected;
 	private static volatile boolean budgetExhaustedLogged;
 	private static volatile boolean notServingLogged;
-
-	private static volatile CommonPreference<Integer> dayPref;
-	private static volatile CommonPreference<Integer> incidentCountPref;
-	private static volatile CommonPreference<Integer> flowCountPref;
+	/** Whether the cadence has been seeded from storage yet. See {@link #seedCadence}. */
+	private static volatile boolean cadenceSeeded;
 
 	private TomTomTrafficProvider() {
 	}
@@ -343,13 +353,15 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 			}
 
 			OsmandSettings settings = app.getSettings();
-			if (!helper.isFollowingMode() || !settings.isInternetConnectionAvailable()) {
+			if (!helper.isFollowingMode()) {
 				return;
 			}
 			ApplicationMode mode = settings.getApplicationMode();
 			if (mode == null || !mode.isDerivedRoutingFrom(ApplicationMode.CAR)) {
 				return;
 			}
+
+			seedCadence(app);
 
 			long now = System.currentTimeMillis();
 			if (inFlight) {
@@ -358,6 +370,16 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 			boolean incidentsDue = serveIncidents && now - lastIncidentPoll >= INCIDENT_INTERVAL_MS;
 			boolean flowDue = serveFlow && now - lastFlowPoll >= FLOW_INTERVAL_MS;
 			if (!incidentsDue && !flowDue) {
+				return;
+			}
+
+			// Connectivity is tested AFTER the cadence check, not with the other cheap gates above.
+			// isInternetConnectionAvailable() looks free and is not: it re-queries ConnectivityManager
+			// whenever its own 15 s cache is cold, which is a binder round trip on whatever thread the
+			// fix arrived on - possibly the main one, whose frame budget is already 46.9 ms. Placing it
+			// here means the 149 seconds out of every 150 when nothing is due cost no binder call at
+			// all, and the check still runs before a single byte is spent.
+			if (!settings.isInternetConnectionAvailable()) {
 				return;
 			}
 
@@ -552,7 +574,7 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 			// redaction in CairoDriveLogger only filters the logcat pump, not direct log() calls.
 			CairoDriveLogger.getInstance().log(TRACE_TAG, "incidents http=" + response.code
 					+ " ms=" + elapsed + " bbox=" + bbox + " lang=" + language
-					+ " budget=" + used(incidentCountPref(app)) + "/" + INCIDENT_DAILY_CAP
+					+ " budget=" + used(app, PREF_INCIDENT_COUNT) + "/" + INCIDENT_DAILY_CAP
 					+ (Algorithms.isEmpty(response.body) ? "" : " body=" + trim(response.body, 200)));
 			handleHttpFailure(response.code, language);
 			return;
@@ -604,7 +626,7 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 				+ " bbox=" + bbox + " lang=" + language
 				+ " n=" + incidents.size() + " closures=" + closures
 				+ " laneClosed=" + laneClosed + " flooding=" + flooding
-				+ " budget=" + used(incidentCountPref(app)) + "/" + INCIDENT_DAILY_CAP);
+				+ " budget=" + used(app, PREF_INCIDENT_COUNT) + "/" + INCIDENT_DAILY_CAP);
 	}
 
 	/**
@@ -777,7 +799,7 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 		CairoDriveLogger.getInstance().log(TRACE_TAG, "flow http="
 				+ (failures == 0 ? 200 : lastCode) + " ms=" + elapsed
 				+ " pts=" + samples.size() + "/" + points.size() + " failed=" + failures
-				+ " budget=" + used(flowCountPref(app)) + "/" + FLOW_DAILY_CAP
+				+ " budget=" + used(app, PREF_FLOW_COUNT) + "/" + FLOW_DAILY_CAP
 				// The distribution is the point of this endpoint: a sweep that is all low-confidence
 				// means the route is on roads TomTom has no probes for, and the ETA correction
 				// should be ignored rather than averaged in. Buckets AND the raw values, because
@@ -875,17 +897,22 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	 */
 	private static boolean claimIncidentRequest(@NonNull OsmandApplication app) {
 		try {
-			rollDay(app);
-			CommonPreference<Integer> counter = incidentCountPref(app);
-			if (counter == null) {
-				return false;
-			}
-			int used = used(counter);
+			OsmandSettings settings = app.getSettings();
+			SettingsAPI api = settings.getSettingsAPI();
+			Object prefs = settings.getPreferences(true);
+			int[] spent = rollDay(api, prefs);
+			int used = spent[0];
 			if (used >= INCIDENT_DAILY_CAP) {
-				logBudgetExhausted(app);
+				logBudgetExhausted(used, spent[1]);
 				return false;
 			}
-			counter.set(used + 1);
+			// The stamp is written with the claim, not with the response, so a request that times out
+			// still counts as a poll attempt. Otherwise a run of failures would leave the stamp cold
+			// and a restart would fire immediately - which is the case seedCadence exists to close.
+			api.edit(prefs)
+					.putInt(PREF_INCIDENT_COUNT, used + 1)
+					.putLong(PREF_LAST_INCIDENT_MS, System.currentTimeMillis())
+					.commit();
 			return true;
 		} catch (Throwable t) {
 			// A budget that cannot be accounted for is a budget that must not be spent.
@@ -904,18 +931,20 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	 */
 	private static int claimFlowRequests(@NonNull OsmandApplication app, int wanted) {
 		try {
-			rollDay(app);
-			CommonPreference<Integer> counter = flowCountPref(app);
-			if (counter == null) {
-				return 0;
-			}
-			int used = used(counter);
+			OsmandSettings settings = app.getSettings();
+			SettingsAPI api = settings.getSettingsAPI();
+			Object prefs = settings.getPreferences(true);
+			int[] spent = rollDay(api, prefs);
+			int used = spent[1];
 			int granted = Math.max(0, Math.min(wanted, FLOW_DAILY_CAP - used));
 			if (granted < FLOW_MIN_POINTS) {
-				logBudgetExhausted(app);
+				logBudgetExhausted(spent[0], used);
 				return 0;
 			}
-			counter.set(used + granted);
+			api.edit(prefs)
+					.putInt(PREF_FLOW_COUNT, used + granted)
+					.putLong(PREF_LAST_FLOW_MS, System.currentTimeMillis())
+					.commit();
 			return granted;
 		} catch (Throwable t) {
 			CairoDriveLogger.getInstance().log(TRACE_TAG, "flow budget claim failed", t);
@@ -923,89 +952,102 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 		}
 	}
 
-	/** Zeroes both counters when the UTC day has rolled. */
-	private static void rollDay(@NonNull OsmandApplication app) {
-		CommonPreference<Integer> day = dayPref(app);
-		CommonPreference<Integer> incidents = incidentCountPref(app);
-		CommonPreference<Integer> flow = flowCountPref(app);
-		if (day == null || incidents == null || flow == null) {
+	/**
+	 * Carries the poll cadence across a process restart, once per process.
+	 *
+	 * <h3>Why the daily cap is not enough on its own</h3>
+	 *
+	 * {@link #lastIncidentPoll} and {@link #lastFlowPoll} start at zero, which reads as "never
+	 * polled" and fires a full sweep on the first fix. That is correct for a first launch and wrong
+	 * for the case that actually happens on a drive: Android Auto reconnecting, or the app being
+	 * killed and relaunched, turns a 2.5 minute cadence into "once per launch" and can spend an
+	 * incident request plus six flow points every time the head unit drops the connection. The
+	 * persisted daily caps bound that to a day's worth rather than to nothing, but they bound the
+	 * disaster, not the waste - the same trap {@code OpenWeatherHazardProvider} documents.
+	 *
+	 * <p>Seeding rather than checking storage per poll is the point. Once the in-memory values are
+	 * primed, the cadence logic is unchanged and {@link #onNewRoute()} can still legitimately pull a
+	 * deadline forward after a reroute - which an authoritative persisted interval check would
+	 * silently veto, quietly removing the one thing that gets fresh incidents after a route change.
+	 *
+	 * <p>One preference read per process, on the first fix that gets past the arbitration gate, so a
+	 * build that does not serve either capability never performs it.
+	 */
+	private static void seedCadence(@NonNull OsmandApplication app) {
+		if (cadenceSeeded) {
 			return;
 		}
-		int today = (int) (System.currentTimeMillis() / 86_400_000L);
-		if (used(day) != today) {
-			day.set(today);
-			incidents.set(0);
-			flow.set(0);
-			budgetExhaustedLogged = false;
+		cadenceSeeded = true;
+		try {
+			OsmandSettings settings = app.getSettings();
+			SettingsAPI api = settings.getSettingsAPI();
+			Object prefs = settings.getPreferences(true);
+			long now = System.currentTimeMillis();
+			long incidents = api.getLong(prefs, PREF_LAST_INCIDENT_MS, 0);
+			long flow = api.getLong(prefs, PREF_LAST_FLOW_MS, 0);
+			// A stamp in the future means the clock moved backwards - NTP correcting a head unit that
+			// booted with a dead RTC. Ignoring it polls once too often; honouring it would disable the
+			// feature for however far the clock jumped.
+			if (incidents > 0 && incidents <= now) {
+				lastIncidentPoll = incidents;
+			}
+			if (flow > 0 && flow <= now) {
+				lastFlowPoll = flow;
+			}
+		} catch (Throwable t) {
+			// Seeding is an optimisation. Failing it costs one extra sweep, never a wrong answer.
+			CairoDriveLogger.getInstance().log(TRACE_TAG, "cadence seed failed", t);
 		}
 	}
 
-	private static void logBudgetExhausted(@NonNull OsmandApplication app) {
+	/**
+	 * Zeroes both counters when the UTC day has rolled, and returns what is spent today as
+	 * {@code {incidentRequests, flowPoints}}.
+	 *
+	 * <p>Returns the figures rather than letting the caller re-read them so a claim decision and the
+	 * log line that explains it are made from ONE read of the store. Two reads either side of a day
+	 * boundary would print a cap breach next to a zeroed counter.
+	 *
+	 * <p>The global preference file is a plain UTC day number, not a date string: no calendar, no
+	 * time zone, and one integer comparison that no locale can reinterpret.
+	 */
+	@NonNull
+	private static int[] rollDay(@NonNull SettingsAPI api, @NonNull Object prefs) {
+		int today = (int) (System.currentTimeMillis() / 86_400_000L);
+		if (api.getInt(prefs, PREF_DAY, 0) != today) {
+			api.edit(prefs)
+					.putInt(PREF_DAY, today)
+					.putInt(PREF_INCIDENT_COUNT, 0)
+					.putInt(PREF_FLOW_COUNT, 0)
+					.commit();
+			budgetExhaustedLogged = false;
+			return new int[] {0, 0};
+		}
+		return new int[] {api.getInt(prefs, PREF_INCIDENT_COUNT, 0),
+				api.getInt(prefs, PREF_FLOW_COUNT, 0)};
+	}
+
+	private static void logBudgetExhausted(int incidentsUsed, int flowPointsUsed) {
 		if (budgetExhaustedLogged) {
 			return;
 		}
 		budgetExhaustedLogged = true;
 		CairoDriveLogger.getInstance().log(TRACE_TAG, "daily budget spent (incidents="
-				+ used(incidentCountPref(app)) + "/" + INCIDENT_DAILY_CAP
-				+ " flowPoints=" + used(flowCountPref(app)) + "/" + FLOW_DAILY_CAP
+				+ incidentsUsed + "/" + INCIDENT_DAILY_CAP
+				+ " flowPoints=" + flowPointsUsed + "/" + FLOW_DAILY_CAP
 				+ ") - no further requests until the UTC day rolls");
 	}
 
-	private static int used(@Nullable CommonPreference<Integer> preference) {
-		if (preference == null) {
-			return 0;
-		}
-		Integer value = preference.get();
-		return value != null ? value : 0;
-	}
-
-	// Registered on first use rather than declared in OsmandSettings, and cached in a field
-	// afterwards. registerIntPreference hands back the preference already registered under an id,
-	// so this is safe to call repeatedly and safe if the ids are later promoted to real
-	// OsmandSettings fields - the field wins and this returns it.
-
-	@Nullable
-	private static CommonPreference<Integer> dayPref(@NonNull OsmandApplication app) {
-		CommonPreference<Integer> cached = dayPref;
-		if (cached == null) {
-			cached = registerCounter(app, PREF_DAY);
-			dayPref = cached;
-		}
-		return cached;
-	}
-
-	@Nullable
-	private static CommonPreference<Integer> incidentCountPref(@NonNull OsmandApplication app) {
-		CommonPreference<Integer> cached = incidentCountPref;
-		if (cached == null) {
-			cached = registerCounter(app, PREF_INCIDENT_COUNT);
-			incidentCountPref = cached;
-		}
-		return cached;
-	}
-
-	@Nullable
-	private static CommonPreference<Integer> flowCountPref(@NonNull OsmandApplication app) {
-		CommonPreference<Integer> cached = flowCountPref;
-		if (cached == null) {
-			cached = registerCounter(app, PREF_FLOW_COUNT);
-			flowCountPref = cached;
-		}
-		return cached;
-	}
-
 	/**
-	 * Global, not per-profile. The bill is one bill; a counter that reset when the driver switched
-	 * from Car to Bicycle would be a budget with a bypass built into the profile menu.
+	 * A counter's value for the log line only. Never used to make a spending decision - those go
+	 * through {@link #rollDay} so the day roll cannot be missed.
 	 */
-	@Nullable
-	private static CommonPreference<Integer> registerCounter(@NonNull OsmandApplication app,
-	                                                         @NonNull String id) {
+	private static int used(@NonNull OsmandApplication app, @NonNull String key) {
 		try {
 			OsmandSettings settings = app.getSettings();
-			return settings != null ? settings.registerIntPreference(id, 0).makeGlobal() : null;
+			return settings.getSettingsAPI().getInt(settings.getPreferences(true), key, 0);
 		} catch (Throwable t) {
-			return null;
+			return -1;
 		}
 	}
 

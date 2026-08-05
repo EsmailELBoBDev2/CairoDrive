@@ -356,8 +356,43 @@ public final class OpenWeatherHazardProvider implements CairoDriveProviders.Prov
 		fetchAirQuality(app, lat, lon, reading);
 
 		CairoDriveProviders.HazardBanner banner = evaluate(reading);
-		CairoDriveProviders.publishHazard(banner);
 		CairoDriveLogger.getInstance().log(TRACE_TAG, describe(reading, banner));
+		publish(app, banner);
+	}
+
+	/**
+	 * Puts the verdict into the shared hazard slot without trampling a banner this provider does not
+	 * own.
+	 *
+	 * <h3>The collision this exists to avoid</h3>
+	 *
+	 * WEATHER_HAZARD and SUN_GLARE are two capabilities, but the contract has ONE
+	 * {@code publishHazard} slot and {@code SunGlareProvider} writes to it too. The cadences are
+	 * wildly different - glare re-evaluates on every fix, this provider polls twice an hour - so an
+	 * unconditional {@code publishHazard(evaluate(...))} here does real damage in one direction:
+	 * a clear-air poll returns null and would ERASE a live glare warning that a driver is looking
+	 * into at that moment, on a signal that says nothing whatever about the sun.
+	 *
+	 * <p>So a null verdict only ever clears a banner raised by THIS provider. A non-null one does
+	 * take the slot, and that asymmetry is deliberate rather than an oversight: dust is the more
+	 * dangerous of the two, and it is also physically the correct precedence, because air thick
+	 * enough to raise a dust warning scatters the direct solar beam into a diffuse smear that is no
+	 * longer a glare source. {@code SunGlareProvider.publish} yields from its side for the same
+	 * reason, so neither provider can starve the other.
+	 */
+	private static void publish(@NonNull OsmandApplication app,
+	                            @Nullable CairoDriveProviders.HazardBanner banner) {
+		if (banner == null) {
+			CairoDriveProviders.HazardBanner current = CairoDriveProviders.getHazard();
+			if (current != null && !isOurs(current)) {
+				// Someone else's warning. Forget ours rather than clearing theirs - and do not refresh
+				// the map, because nothing on screen changed.
+				publishedTextKey = "";
+				publishedSeverity = CairoDriveProviders.HazardBanner.SEVERITY_NONE;
+				return;
+			}
+		}
+		CairoDriveProviders.publishHazard(banner);
 
 		String key = banner != null ? banner.textKey : "";
 		int severity = banner != null
@@ -369,6 +404,17 @@ public final class OpenWeatherHazardProvider implements CairoDriveProviders.Prov
 			// refresh twice an hour to re-draw an identical banner is work for nothing.
 			refreshMap(app);
 		}
+	}
+
+	/**
+	 * Whether a banner in the shared slot came from this provider, decided on the text key rather
+	 * than on remembered state. State can be stale - the slot may have expired on its TTL or been
+	 * taken by another provider since the last poll - whereas the key is what is actually there.
+	 */
+	static boolean isOurs(@Nullable CairoDriveProviders.HazardBanner banner) {
+		return banner != null
+				&& (TEXT_KEY_DUST.equals(banner.textKey)
+				|| TEXT_KEY_LOW_VISIBILITY.equals(banner.textKey));
 	}
 
 	/**
