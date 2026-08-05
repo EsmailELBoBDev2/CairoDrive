@@ -243,16 +243,25 @@ public final class CairoDriveProviders {
 		public final int categoryId;
 		/** True only for a full road closure - the one event that may justify a reroute. */
 		public final boolean closure;
+		/**
+		 * True for standing water. A separate flag rather than a category id the reader has to
+		 * decode, because the PROVIDER owns that vocabulary - CLAUDE.md records that TomTom's
+		 * iconCategory numbering is not verified, and a magic number copied into a second file is
+		 * a silent break waiting for whichever copy gets corrected first. It had already been
+		 * copied into HazardBannerLayer once.
+		 */
+		public final boolean flooding;
 		public final int delaySeconds;
 		/** Already localised where the provider offers it. May be empty, never null. */
 		@NonNull
 		public final String description;
 
-		public TrafficIncident(@NonNull LatLon at, int categoryId, boolean closure,
+		public TrafficIncident(@NonNull LatLon at, int categoryId, boolean closure, boolean flooding,
 		                       int delaySeconds, @Nullable String description) {
 			this.at = at;
 			this.categoryId = categoryId;
 			this.closure = closure;
+			this.flooding = flooding;
 			this.delaySeconds = delaySeconds;
 			this.description = description != null ? description : "";
 		}

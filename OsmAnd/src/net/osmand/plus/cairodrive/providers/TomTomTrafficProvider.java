@@ -870,8 +870,8 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 				if (category == ICON_LANE_CLOSED) {
 					laneClosed++;
 				}
-				incidents.add(new CairoDriveProviders.TrafficIncident(at, category, closure, delay,
-						describe(properties)));
+				incidents.add(new CairoDriveProviders.TrafficIncident(at, category, closure,
+						category == ICON_FLOODING, delay, describe(properties)));
 			}
 		} catch (Throwable t) {
 			CairoDriveLogger.getInstance().log(TRACE_TAG, "incident parse failed", t);

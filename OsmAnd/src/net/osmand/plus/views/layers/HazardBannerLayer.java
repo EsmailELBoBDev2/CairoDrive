@@ -90,6 +90,18 @@ public class HazardBannerLayer extends OsmandMapLayer {
 	private static final double INCIDENT_MAX_M = 5500;
 	/** Same reason as {@link #DELAY_RECOMPUTE_MS}: the draw path may not scan a list per frame. */
 	private static final long INCIDENT_RECOMPUTE_MS = 2000;
+	/**
+	 * How far off the current heading an incident may sit and still count as "ahead", in degrees.
+	 *
+	 * <p>90 gives the forward hemisphere. Without this the chip announced the nearest closure in
+	 * ANY direction, including one the driver had already passed - and two changes made that worse
+	 * rather than better: incidents now survive a route change instead of being wiped, and their
+	 * staleness window follows the ladder out to about an hour. A closure two streets behind you
+	 * could therefore sit on screen for that hour, which is how a banner earns being ignored.
+	 *
+	 * <p>A fix with no bearing keeps everything, because "cannot tell" must not mean "hide".
+	 */
+	private static final float AHEAD_ARC_DEG = 90f;
 	/** Red-orange: a road that is gone is not the same fact as a road that is slow. */
 	private static final int CLOSURE_BG = 0xF2BF360C;
 	private static final int CLOSURE_FG = 0xFFFFFFFF;
@@ -285,12 +297,14 @@ public class HazardBannerLayer extends OsmandMapLayer {
 		double bestM = Double.MAX_VALUE;
 		CairoDriveProviders.TrafficIncident best = null;
 		for (CairoDriveProviders.TrafficIncident incident : CairoDriveProviders.getIncidents()) {
-			boolean flooding = incident.categoryId == ICON_FLOODING;
-			if (!incident.closure && !flooding) {
+			if (!incident.closure && !incident.flooding) {
 				continue;
 			}
 			double metres = MapUtils.getDistance(here.getLatitude(), here.getLongitude(),
 					incident.at.getLatitude(), incident.at.getLongitude());
+			if (!ahead(here, incident)) {
+				continue;
+			}
 			if (metres < bestM) {
 				bestM = metres;
 				best = incident;
@@ -308,8 +322,28 @@ public class HazardBannerLayer extends OsmandMapLayer {
 		return lastIncidentText;
 	}
 
-	/** TomTom v5 iconCategory for flooding. Mirrors TomTomTrafficProvider's table. */
-	private static final int ICON_FLOODING = 11;
+	/**
+	 * Is this incident roughly in front of the car?
+	 *
+	 * <p>Bearing only - no route, because the whole point is to work while free driving. A fix
+	 * without a bearing returns true: not knowing which way the car points is a reason to show the
+	 * warning, not to suppress it.
+	 */
+	private boolean ahead(@NonNull Location here, @NonNull CairoDriveProviders.TrafficIncident in) {
+		if (!here.hasBearing()) {
+			return true;
+		}
+		float toIncident = here.bearingTo(toLocation(in));
+		// Wrapped into -180..180 before comparing, or a heading of 350 and a bearing of 10 - ten
+		// degrees apart, straight ahead - would measure as 340 and be discarded.
+		float delta = Math.abs(MapUtils.unifyRotationDiff(here.getBearing(), toIncident));
+		return delta <= AHEAD_ARC_DEG;
+	}
+
+	@NonNull
+	private static Location toLocation(@NonNull CairoDriveProviders.TrafficIncident in) {
+		return new Location("cd-incident", in.at.getLatitude(), in.at.getLongitude());
+	}
 
 	/**
 	 * "Traffic: +N min on your route", or null when there is nothing honest to say.
