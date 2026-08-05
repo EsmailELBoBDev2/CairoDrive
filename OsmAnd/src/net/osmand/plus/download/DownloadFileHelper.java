@@ -56,12 +56,41 @@ public class DownloadFileHelper {
 	}
 	
 	public InputStream getInputStreamToDownload(URL url, boolean forceWifi) throws IOException {
+		return getInputStreamToDownload(url, forceWifi, 0);
+	}
+
+	/**
+	 * D1, the half of it that is actually possible.
+	 *
+	 * <p>Resume WITHIN a session already worked: {@code fileread} counts bytes taken from the
+	 * server and the reconnect loop sends {@code Range: bytes=fileread-}. What did not survive was
+	 * closing the app, because {@code fileread} lives only in this anonymous class.
+	 *
+	 * <p>This was previously written off as architecturally blocked, and that was only ever true
+	 * of HALF the downloads. A {@code .obf} map arrives as a zip stream and is decompressed on the
+	 * fly ({@code unzipFile}), so the bytes on disk are decompressed while the offset the server
+	 * needs is compressed - and no mapping exists between them. But
+	 * {@code DownloadActivityType.isZipStream()} is FALSE for hillshade, slope, GeoTIFF, sqlite,
+	 * wikivoyage and gpx: those are copied raw, byte for byte. For them the part-file's length IS
+	 * the resume offset, and those are also the biggest single downloads in the app - a GeoTIFF
+	 * or hillshade region dwarfs a Cairo map.
+	 *
+	 * <p>So the offset comes in from the caller, which is the only place that knows whether the
+	 * bytes on disk are comparable with the bytes on the wire.
+	 *
+	 * @param resumeFrom byte offset already on disk, or 0 to start from the beginning
+	 */
+	public InputStream getInputStreamToDownload(URL url, boolean forceWifi, int resumeFrom) throws IOException {
+		final int startOffset = Math.max(0, resumeFrom);
 		InputStream cis = new InputStream() {
 			final byte[] buffer = new byte[BUFFER_SIZE];
 			int bufLen;
 			int bufRead;
 			int length;
-			int fileread;
+			// Seeded from the part-file so the very first connection asks for the remaining range,
+			// not just the reconnect loop. `length` is still the FULL size, so the completeness
+			// check at the end of reconnect() compares like with like.
+			int fileread = startOffset;
 			int triesDownload = TRIES_TO_DOWNLOAD;
 			boolean notFound;
 			boolean first = true;
@@ -99,7 +128,30 @@ public class DownloadFileHelper {
 						}
 						is = conn.getInputStream();
 						if (first) {
-							length = conn.getContentLength();
+							// Content-Length means different things depending on the answer, and
+							// getting this wrong silently corrupts a resumed file rather than
+							// failing it.
+							//
+							// 206 Partial: the server honoured the Range, so Content-Length is the
+							// REMAINDER. `length` has to be the total, because available() is
+							// length - fileread and the completeness check at the end of this loop
+							// compares the two directly.
+							//
+							// 200 OK with an offset requested: the server IGNORED the Range and is
+							// sending the whole file from byte zero. Appending that to the bytes
+							// already on disk would produce a file of the right length and
+							// completely wrong contents - which nothing downstream detects. So the
+							// resume is abandoned and the caller truncates instead.
+							if (conn.getResponseCode() == HttpURLConnection.HTTP_PARTIAL) {
+								length = conn.getContentLength() + startOffset;
+							} else {
+								length = conn.getContentLength();
+								if (startOffset > 0) {
+									log.info("Server ignored Range, restarting download from 0");
+									resumeAccepted = false;
+									fileread = 0;
+								}
+							}
 						}
 
 						first = false;
@@ -214,11 +266,35 @@ public class DownloadFileHelper {
 			List<InputStream> downloadInputStreams = new ArrayList<InputStream>();
 			URL url = new URL(de.urlToDownload); //$NON-NLS-1$
 			log.info("Url downloading " + de.urlToDownload);
-			downloadInputStreams.add(getInputStreamToDownload(url, forceWifi));
 			de.fileToDownload = de.targetFile;
 			if (!de.unzipFolder) {
 				de.fileToDownload = FileUtils.getFileWithDownloadExtension(de.targetFile);
 			}
+			// D1. Resume across an app restart, for the downloads where it is meaningful.
+			//
+			// Only when the payload is copied RAW (see getInputStreamToDownload): then the
+			// part-file's length is exactly how many bytes the server already sent, and asking for
+			// the rest is correct. On the zip path the file holds DECOMPRESSED bytes and this
+			// number would be a fiction that silently corrupts the download - hence the
+			// isZipStream guard rather than a general "does a part-file exist" check.
+			//
+			// unzipFolder is excluded because fileToDownload is then a DIRECTORY, and its length()
+			// is meaningless.
+			int resumeFrom = 0;
+			if (!de.zipStream && !de.unzipFolder && de.fileToDownload.isFile()) {
+				long existing = de.fileToDownload.length();
+				// int, because the whole counting path is int-based. A part-file at or beyond 2 GB
+				// cannot be expressed here, so it restarts rather than resuming from a wrapped
+				// negative offset.
+				if (existing > 0 && existing < Integer.MAX_VALUE) {
+					resumeFrom = (int) existing;
+					log.info("Resuming " + de.fileToDownload.getName() + " at " + resumeFrom + " bytes");
+				}
+			}
+			resumeOffset = resumeFrom;
+			// Assumed until the server says otherwise inside reconnect().
+			resumeAccepted = resumeFrom > 0;
+			downloadInputStreams.add(getInputStreamToDownload(url, forceWifi, resumeFrom));
 			unzipFile(de, progress, downloadInputStreams);
 			if (!de.targetFile.getAbsolutePath().equals(de.fileToDownload.getAbsolutePath())) {
 				ResourceManager rm = ctx.getResourceManager();
@@ -340,11 +416,26 @@ public class DownloadFileHelper {
 		fin.close();
 	}
 
+	/**
+	 * Set by downloadFile for the current entry; see the D1 note there. Zero means "start fresh",
+	 * which is every zipped download and every first attempt.
+	 */
+	private int resumeOffset;
+	/**
+	 * Cleared when a server answers a ranged request with 200 rather than 206. The bytes then
+	 * start at zero, so the part-file must be overwritten, not appended to.
+	 */
+	private volatile boolean resumeAccepted;
+
 	private void copyFile(IndexItem.DownloadEntry de, IProgress progress, 
 			CountingMultiInputStream countIS, int length, InputStream toRead, File targetFile)
 			throws IOException {
 		targetFile.getParentFile().mkdirs();
-		FileOutputStream out = new FileOutputStream(targetFile);
+		// Append when resuming, or the Range request's bytes land at offset 0 and overwrite the
+		// beginning of the file - producing a file of the right SIZE and entirely wrong contents,
+		// which is worse than a failed download because nothing detects it.
+		boolean append = resumeOffset > 0 && resumeAccepted && targetFile.equals(de.fileToDownload);
+		FileOutputStream out = new FileOutputStream(targetFile, append);
 		try {
 			int read;
 			byte[] buffer = new byte[BUFFER_SIZE];
