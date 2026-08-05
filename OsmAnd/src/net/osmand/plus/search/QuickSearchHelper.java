@@ -61,7 +61,6 @@ import net.osmand.search.core.CustomSearchPoiFilter;
 import net.osmand.search.core.ObjectType;
 import net.osmand.search.core.SearchCoreAPI;
 import net.osmand.search.core.SearchCoreFactory;
-import net.osmand.search.core.SearchCoreFactory.SearchAmenityTypesAPI;
 import net.osmand.search.core.SearchCoreFactory.SearchBaseAPI;
 import net.osmand.search.core.SearchPhrase;
 import net.osmand.search.core.SearchPhrase.NameStringMatcher;
@@ -143,20 +142,45 @@ public class QuickSearchHelper implements ResourceListener {
 	private void registerSearchProviders() {
 		core.clearAPIs();
 		if (useSpatialTextSearch()) {
-			core.registerAPI(new SearchAmenityTypesAPI(app.getPoiTypes()));
-			core.registerAPI(new SpatialTextSearchAPI(app.getPoiTypes()));
-			// The spatial providers are a complete replacement for the ones below, not an
-			// addition to them, so this branch returns early - and Google has to be applied
-			// here as well. Leaving it to the common path below meant that switching on
-			// "spatial text search" silently reverted typed search to the offline index
-			// while every other entry point still answered from Google.
-			applyGooglePlacesSearch();
-			refreshCustomPoiFilters();
-			return;
+			registerSpatialMapSearchAPIs();
+		} else {
+			core.init();
 		}
 
-		core.init();
+		registerNonMapSearchAPIs();
+		// Google on top of whichever stock set was just registered.
+		//
+		// Applied here, on the COMMON path, which upstream's refactor is what makes possible. The
+		// fork used to duplicate this call inside the spatial branch because that branch RETURNED
+		// EARLY: leaving it to the common path meant switching on "spatial text search" silently
+		// reverted typed search to the offline index while every other entry point still answered
+		// from Google. Upstream has now removed the early return, so one call covers both branches
+		// and the duplicate - and the bug it guarded against - both go away.
+		applyGooglePlacesSearch();
+		refreshCustomPoiFilters();
+	}
 
+	private void registerSpatialMapSearchAPIs() {
+		SearchCoreFactory.SearchAmenityByNameAPI amenitiesApi = new SearchCoreFactory.SearchAmenityByNameAPI();
+		core.registerAPI(new SearchCoreFactory.SearchLocationAndUrlAPI(amenitiesApi,
+				app.getSettings()::isInternetConnectionAvailable));
+		core.registerAPI(new SpatialCategoryAmenityByTypeAPI(app.getPoiTypes()));
+		core.registerAPI(new SpatialTextSearchAPI(app.getPoiTypes()));
+	}
+
+	private static class SpatialCategoryAmenityByTypeAPI extends SearchCoreFactory.SearchAmenityByTypeAPI {
+
+		public SpatialCategoryAmenityByTypeAPI(@NonNull MapPoiTypes types) {
+			super(types, null);
+		}
+
+		@Override
+		public int getSearchPriority(SearchPhrase p) {
+			return p.isLastWord(ObjectType.POI_TYPE) ? super.getSearchPriority(p) : -1;
+		}
+	}
+
+	private void registerNonMapSearchAPIs() {
 		// Register index item api
 		core.registerAPI(new SearchIndexItemApi(app));
 
@@ -172,9 +196,9 @@ public class QuickSearchHelper implements ResourceListener {
 		core.registerAPI(new SearchHistoryAPI(app));
 
 		core.registerAPI(new SearchOnlineApi(app));
-
-		applyGooglePlacesSearch();
-		refreshCustomPoiFilters();
+		// The Google wrap and the POI-filter refresh used to be tacked on here. They now sit in
+		// registerSearchProviders, the method's only caller, in the same order - which also drops
+		// a second refreshCustomPoiFilters() that the old arrangement ran twice per registration.
 	}
 
 	/**
