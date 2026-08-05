@@ -227,10 +227,18 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	 * worse still - it goes silent partway through the drive where the data is most wanted. Neither
 	 * satisfies "one hour or twelve hours, I'm covered in both".
 	 *
-	 * <p>Five rungs do. Solved so the integral of (budget slice / points per sweep) x interval
-	 * comes to <b>27.9 hours</b> while spending exactly 645 points. Tier one runs at TomTom's own
-	 * 1-minute data cadence and lasts 9 minutes of driving; a 45-minute commute sits in tiers one
-	 * and two. Only a drive long enough to consume the budget ever sees the cheap end.
+	 * <h3>Tuned for a SIX-hour maximum, with insurance past it</h3>
+	 *
+	 * The owner's realistic longest drive is about six hours. An earlier ladder spread the budget
+	 * evenly towards 24 hours, which sounds safer and is worse: it held back budget for hours that
+	 * almost never happen and paid for it with coarser data in the hours that do. At six hours it
+	 * was down to a 4-point sweep every 8 minutes having spent only 78% of the day's allowance -
+	 * conserving for a drive that was not going to occur.
+	 *
+	 * <p>Rebalanced so <b>87% of the budget is spent inside six hours</b> and the last 12.5% is a
+	 * slow reserve stretched across the remaining 22. Coverage went UP, not down - 32.9 hours - and
+	 * the six-hour experience improved: a 4-point sweep every 6 minutes, held all the way from hour
+	 * three to hour six instead of degrading through it.
 	 *
 	 * <h3>Why tier one asks for 14 points</h3>
 	 *
@@ -245,11 +253,15 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	 * re-fetch of the same one.
 	 */
 	private static final BudgetPacer.Tier[] FLOW_LADDER = {
-			new BudgetPacer.Tier(0.20, 14, 60),
-			new BudgetPacer.Tier(0.20, 8, 120),
-			new BudgetPacer.Tier(0.20, 6, 240),
-			new BudgetPacer.Tier(0.20, 4, 480),
-			new BudgetPacer.Tier(0.20, 2, 1200),
+			new BudgetPacer.Tier(0.130, 14, 60),
+			new BudgetPacer.Tier(0.130, 10, 90),
+			new BudgetPacer.Tier(0.175, 8, 150),
+			new BudgetPacer.Tier(0.220, 6, 240),
+			new BudgetPacer.Tier(0.220, 4, 360),
+			// The reserve. Deliberately small and deliberately slow: 12.5% of the budget stretched
+			// over 22 hours, so a drive that runs past the owner's realistic maximum still has
+			// traffic rather than none. It is insurance, not service.
+			new BudgetPacer.Tier(0.125, 2, 2400),
 	};
 
 	/**
@@ -261,11 +273,12 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	 * longer tail than flow's.
 	 */
 	private static final BudgetPacer.Tier[] INCIDENT_LADDER = {
-			new BudgetPacer.Tier(0.20, 1, 90),
-			new BudgetPacer.Tier(0.20, 1, 180),
-			new BudgetPacer.Tier(0.20, 1, 420),
-			new BudgetPacer.Tier(0.20, 1, 1200),
-			new BudgetPacer.Tier(0.20, 1, 4200),
+			new BudgetPacer.Tier(0.100, 1, 120),
+			new BudgetPacer.Tier(0.125, 1, 180),
+			new BudgetPacer.Tier(0.175, 1, 270),
+			new BudgetPacer.Tier(0.225, 1, 360),
+			new BudgetPacer.Tier(0.250, 1, 450),
+			new BudgetPacer.Tier(0.125, 1, 6480),
 	};
 
 	/**
