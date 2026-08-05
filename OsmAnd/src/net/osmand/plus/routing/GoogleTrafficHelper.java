@@ -13,6 +13,7 @@ import net.osmand.Location;
 import net.osmand.PlatformUtil;
 import net.osmand.data.LatLon;
 import net.osmand.osm.io.NetworkUtils;
+import net.osmand.plus.BuildConfig;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.Version;
@@ -567,13 +568,19 @@ public class GoogleTrafficHelper {
 
 	// ------------------------------------------------------------------ plumbing
 
+	/**
+	 * The Routes key, which DEFAULTS to the Places key in cairodrive.gradle.
+	 *
+	 * <p>One Google Cloud key with both APIs enabled serves both, and that is what this project
+	 * actually has - so a separate secret, a separate string resource and a CI substitution step
+	 * were three moving parts buying nothing. They are gone. {@code CAIRODRIVE_ROUTES_KEY} still
+	 * overrides at build time if the two ever need splitting, which is the only way to revoke
+	 * traffic without also killing search.
+	 */
 	@NonNull
 	private static String apiKey(@NonNull OsmandApplication app) {
-		try {
-			return app.getString(R.string.google_routes_api_key);
-		} catch (Throwable t) {
-			return "";
-		}
+		String key = BuildConfig.CAIRODRIVE_ROUTES_KEY;
+		return key == null ? "" : key;
 	}
 
 	/**

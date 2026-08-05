@@ -569,52 +569,6 @@ jobs:
           repository: osmandapp/OsmAnd-resources
           path: resources
           persist-credentials: false
-
-      # Adds the car profile's "deprioritise narrow streets" option. routing.xml is not in
-      # this repo - Gradle Syncs it from the checkout above, and Sync deletes the
-      # destination, so a vendored copy would be wiped every build. Patching the checkout
-      # here is the only place the change survives. The script exits non-zero if upstream
-      # has restructured, so this fails the build rather than silently shipping without it.
-      # Live traffic on route. RELEASE ONLY, deliberately.
-      #
-      # The key is Android-restricted by package + signing SHA-1, and the only certificate
-      # registered against it is the RELEASE one. The dev job is debug-signed with the keystore
-      # this repo ships in the open, so injecting there would either do nothing (rejected with
-      # API_KEY_ANDROID_APP_BLOCKED) or, far worse, invite someone to register that public
-      # certificate against a live key. CLAUDE.md is explicit that the debug SHA-1 must never be
-      # registered against anything.
-      #
-      # No secret, no substitution, empty resource, zero network calls - the feature's first gate.
-      - name: Inject Google Routes key
-        env:
-          ROUTES_KEY: ${{ secrets.GOOGLE_ROUTES_API_KEY }}
-        run: |
-          set -euo pipefail
-          f=android/OsmAnd/res/values/no_translate.xml
-          if [ -z "${ROUTES_KEY}" ]; then
-            echo "::warning::GOOGLE_ROUTES_API_KEY is not set - live traffic on route will be inert in this build."
-            exit 0
-          fi
-          # python, not sed: a key containing & or / would be silently mangled by sed's
-          # replacement syntax, producing a build that fails authentication for no visible reason.
-          python3 - "$f" <<'PY'
-          import sys, os
-          path = sys.argv[1]
-          key = os.environ["ROUTES_KEY"]
-          old = '<string name="google_routes_api_key"></string>'
-          # XML-escape. A real Google key is [A-Za-z0-9_-] so this should never fire, but an
-          # unescaped & or < in a secret would produce a resources file that does not parse, and
-          # the build would fail hundreds of steps later pointing at aapt rather than at here.
-          key = key.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-          new = '<string name="google_routes_api_key">%s</string>' % key
-          with open(path, encoding="utf-8") as fh:
-              text = fh.read()
-          if old not in text:
-              sys.exit("google_routes_api_key placeholder not found in %s" % path)
-          with open(path, "w", encoding="utf-8") as fh:
-              fh.write(text.replace(old, new, 1))
-          print("Injected Google Routes key (%d chars)" % len(key))
-          PY
       - name: Apply CairoDrive routing profile patches
         run: |
           set -euo pipefail

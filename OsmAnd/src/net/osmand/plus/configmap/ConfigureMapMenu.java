@@ -145,7 +145,7 @@ public class ConfigureMapMenu {
 		// Shown only when a key was compiled in. With no key the feature cannot do anything, and a
 		// switch that silently does nothing is worse than no switch - CAIRODRIVE_PLACE_DETAILS and
 		// the rest are build flags for the same reason.
-		if (!Algorithms.isEmpty(app.getString(R.string.google_routes_api_key))) {
+		if (!Algorithms.isEmpty(net.osmand.plus.BuildConfig.CAIRODRIVE_ROUTES_KEY)) {
 			boolean trafficOn = settings.GOOGLE_TRAFFIC_ON_ROUTE.get();
 			adapter.addItem(new ContextMenuItem(null)
 					.setTitleId(R.string.cairo_google_traffic_on_route, activity)
