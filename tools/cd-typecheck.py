@@ -13,6 +13,10 @@ import os
 import re
 import sys
 
+# Where the generated R class lands: the `package` on OsmAnd/AndroidManifest.xml. Not a guess -
+# read it back with `grep package= OsmAnd/AndroidManifest.xml` if this ever stops matching.
+R_PACKAGE = "net.osmand.plus"
+
 ROOTS = [
     "OsmAnd/src", "OsmAnd-java/src/main/java", "OsmAnd-shared/src/commonMain/kotlin",
     "OsmAnd-api/src", "OsmAnd/src-google", "OsmAnd/src-nogoogle",
@@ -315,6 +319,16 @@ def check(path, pkgs):
         available.add(sw.rsplit(".", 1)[-1])
     # Same-directory siblings for the file's own package, keyed by path too.
     available |= pkgs.get(own_pkg, set())
+
+    # `R` is GENERATED into the manifest's package at build time, so there is no R.java on disk for
+    # index_packages to find and a file in that package using it bare reads as unresolved. Eight
+    # files in net.osmand.plus do exactly that, and every one of them compiles.
+    #
+    # Scoped to that one package rather than allowed everywhere, because a file in a DIFFERENT
+    # package using bare `R` with no import genuinely is a compile error and is worth keeping
+    # catchable. Whether the R members themselves exist is cd-refcheck's job, not this one's.
+    if own_pkg == R_PACKAGE:
+        available.add("R")
 
     # Nested types INHERITED from superclasses. A subclass may name its parent's `protected class
     # NetworkListener` with no import and no qualifier, which is real Java and looked like an

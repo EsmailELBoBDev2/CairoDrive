@@ -51,7 +51,11 @@ public final class ApiHealth {
 		TOMTOM_INCIDENTS("TomTom incidents (closures)"),
 		OPENWEATHER("OpenWeather (dust, air quality)"),
 		BESTTIME("BestTime (popular times)"),
-		HERE("HERE (traffic overlay)");
+		HERE("HERE (traffic overlay)"),
+		GEOAPIFY("Geoapify (addresses, autocomplete)"),
+		LOCATIONIQ("LocationIQ (address fallback)"),
+		AZURE_MAPS("Azure Maps (weather along route)"),
+		TOMORROW("Tomorrow.io (visibility 2nd opinion)");
 
 		public final String label;
 

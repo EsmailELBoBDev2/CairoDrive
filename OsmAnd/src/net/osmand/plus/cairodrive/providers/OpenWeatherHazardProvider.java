@@ -355,6 +355,10 @@ public final class OpenWeatherHazardProvider implements CairoDriveProviders.Prov
 		// A failure here is survivable: the remaining two signals can still agree. Deliberately not
 		// aborting on it, and deliberately not counting a missing signal as a firing one.
 		fetchAirQuality(app, lat, lon, reading);
+		// Read, never fetched: this is whatever the independent provider last saw on its own
+		// schedule. Making the dust decision wait on a second network round trip would delay the
+		// warning it is there to make more trustworthy.
+		reading.secondOpinion = TomorrowWeatherProvider.corroboratesLowVisibility();
 
 		CairoDriveProviders.HazardBanner banner = evaluate(reading);
 		CairoDriveLogger.getInstance().log(TRACE_TAG, describe(reading, banner));
@@ -627,6 +631,18 @@ public final class OpenWeatherHazardProvider implements CairoDriveProviders.Prov
 		/** OpenWeather's 1-5 index. Logged for context; not one of the three signals. */
 		int aqi;
 
+		/**
+		 * What a DIFFERENT vendor says about visibility here. Never one of the three signals.
+		 *
+		 * <p>All three signals above come from one company, one model and one observation network,
+		 * so if that source is wrong about this cell they are wrong together and the two-of-three
+		 * rule protects against nothing. {@link TomorrowWeatherProvider} supplies an independent
+		 * reading, and it is used in exactly one direction - see {@link #evaluate}.
+		 */
+		@NonNull
+		TomorrowWeatherProvider.Corroboration secondOpinion =
+				TomorrowWeatherProvider.Corroboration.UNKNOWN;
+
 		/** The coarse-particle fingerprint, or -1 when air quality was not obtained. */
 		double pmRatio() {
 			return haveAir && pm25 > 0 ? pm10 / pm25 : -1;
@@ -682,6 +698,24 @@ public final class OpenWeatherHazardProvider implements CairoDriveProviders.Prov
 			int severity = reading.visibilitySignal() || fired == 3
 					? CairoDriveProviders.HazardBanner.SEVERITY_WARN
 					: CairoDriveProviders.HazardBanner.SEVERITY_INFO;
+			// The independent reading works in ONE direction: it can take the amber strip down to
+			// an info line, never the reverse, and never remove the banner altogether.
+			//
+			// Downgrade-only because the two errors are not symmetrical. If the second vendor is
+			// wrong and the air really is thick, the driver still gets a warning, just a quieter
+			// one. If it were allowed to UPGRADE, a vendor that reads low on a hazy-but-safe
+			// afternoon would raise the amber strip this class exists to keep believable - and it
+			// has no dust vocabulary at all, so it would be doing so on a signal that cannot tell
+			// dust from smog.
+			//
+			// UNKNOWN changes nothing whatsoever. A build with no Tomorrow.io key must behave
+			// exactly as it did before this provider existed, and reading silence as disagreement
+			// is the same fault that has now shipped five times here: a provider sees an empty
+			// string and quietly changes what the app does.
+			if (severity == CairoDriveProviders.HazardBanner.SEVERITY_WARN
+					&& reading.secondOpinion == TomorrowWeatherProvider.Corroboration.DISAGREES) {
+				severity = CairoDriveProviders.HazardBanner.SEVERITY_INFO;
+			}
 			return new CairoDriveProviders.HazardBanner(TEXT_KEY_DUST, severity);
 		}
 		// Not dust, but fog, smoke or haze thick enough to matter. Still two independent signals -
@@ -739,6 +773,15 @@ public final class OpenWeatherHazardProvider implements CairoDriveProviders.Prov
 		line.append('+').append(reading.pmSignal() ? "pm" : "-");
 		line.append('+').append(reading.visibilitySignal() ? "vis" : "-");
 		line.append('(').append(reading.signalCount()).append("/3)");
+		// The second vendor, always printed - including UNKNOWN. A drive log where this reads
+		// DISAGREES on a day the banner fired is the only way anyone would learn that one of the
+		// two sources is wrong about Cairo, and printing it only when it happened to matter would
+		// hide the baseline needed to tell which.
+		line.append(" 2nd=").append(reading.secondOpinion.name().toLowerCase(Locale.US));
+		int independentVis = TomorrowWeatherProvider.lastVisibilityMetres();
+		if (independentVis >= 0) {
+			line.append('(').append(independentVis).append("m)");
+		}
 		if (reading.obscurationCode) {
 			line.append(" obscuration=yes");
 		}

@@ -506,6 +506,33 @@ def bestTimePublic = bestTimePublicEnv?.trim() ? bestTimePublicEnv.trim() : ""
 def bestTimeEnv = System.getenv("CAIRODRIVE_BESTTIME")
 def bestTime = bestTimeEnv?.trim() ? bestTimeEnv.trim() : "true"
 
+// The four providers added after the August 2026 online re-check of the audit. Each one covers a
+// gap the shipping stack genuinely has, and none of them overlaps another - see PROVIDERS.md.
+//
+// Geoapify: reverse geocoding + address autocomplete. 3,000 credits/day, no card, and the only
+// free geocoder whose terms permit caching and storage outright, which is why it is the primary.
+def geoapifyKeyEnv = System.getenv("CAIRODRIVE_GEOAPIFY_KEY")
+def geoapifyKey = geoapifyKeyEnv?.trim() ? geoapifyKeyEnv.trim() : ""
+
+// LocationIQ: the SECOND geocoder, never the first. 5,000/day on a separate vendor, but a 48-hour
+// caching ceiling - so its results are used once and never stored. Exists so one vendor's outage
+// does not take "what street am I on" with it.
+def locationIqKeyEnv = System.getenv("CAIRODRIVE_LOCATIONIQ_KEY")
+def locationIqKey = locationIqKeyEnv?.trim() ? locationIqKeyEnv.trim() : ""
+
+// Azure Maps: Weather Along Route - 60 waypoints each with an ETA and a heading, answered for the
+// time of ARRIVAL. Nothing else in the stack has that shape. The audit dropped it against a
+// 5,000/month allowance; the real Gen2 free tier is 250,000/month, which is why it is back.
+// Gen1 retires 2026-09-15 with automatic migration to Gen2 - this key must be on a Gen2 account.
+def azureMapsKeyEnv = System.getenv("CAIRODRIVE_AZURE_MAPS_KEY")
+def azureMapsKey = azureMapsKeyEnv?.trim() ? azureMapsKeyEnv.trim() : ""
+
+// Tomorrow.io: an independent visibility reading, and deliberately nothing more. Verified free
+// limits are 500/day and 25/HOUR, and its weatherCode vocabulary has no dust member at all - so it
+// can corroborate OpenWeather's dust decision but can never make one.
+def tomorrowKeyEnv = System.getenv("CAIRODRIVE_TOMORROW_KEY")
+def tomorrowKey = tomorrowKeyEnv?.trim() ? tomorrowKeyEnv.trim() : ""
+
 // Open Charge Map, bundled rather than called. Egypt's ENTIRE EV charging dataset is 492 records,
 // small enough to ship inside the APK - which means no key, no quota, no rate limit and full
 // function with the data saver on and no signal. That is a better fit for this app than any live
@@ -758,6 +785,10 @@ android {
 			buildConfigField "String", "CAIRODRIVE_OPENWEATHER_KEY", "\"" + openWeatherKey + "\""
 			buildConfigField "String", "CAIRODRIVE_MAPILLARY_TOKEN", "\"" + mapillaryToken + "\""
 			buildConfigField "String", "CAIRODRIVE_BESTTIME_PRIVATE_KEY", "\"" + bestTimePrivate + "\""
+			buildConfigField "String", "CAIRODRIVE_GEOAPIFY_KEY", "\"" + geoapifyKey + "\""
+			buildConfigField "String", "CAIRODRIVE_LOCATIONIQ_KEY", "\"" + locationIqKey + "\""
+			buildConfigField "String", "CAIRODRIVE_AZURE_MAPS_KEY", "\"" + azureMapsKey + "\""
+			buildConfigField "String", "CAIRODRIVE_TOMORROW_KEY", "\"" + tomorrowKey + "\""
 			buildConfigField "String", "CAIRODRIVE_BESTTIME_PUBLIC_KEY", "\"" + bestTimePublic + "\""
 			buildConfigField "boolean", "CAIRODRIVE_BESTTIME", bestTime
 			buildConfigField "boolean", "CAIRODRIVE_OPEN_CHARGE_MAP", openChargeMap
@@ -802,6 +833,10 @@ android {
 			buildConfigField "String", "CAIRODRIVE_OPENWEATHER_KEY", "\"" + openWeatherKey + "\""
 			buildConfigField "String", "CAIRODRIVE_MAPILLARY_TOKEN", "\"" + mapillaryToken + "\""
 			buildConfigField "String", "CAIRODRIVE_BESTTIME_PRIVATE_KEY", "\"" + bestTimePrivate + "\""
+			buildConfigField "String", "CAIRODRIVE_GEOAPIFY_KEY", "\"" + geoapifyKey + "\""
+			buildConfigField "String", "CAIRODRIVE_LOCATIONIQ_KEY", "\"" + locationIqKey + "\""
+			buildConfigField "String", "CAIRODRIVE_AZURE_MAPS_KEY", "\"" + azureMapsKey + "\""
+			buildConfigField "String", "CAIRODRIVE_TOMORROW_KEY", "\"" + tomorrowKey + "\""
 			buildConfigField "String", "CAIRODRIVE_BESTTIME_PUBLIC_KEY", "\"" + bestTimePublic + "\""
 			buildConfigField "boolean", "CAIRODRIVE_BESTTIME", bestTime
 			buildConfigField "boolean", "CAIRODRIVE_OPEN_CHARGE_MAP", openChargeMap

@@ -513,7 +513,14 @@ public class RoutingHelper {
 			GoogleTrafficHelper.onFreeDriveLocation(app, currentLocation);
 			net.osmand.plus.cairodrive.providers.SunGlareProvider.onLocationUpdate(app, currentLocation);
 			net.osmand.plus.cairodrive.providers.OpenWeatherHazardProvider.onLocationUpdate(app, currentLocation);
+			// Immediately after OpenWeather on purpose: it is the second opinion on the same
+			// question, and its reading is only useful while the first one is fresh.
+			net.osmand.plus.cairodrive.providers.TomorrowWeatherProvider.onLocationUpdate(app, currentLocation);
 			net.osmand.plus.cairodrive.providers.TomTomTrafficProvider.onLocationUpdate(this, currentLocation);
+			// Navigation-only, and it self-gates on that - there is no arrival time to ask about
+			// without a destination. Placed here anyway so all the per-fix providers are in one
+			// list rather than split across the early return below.
+			net.osmand.plus.cairodrive.providers.AzureRouteWeatherProvider.onLocationUpdate(this, currentLocation);
 		}
 		if (finalLocation == null || currentLocation == null || isPublicTransportMode()) {
 			isDeviatedFromRoute = false;

@@ -236,6 +236,26 @@ public class GeocodingLookupService {
 							}
 						}
 
+						// The offline index found no name for this point. In Cairo that is the
+						// ORDINARY outcome rather than an edge case: CD_NARROW measured alley name
+						// coverage in the Egypt extract at roughly 16.6%, so most of the small
+						// streets this app is driven through resolve to nothing at all and the
+						// context menu shows an empty line where an address should be.
+						//
+						// Only then, and never otherwise. A named arterial is answered by the .obf
+						// for free, offline, in microseconds - spending a network request to
+						// re-learn its name would be worse in every dimension. This runs on the
+						// lookup worker, which is why a blocking call is safe here and would not
+						// have been inside the geocoding callback above.
+						if (Algorithms.isEmpty(lastFoundAddress)
+								&& net.osmand.plus.cairodrive.providers.AddressLookup.available()) {
+							String online = net.osmand.plus.cairodrive.providers.AddressLookup
+									.describe(app, latLon);
+							if (!Algorithms.isEmpty(online)) {
+								lastFoundAddress = online;
+							}
+						}
+
 						synchronized (GeocodingLookupService.this) {
 							List<AddressLookupRequest> requests = addressLookupRequestsMap.get(latLon);
 							for (AddressLookupRequest request : requests) {

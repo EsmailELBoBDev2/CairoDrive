@@ -43,6 +43,59 @@ That is a fact, not advice. What you do with it is your call — the practical e
 
 ---
 
+## 0.6 — Online re-check, 2026-08-05 evening. Four numbers verified, one verdict reversed.
+
+Section 0.4 says egress was blocked on 11 of 12 provider domains, so most figures here are
+recollection tagged `[UNVERIFIED]`. Those tags are what this section clears. Every figure below was
+looked up online, and **the five keys the owner had already registered are now wired into the
+build** — the "do not register" advice was overtaken by events, so what matters is which of them
+earns its request.
+
+| Claim in this document | Status after checking | Consequence |
+|---|---|---|
+| Tomorrow.io free plan is "~25 calls/hour `[UNVERIFIED]`" | **Confirmed.** 500/day, 25/hour, 3/second | Multi-waypoint sampling is impossible on this plan. Azure does that job instead |
+| Tomorrow.io `weatherCode` "appears to have no sand or dust member" — flagged *load-bearing* | **Confirmed.** The vocabulary is 1000-1102 / 2000-2100 / 4000-4201 / 5000-5101 / 6000-6201 / 7000-7102 / 8000. No sand, no dust, no haze | It can never replace OpenWeather's 7xx group. Demoted to corroboration only |
+| LocationIQ "48-hour cache ceiling, 2 rps" | **Confirmed.** 5,000/day, 2 rps, 48h cache on free, attribution required | Stays the SECOND geocoder. Its results are used once and never stored |
+| Geoapify "no card, caching permitted" | **Confirmed.** 3,000 credits/day, no card | Promoted to PRIMARY geocoder. Caching permission is what decides it |
+| Azure Maps sized against a 5,000/month allowance | **WRONG.** Gen2 carries a shared free tier of **250,000 transactions/month** | §4's drop no longer follows from its own premise — see below |
+| Azure "Gen1 retires 2026-09-15 at ~9x" | **Confirmed**, including the 9x | The key must be on a **Gen2** account. Six weeks out |
+| Yandex "no Egypt coverage, free tier needs a freely-downloadable app" | **Confirmed.** Routing is Russia/CIS/Türkiye; traffic is Russia/Ukraine/Belarus/Türkiye; free terms require the app be freely available to any internet user | **Unusable.** Not wired. Play internal testing fails the distribution term on its own |
+
+**The one reversal: Azure Maps.** §4 dropped it on two grounds — that its traffic half is resold
+TomTom, and that its weather half "reduces to sun glare, which §3.4 computes offline for free".
+The first is still true and nothing here uses Azure traffic. The second was too quick: Weather
+Along Route takes up to 60 waypoints each carrying an **ETA in minutes and a heading**, and answers
+for the time of ARRIVAL. Every other weather source in this stack answers "here, now". On a drive
+that is the difference between "clear where you are" and "a front will be across the road in forty
+minutes", and nothing else in the survey has that shape. At 250,000/month the cost objection does
+not survive either.
+
+Sun glare stays local. `SunGlareProvider` computes it from solar geometry, offline, for nothing,
+and remains the source; Azure's `glareIndex` is written to the drive log as a **cross-check** only,
+because a persistent disagreement means the local model has a bug worth finding.
+
+**What each of the five actually does now**, all off without their key, all reporting into the API
+status screen:
+
+| Key | Role | Gap it fills | Cap |
+|---|---|---|---|
+| `GEOAPIFY_KEY` | Primary reverse geocoder + autocomplete | Google Autocomplete is billed per keystroke session — the most expensive line in the deferred table. And `.obf` alley name coverage is ~16.6% | 120 reverse + 300 autocomplete/day |
+| `LOCATIONIQ_KEY` | Second geocoder, failover only | One free geocoder means one outage takes "what street am I on" with it | 120 + 150/day |
+| `AZURE_MAPS_KEY` | Weather along the route | Weather at arrival time, per waypoint. Nothing else does this | 12/day, 10 min apart |
+| `TOMORROW_KEY` | Independent visibility reading | All three dust signals came from ONE vendor, so the two-of-three rule protected against nothing if that vendor was wrong | 40/day, 15 min apart |
+| `YANDEX_KEY` | **none** | — | not wired |
+
+The Tomorrow.io signal is **downgrade-only**: it can take the dust banner from amber to an info
+line, never the reverse, and `UNKNOWN` changes nothing at all. A build without that key behaves
+exactly as it did before it existed — reading silence as disagreement is the same fault that has
+now shipped five times in this codebase.
+
+Still true and unchanged: the `YandexTrafficAdapter.java` this fork inherits hits the undocumented
+internal endpoint `core-jams-rdr.maps.yandex.net`, is dormant, unauthorised and useless in Egypt.
+§4 says remove it. It has not been removed.
+
+---
+
 ## 1. The stack
 
 | Capability | Winner | Runner-up | Why the winner | Free-tier headroom |
