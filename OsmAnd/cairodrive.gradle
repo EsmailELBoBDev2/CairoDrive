@@ -454,6 +454,45 @@ def glanceStyle = glanceStyleEnv?.trim() ? glanceStyleEnv.trim() : "true"
 //   SearchNearby         0/day  - BLOCKED. Nearby search will return HTTP 429 until this is
 //                                 raised by hand in the console. Deliberate, and not fixable from
 //                                 the repo - raising it is part of shipping the feature.
+// ---------------------------------------------------------------------------------------------
+// THE PROVIDER STACK. Several data sources composed so they COMPLETE each other rather than
+// overlap - CairoDriveProviders arbitrates one provider per capability, so two sources can never
+// both serve traffic flow.
+//
+// Which provider serves what, and why, is recorded in PROVIDERS.md and PROVIDER_FEATURES.md from
+// the 15-agent audit. The short version: TomTom for traffic because it is the only major provider
+// with NO "you must display our basemap" clause - the clause that rules out Google Routes content
+// on an OSM map (ToS 3.2.3(e), repeated at Routes 19.2). OpenWeather for dust because its 7xx
+// condition codes are the only free sand/dust vocabulary. Sun glare computed locally because it
+// needs no provider at all.
+//
+// Every one of these is OFF by default. A key that is absent makes the provider unavailable and
+// it makes zero network calls regardless of the flag - two independent gates, same as the Places
+// and Google-traffic features.
+def tomtomKeyEnv = System.getenv("CAIRODRIVE_TOMTOM_KEY")
+def tomtomKey = tomtomKeyEnv?.trim() ? tomtomKeyEnv.trim() : ""
+
+def openWeatherKeyEnv = System.getenv("CAIRODRIVE_OPENWEATHER_KEY")
+def openWeatherKey = openWeatherKeyEnv?.trim() ? openWeatherKeyEnv.trim() : ""
+
+def tomtomTrafficEnv = System.getenv("CAIRODRIVE_TOMTOM_TRAFFIC")
+def tomtomTraffic = tomtomTrafficEnv?.trim() ? tomtomTrafficEnv.trim() : "false"
+
+def weatherHazardEnv = System.getenv("CAIRODRIVE_WEATHER_HAZARD")
+def weatherHazard = weatherHazardEnv?.trim() ? weatherHazardEnv.trim() : "false"
+
+// No key, no quota, no network - so it costs nothing to leave available. Still defaults off so it
+// arrives on its own drive like everything else.
+def sunGlareEnv = System.getenv("CAIRODRIVE_SUN_GLARE")
+def sunGlare = sunGlareEnv?.trim() ? sunGlareEnv.trim() : "false"
+
+// The one that changes BEHAVIOUR rather than pixels: a reported closure ahead makes the OFFLINE
+// router go around it, via the impassable-roads nogo points RouteProvider already feeds the native
+// engine. Off by default and separately gated from the traffic provider, because a bad closure
+// applied as a permanent nogo is the worst failure mode in this whole stack.
+def trafficRoutingEnv = System.getenv("CAIRODRIVE_TRAFFIC_ROUTING")
+def trafficRouting = trafficRoutingEnv?.trim() ? trafficRoutingEnv.trim() : "false"
+
 def placesDetailsEnv = System.getenv("CAIRODRIVE_PLACES_DETAILS")
 def placesDetails = placesDetailsEnv?.trim() ? placesDetailsEnv.trim() : "true"
 
@@ -634,6 +673,12 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_REVIEWS", placesReviews
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_AUTOCOMPLETE", placesAutocomplete
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_NEARBY", placesNearby
+			buildConfigField "String", "CAIRODRIVE_TOMTOM_KEY", "\"" + tomtomKey + "\""
+			buildConfigField "String", "CAIRODRIVE_OPENWEATHER_KEY", "\"" + openWeatherKey + "\""
+			buildConfigField "boolean", "CAIRODRIVE_TOMTOM_TRAFFIC", tomtomTraffic
+			buildConfigField "boolean", "CAIRODRIVE_WEATHER_HAZARD", weatherHazard
+			buildConfigField "boolean", "CAIRODRIVE_SUN_GLARE", sunGlare
+			buildConfigField "boolean", "CAIRODRIVE_TRAFFIC_ROUTING", trafficRouting
 		}
 		release {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
@@ -661,6 +706,12 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_REVIEWS", placesReviews
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_AUTOCOMPLETE", placesAutocomplete
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_NEARBY", placesNearby
+			buildConfigField "String", "CAIRODRIVE_TOMTOM_KEY", "\"" + tomtomKey + "\""
+			buildConfigField "String", "CAIRODRIVE_OPENWEATHER_KEY", "\"" + openWeatherKey + "\""
+			buildConfigField "boolean", "CAIRODRIVE_TOMTOM_TRAFFIC", tomtomTraffic
+			buildConfigField "boolean", "CAIRODRIVE_WEATHER_HAZARD", weatherHazard
+			buildConfigField "boolean", "CAIRODRIVE_SUN_GLARE", sunGlare
+			buildConfigField "boolean", "CAIRODRIVE_TRAFFIC_ROUTING", trafficRouting
 		}
 	}
 }
