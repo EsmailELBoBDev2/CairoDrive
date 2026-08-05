@@ -224,6 +224,20 @@ public class GoogleTrafficLayer extends OsmandMapLayer {
 
 	// ------------------------------------------------------------------ lifecycle
 
+	/**
+	 * Intentionally empty - all drawing happens in {@link #onPrepareBufferImage}.
+	 *
+	 * <p>{@code onDraw} is abstract on the base class so it has to be here, but both render paths
+	 * reach this layer through the buffer callback instead: the legacy renderer calls
+	 * {@code onPrepareBufferImage} for every layer from {@code refreshBufferImage}, and the OpenGL
+	 * path calls it from the main draw loop whenever a map renderer exists. Painting congestion
+	 * again here would draw it twice on the legacy path, once into the buffer bitmap and once over
+	 * the top - at a different rotation, because the buffer is drawn pre-rotated.
+	 */
+	@Override
+	public void onDraw(Canvas canvas, RotatedTileBox tileBox, DrawSettings settings) {
+	}
+
 	@Override
 	public boolean drawInScreenPixels() {
 		return false;
