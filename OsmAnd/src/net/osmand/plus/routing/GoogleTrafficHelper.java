@@ -788,11 +788,19 @@ public class GoogleTrafficHelper {
 			return read(connection.getInputStream());
 		} catch (Throwable t) {
 			LOG.info(TRACE_TAG + " request failed", t);
+			// Code 0 is this stack's convention for "never got a response at all", which is what
+			// the status screen turns into "No response. No internet, DNS blocked, or the request
+			// timed out." Without it a transport failure left the row reading whatever the last
+			// attempt said, which is the wrong answer stated confidently.
+			net.osmand.plus.cairodrive.providers.ApiHealth.recordFailure(
+					net.osmand.plus.cairodrive.providers.ApiHealth.Api.GOOGLE_ROUTES, 0,
+					t.getClass().getSimpleName());
 		} finally {
 			if (connection != null) {
 				connection.disconnect();
 			}
 		}
+		return null;
 	}
 
 	/**
