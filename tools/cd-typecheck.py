@@ -248,9 +248,42 @@ def inherited_nested(src, wildcards, own_pkg, pkgs, depth=3):
     return found
 
 
+def bad_char_literals(raw, src):
+    """`'x'` holding more than one character - `replace('\\n', ' | ')` - as line -> literal.
+
+    javac rejects it outright, and nothing else here would see it: the name resolution above is
+    about types, and `strip` deliberately blanks literal CONTENT, so a broken one reads as a
+    perfectly ordinary literal. It cost a build run on 2026-08-05.
+
+    Offsets work because `strip` is length-preserving in every branch - two spaces for `//`, two
+    for an escape pair - so a position in the stripped text is the same position in the original.
+    That is what makes it safe to find the quotes in the stripped text (where comments and strings
+    cannot fake one) and then read the real characters between them.
+    """
+    found = {}
+    i = 0
+    while i < len(src):
+        if src[i] != "'":
+            i += 1
+            continue
+        j = src.find("'", i + 1)
+        if j == -1:
+            break
+        inner = raw[i + 1:j]
+        # An escape - '\n', '\'', 'A' - is one character however long it is written.
+        if len(inner) > 1 and not inner.startswith("\\"):
+            found[raw[:i].count("\n") + 1] = inner
+        i = j + 1
+    return found
+
+
 def check(path, pkgs):
     raw = open(path, encoding="utf-8").read()
     src = strip(raw)
+    if len(src) != len(raw):
+        # Cannot happen unless strip stops preserving length, and silently mis-reporting line
+        # numbers everywhere would be worse than saying so.
+        raise AssertionError("strip() changed length for %s" % path)
 
     m = re.search(r"^\s*package\s+([\w.]+)\s*;", src, re.M)
     own_pkg = m.group(1) if m else ""
@@ -334,9 +367,12 @@ def check(path, pkgs):
     # - listing every Android widget by hand - just moves the same blindness somewhere less
     # obvious. Fork files essentially never use wildcard imports, so this costs nothing where the
     # checker earns its keep, and main() prints the count so the skip is visible rather than silent.
+    # Reported even for an unverifiable file: it does not depend on imports resolving.
+    chars = bad_char_literals(raw, src)
+
     blind = [w for w in wildcards if not pkgs.get(w)]
     if blind:
-        return {}, blind
+        return {}, blind, chars
 
     hits = {}
     for i, line in enumerate(src.split("\n"), 1):
@@ -348,7 +384,7 @@ def check(path, pkgs):
                 if name in declared_fields or is_constant(name):
                     continue
                 hits[name] = i
-    return {n: l for n, l in hits.items()}, []
+    return {n: l for n, l in hits.items()}, [], chars
 
 
 def main():
@@ -388,12 +424,14 @@ def main():
             bad += 1
             continue
         checked += 1
-        hits, blind = check(p, pkgs)
+        hits, blind, chars = check(p, pkgs)
         if blind:
             unverifiable += 1
-        if hits:
+        if hits or chars:
             bad += 1
             print("\n%s" % os.path.relpath(p, base))
+            for l, lit in sorted(chars.items()):
+                print("    line %-5d not a char literal - javac rejects it: '%s'" % (l, lit))
             for n, l in sorted(hits.items(), key=lambda kv: kv[1]):
                 print("    line %-5d unresolved: %s" % (l, n))
     print("\n%d file(s) checked, %d with unresolved names, %d unverifiable "
