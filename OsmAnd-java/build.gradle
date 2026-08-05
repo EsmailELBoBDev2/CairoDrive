@@ -127,6 +127,29 @@ publishing {
 	}
 }
 
+// The routing tests are WALL-CLOCK timed - RouteTestingTest declares @Test(timeout = 1500) and
+// each case runs up to three full route calculations inside it. That budget is only meaningful if
+// the JVM running it is not being squeezed by something else.
+//
+// Every test in this module shares ONE forked JVM, and Gradle's default heap for a test JVM is
+// 512 MB - the `org.gradle.jvmargs=-Xmx6g` that CI writes applies to the Gradle DAEMON, not to
+// this fork. The search tests in the same JVM now exercise the spatial pipeline that arrived with
+// the upstream merge, and 74. "HH-routing via roadblock" began timing out on the first build after
+// that merge. Re-running the last pre-merge commit on the same day PASSED, which rules out the
+// runner being slow and rules out the routing code, the test, and its data - none of which changed.
+//
+// Stated honestly: heap pressure is the best-supported explanation, not a proven one. There is no
+// OutOfMemoryError in the log, and the per-test timings that would settle it live in an artifact
+// this environment cannot fetch. What is certain is that a timed test sharing an unbounded-demand
+// JVM with unrelated tests is an unmanaged variable, and this removes it.
+//
+// Not forkEvery = 1: a fresh JVM per class would isolate the tests but start each one in the
+// interpreter, and losing JIT warmup on a compute-heavy routing test could push it FURTHER over
+// its 1.5 s budget. Isolating memory without discarding warmup is the change that can only help.
+tasks.withType(Test).configureEach {
+	maxHeapSize = "2g"
+}
+
 dependencies {
 	implementation project(path:':OsmAnd-shared', configuration : gradle.ext.java_shared_conf)
 
