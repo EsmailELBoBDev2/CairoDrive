@@ -505,6 +505,14 @@ def bestTime = bestTimeEnv?.trim() ? bestTimeEnv.trim() : "true"
 // small enough to ship inside the APK - which means no key, no quota, no rate limit and full
 // function with the data saver on and no signal. That is a better fit for this app than any live
 // API, and it is why there is no CAIRODRIVE_OCM_KEY here to set.
+// D1 for ZIPPED downloads - .obf maps included. Splits the download from the decompression:
+// the raw compressed bytes go to a .zipart file where a byte offset is meaningful and Range
+// resume is exact, then the completed file is decompressed locally with no network involved.
+// Costs disk - compressed and decompressed coexist during phase two - so the code checks free
+// space first and falls back to the streaming path rather than failing.
+def resumeZipEnv = System.getenv("CAIRODRIVE_RESUME_ZIP")
+def resumeZip = resumeZipEnv?.trim() ? resumeZipEnv.trim() : "true"
+
 def openChargeMapEnv = System.getenv("CAIRODRIVE_OPEN_CHARGE_MAP")
 def openChargeMap = openChargeMapEnv?.trim() ? openChargeMapEnv.trim() : "true"
 
@@ -747,6 +755,7 @@ android {
 			buildConfigField "String", "CAIRODRIVE_BESTTIME_PUBLIC_KEY", "\"" + bestTimePublic + "\""
 			buildConfigField "boolean", "CAIRODRIVE_BESTTIME", bestTime
 			buildConfigField "boolean", "CAIRODRIVE_OPEN_CHARGE_MAP", openChargeMap
+			buildConfigField "boolean", "CAIRODRIVE_RESUME_ZIP", resumeZip
 			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_ID", "\"" + osmOauthId + "\""
 			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_SECRET", "\"" + osmOauthSecret + "\""
 			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_REDIRECT", "\"" + osmOauthRedirect + "\""
@@ -789,6 +798,7 @@ android {
 			buildConfigField "String", "CAIRODRIVE_BESTTIME_PUBLIC_KEY", "\"" + bestTimePublic + "\""
 			buildConfigField "boolean", "CAIRODRIVE_BESTTIME", bestTime
 			buildConfigField "boolean", "CAIRODRIVE_OPEN_CHARGE_MAP", openChargeMap
+			buildConfigField "boolean", "CAIRODRIVE_RESUME_ZIP", resumeZip
 			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_ID", "\"" + osmOauthId + "\""
 			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_SECRET", "\"" + osmOauthSecret + "\""
 			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_REDIRECT", "\"" + osmOauthRedirect + "\""

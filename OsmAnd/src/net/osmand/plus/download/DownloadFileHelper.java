@@ -19,6 +19,7 @@ import net.osmand.util.Algorithms;
 import org.apache.commons.logging.Log;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -294,22 +295,35 @@ public class DownloadFileHelper {
 			resumeOffset = resumeFrom;
 			// Assumed until the server says otherwise inside reconnect().
 			resumeAccepted = resumeFrom > 0;
+
+			// D1, second half: resume a ZIPPED download too - .obf maps included.
+			//
+			// The blocker was real and is stated above: on the streaming path the file on disk
+			// holds DECOMPRESSED bytes, so its length says nothing about how many COMPRESSED bytes
+			// the server sent, and no offset maps between them. That is a fact about streaming
+			// download-and-decompress together, not about zip files.
+			//
+			// So this splits them. Phase one downloads the raw compressed bytes to a .part file,
+			// where the length IS the number of bytes received and Range resume is exactly correct.
+			// Phase two decompresses that completed file locally, with no network involved. An
+			// interrupted download then resumes at the byte it stopped on instead of restarting a
+			// multi-hundred-megabyte Egypt map from zero.
+			//
+			// The cost is disk: compressed and decompressed exist together for the length of phase
+			// two. That is why it is checked for space first and falls back to streaming rather
+			// than failing - a device that cannot afford the temporary copy still gets its map.
+			if (useTwoPhase(de)) {
+				if (downloadZippedInTwoPhases(de, progress, url, forceWifi)) {
+					return finishDownload(de, toReIndex, showWarningCallback);
+				}
+				// Fell through: not resumable, no space, or the raw phase failed in a way that
+				// leaves streaming a better bet. Reset the resume state the streaming path reads.
+				resumeOffset = 0;
+				resumeAccepted = false;
+			}
 			downloadInputStreams.add(getInputStreamToDownload(url, forceWifi, resumeFrom));
 			unzipFile(de, progress, downloadInputStreams);
-			if (!de.targetFile.getAbsolutePath().equals(de.fileToDownload.getAbsolutePath())) {
-				ResourceManager rm = ctx.getResourceManager();
-				boolean success = FileUtils.replaceTargetFile(rm, de.fileToDownload, de.targetFile);
-				if (!success) {
-					showWarningCallback.showWarning(ctx.getString(R.string.shared_string_io_error) + ": old file can't be deleted");
-					return false;
-				}
-			}
-			removeFilesAfterSuccessfulInstall(de);
-			if (de.type == DownloadActivityType.SRTM_COUNTRY_FILE) {
-				removePreviousSrtmFile(de);
-			}
-			toReIndex.add(de.targetFile);
-			return true;
+			return finishDownload(de, toReIndex, showWarningCallback);
 		} catch (IOException e) {
 			log.error("Exception ocurred", e);
 			showWarningCallback.showWarning(ctx.getString(R.string.shared_string_io_error) + ": " + e.getMessage());
@@ -356,6 +370,181 @@ public class DownloadFileHelper {
 		}
 
 		removeFileAndCloseResource(new File(fileName));
+	}
+
+	/**
+	 * The install step, shared by the streaming path and the two-phase path.
+	 *
+	 * <p>Extracted rather than duplicated: it renames the part-file over the target, records the
+	 * file for re-indexing and removes the superseded SRTM variant. Two copies of that would
+	 * eventually disagree about which of those three steps a new download type needs.
+	 */
+	private boolean finishDownload(IndexItem.DownloadEntry de, List<File> toReIndex,
+	                               DownloadFileShowWarning showWarningCallback) {
+		if (!de.targetFile.getAbsolutePath().equals(de.fileToDownload.getAbsolutePath())) {
+			ResourceManager rm = ctx.getResourceManager();
+			boolean success = FileUtils.replaceTargetFile(rm, de.fileToDownload, de.targetFile);
+			if (!success) {
+				showWarningCallback.showWarning(ctx.getString(R.string.shared_string_io_error) + ": old file can't be deleted");
+				return false;
+			}
+		}
+		removeFilesAfterSuccessfulInstall(de);
+		if (de.type == DownloadActivityType.SRTM_COUNTRY_FILE) {
+			removePreviousSrtmFile(de);
+		}
+		toReIndex.add(de.targetFile);
+		return true;
+	}
+
+	/** Suffix of the raw compressed part-file. Distinct from the {@code .download} target. */
+	private static final String RAW_PART_EXT = ".zipart";
+
+	/**
+	 * Multiplier on the compressed size used as the free-space requirement for phase two.
+	 *
+	 * <p>An {@code .obf} compresses to very roughly a third, so the decompressed file plus the
+	 * retained compressed one is about four times the download. Four is therefore not padding, it
+	 * is the actual peak - and being wrong in the optimistic direction means filling the device
+	 * mid-extract, which is a worse outcome than not resuming.
+	 */
+	private static final long TWO_PHASE_SPACE_FACTOR = 4;
+
+	/**
+	 * Whether this entry can use download-then-decompress.
+	 *
+	 * <p>Zipped, single-file entries only. {@code unzipFolder} writes many files into a directory
+	 * and has no single target to rename, and {@code .gz} is excluded only because it is used for
+	 * small auxiliary payloads where the temporary copy costs more than the resume saves.
+	 */
+	private boolean useTwoPhase(IndexItem.DownloadEntry de) {
+		return net.osmand.plus.BuildConfig.CAIRODRIVE_RESUME_ZIP
+				&& de.zipStream
+				&& !de.unzipFolder
+				&& de.urlToDownload != null
+				&& !de.urlToDownload.contains(".gz");
+	}
+
+	/**
+	 * Phase one to a {@code .zipart} file, then phase two out of it. See the D1 note in
+	 * {@link #downloadFile}.
+	 *
+	 * @return true when the target file is fully written; false to fall back to streaming, in
+	 * which case nothing has been left behind that the streaming path would misread
+	 */
+	private boolean downloadZippedInTwoPhases(IndexItem.DownloadEntry de, IProgress progress,
+	                                          URL url, boolean forceWifi) throws IOException {
+		File part = new File(de.fileToDownload.getAbsolutePath() + RAW_PART_EXT);
+		part.getParentFile().mkdirs();
+
+		long already = part.isFile() ? part.length() : 0;
+		if (already >= Integer.MAX_VALUE) {
+			// The counting path below is int-based, like the rest of this class. Start over rather
+			// than resume from a wrapped negative offset.
+			part.delete();
+			already = 0;
+		}
+		resumeOffset = (int) already;
+		resumeAccepted = already > 0;
+
+		// getInputStreamToDownload ends with cis.reset(), which connects - so by the time this
+		// returns, the server has already answered and resumeAccepted reflects what it actually
+		// did with the Range header.
+		InputStream in = getInputStreamToDownload(url, forceWifi, (int) already);
+		try {
+			// available() is length - fileread, i.e. what is LEFT to fetch, not the whole file.
+			// Reading it as the total would under-state the space needed on every resume and make
+			// the progress bar jump backwards, so the full size is reconstructed here.
+			int remaining = in.available();
+			boolean append = resumeAccepted;
+			long fullSize = append ? already + remaining : remaining;
+
+			// The server ignored the Range and is re-sending from byte zero. Appending that to the
+			// existing part file would produce a file of plausible length and entirely wrong
+			// contents - a corrupt map that nothing downstream detects. Truncating is the only
+			// correct response, and it is why `append` comes from resumeAccepted rather than from
+			// "a part file existed".
+			if (already > 0 && !append) {
+				log.info("Server ignored Range on " + part.getName() + ", restarting from 0");
+			}
+
+			long needed = fullSize * TWO_PHASE_SPACE_FACTOR;
+			long free = part.getParentFile().getUsableSpace();
+			if (free > 0 && free < needed) {
+				log.info("Two-phase download declined: need ~" + (needed >> 20) + " MB, have "
+						+ (free >> 20) + " MB. Streaming instead.");
+				return false;
+			}
+			String name = FileNameTranslationHelper.getFileName(ctx, ctx.getRegions(), de.baseName);
+			progress.startTask(String.format(
+					ctx.getString(R.string.shared_string_downloading_formatted), name),
+					(int) (fullSize / 1024));
+			if (!writeRaw(in, part, append, fullSize, progress)) {
+				return false;
+			}
+		} finally {
+			try {
+				in.close();
+			} catch (IOException ignored) {
+			}
+		}
+
+		// Phase two: local only. A failure here is NOT a reason to keep the part file - the bytes
+		// are on disk and complete, so a corrupt archive means the download itself was bad and
+		// retrying the same bytes would fail identically.
+		FileInputStream raw = new FileInputStream(part);
+		try {
+			resumeOffset = 0;
+			resumeAccepted = false;
+			List<InputStream> streams = new ArrayList<InputStream>();
+			streams.add(raw);
+			unzipFile(de, progress, streams);
+		} catch (IOException e) {
+			part.delete();
+			throw e;
+		} finally {
+			try {
+				raw.close();
+			} catch (IOException ignored) {
+			}
+		}
+		part.delete();
+		return true;
+	}
+
+	/**
+	 * Streams the raw compressed bytes to the part file, appending when resuming.
+	 *
+	 * @return false when the download was interrupted; the part file is KEPT in that case, which
+	 * is the entire point of this path
+	 */
+	private boolean writeRaw(InputStream in, File part, boolean append, long fullSize,
+	                         IProgress progress) throws IOException {
+		// Read BEFORE opening the stream: `new FileOutputStream(part, false)` truncates on
+		// construction, so asking afterwards would always answer 0 and the progress bar would
+		// restart at the top of a resumed download.
+		long written = append ? part.length() : 0;
+		FileOutputStream out = new FileOutputStream(part, append);
+		try {
+			byte[] buffer = new byte[BUFFER_SIZE];
+			int read;
+			while ((read = in.read(buffer)) != -1) {
+				if (interruptDownloading) {
+					// Flushed and closed by the finally below, and deliberately NOT deleted:
+					// everything received so far is valid compressed bytes and the next attempt
+					// continues from exactly here. This is the whole point of the two-phase path.
+					log.info("Interrupted, keeping " + part.getName() + " at " + written
+							+ " of " + fullSize + " bytes for resume");
+					return false;
+				}
+				out.write(buffer, 0, read);
+				written += read;
+				progress.remaining((int) ((fullSize - written) / 1024));
+			}
+		} finally {
+			out.close();
+		}
+		return true;
 	}
 
 	private void unzipFile(IndexItem.DownloadEntry de, IProgress progress,  List<InputStream> is) throws IOException {
