@@ -609,6 +609,88 @@ public class GoogleTrafficHelper {
 	}
 
 	/**
+	 * One extra DELAY poll for {@link TrafficDetourHelper} to score a candidate detour.
+	 *
+	 * <h3>Paced, not just capped</h3>
+	 *
+	 * The branch this came from checked only the daily cap and wrote the counter - a hole straight
+	 * through the ladder, since the detour evaluator can fire every eight minutes and the ladder's
+	 * own interval reaches eleven and then forty-one. This honours BOTH: the cap, and the interval
+	 * the DELAY_LADDER currently allows, advancing {@link #lastDelayAtMs} so the navigation cadence
+	 * accounts for the request rather than being surprised by it.
+	 *
+	 * <p>Refusing is a normal outcome and is handled: no slot means no honest comparison, so the
+	 * detour is not taken. Never switching is always safe; switching on a guess is not.
+	 */
+	static boolean claimDetourDelayPoll(@NonNull OsmandApplication app) {
+		try {
+			synchronized (GoogleTrafficHelper.class) {
+				OsmandSettings settings = app.getSettings();
+				int today = (int) (System.currentTimeMillis() / 86_400_000L);
+				if (settings.GOOGLE_TRAFFIC_REQUEST_DAY.get() != today) {
+					settings.GOOGLE_TRAFFIC_REQUEST_DAY.set(today);
+					settings.GOOGLE_TRAFFIC_REQUEST_COUNT.set(0);
+					settings.GOOGLE_TRAFFIC_DELAY_REQUEST_COUNT.set(0);
+					budgetExhaustedLogged = false;
+				}
+				int delayUsed = settings.GOOGLE_TRAFFIC_DELAY_REQUEST_COUNT.get();
+				if (delayUsed >= DELAY_DAILY_CAP) {
+					return false;
+				}
+				long interval = net.osmand.plus.cairodrive.providers.BudgetPacer
+						.tierFor(delayUsed, DELAY_DAILY_CAP, DELAY_LADDER).intervalMs;
+				long now = System.currentTimeMillis();
+				if (now - lastDelayAtMs < interval) {
+					return false;
+				}
+				lastDelayAtMs = now;
+				settings.GOOGLE_TRAFFIC_DELAY_REQUEST_COUNT.set(delayUsed + 1);
+				return true;
+			}
+		} catch (Throwable t) {
+			// An accounting failure is treated as "no budget", so it degrades rather than overspends.
+			return false;
+		}
+	}
+
+	/**
+	 * How long Google thinks THIS route takes right now, in seconds, or -1.
+	 *
+	 * <p>Uses {@link #postRoutes} rather than {@link #fetchTraffic} on purpose: the answer must not
+	 * become the live snapshot. A candidate detour's timings published as current traffic would
+	 * paint congestion for a road the driver is not on and has not agreed to take.
+	 *
+	 * <p>Asks for the DELAY field mask, so it bills the Pro SKU rather than the Enterprise one -
+	 * a fifth of the price for the only number the comparison needs.
+	 */
+	static int scoreLiveSeconds(@NonNull OsmandApplication app, @Nullable Location from,
+	                            @Nullable List<Location> routeLocations) {
+		try {
+			if (routeLocations == null || routeLocations.size() < 2 || Algorithms.isEmpty(apiKey(app))) {
+				return -1;
+			}
+			double lat = from != null ? from.getLatitude() : routeLocations.get(0).getLatitude();
+			double lon = from != null ? from.getLongitude() : routeLocations.get(0).getLongitude();
+			String body = buildRequestBody(lat, lon, routeLocations, false);
+			if (body == null) {
+				return -1;
+			}
+			String response = postRoutes(app, body, false);
+			if (response == null) {
+				return -1;
+			}
+			JSONArray routes = new JSONObject(response).optJSONArray("routes");
+			if (routes == null || routes.length() == 0) {
+				return -1;
+			}
+			return seconds(routes.getJSONObject(0).optString("duration", ""));
+		} catch (Throwable t) {
+			LOG.info(TRACE_TAG + " detour scoring skipped", t);
+			return -1;
+		}
+	}
+
+	/**
 	 * A freshly recalculated route should be scored soon, but not instantly - the GPS chaos around
 	 * a reroute would otherwise fire a request per fix.
 	 */
@@ -638,6 +720,23 @@ public class GoogleTrafficHelper {
 		if (body == null) {
 			return;
 		}
+		String response = postRoutes(app, body, spansPoll);
+		if (response != null) {
+			parseAndStore(app, response, gen, spansPoll);
+		}
+	}
+
+	/**
+	 * One computeRoutes POST. Returns the raw body, or null on any failure.
+	 *
+	 * <p>Split out of {@link #fetchTraffic} so a caller can ask Google how long a route takes
+	 * WITHOUT publishing the answer as the live snapshot - which is exactly what scoring a
+	 * candidate detour needs. Storing a detour's timings as the current traffic picture would
+	 * paint congestion for a road the driver is not on.
+	 */
+	@Nullable
+	private static String postRoutes(@NonNull OsmandApplication app, @NonNull String body,
+	                                 boolean spansPoll) {
 		HttpURLConnection connection = null;
 		try {
 			connection = NetworkUtils.getHttpURLConnection(ROUTES_API);
@@ -667,9 +766,9 @@ public class GoogleTrafficHelper {
 			int code = connection.getResponseCode();
 			if (code != HttpURLConnection.HTTP_OK) {
 				LOG.info(TRACE_TAG + " HTTP " + code + " " + read(connection.getErrorStream()));
-				return;
+				return null;
 			}
-			parseAndStore(app, read(connection.getInputStream()), gen, spansPoll);
+			return read(connection.getInputStream());
 		} catch (Throwable t) {
 			LOG.info(TRACE_TAG + " request failed", t);
 		} finally {
@@ -813,6 +912,13 @@ public class GoogleTrafficHelper {
 			}
 			LOG.info(TRACE_TAG + " Google traffic (" + (spansPoll ? "spans" : "delay")
 					+ " poll): +" + delay + "s delay, " + spans.size() + " congested span(s)");
+
+			// Hand the fresh delay to the detour evaluator. It self-gates on everything that
+			// matters - the delay threshold, its own 8-minute throttle, whether a recalculation is
+			// already running - and it is what turns a NUMBER on screen into the router actually
+			// avoiding the jam. Called outside the lock above: it starts its own thread and takes
+			// the routing config monitor, and the fixed order is RoutingHelper -> this class.
+			TrafficDetourHelper.onTrafficUpdate(app, delay);
 
 			if (delay >= TOAST_MIN_DELAY_SEC && now - lastToast > TOAST_REPEAT_MS) {
 				lastToast = now;
