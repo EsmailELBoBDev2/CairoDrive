@@ -46,9 +46,10 @@ import java.util.concurrent.TimeUnit;
  * triggers one immediate recalculation with a spoken heads-up. User-added avoid roads are
  * never touched - only ids this helper added are ever removed.
  *
- * <p>Off by default behind LIVE_ROAD_CLOSURES. Resolving a closure costs up to
+ * <p>Gated by LIVE_ROAD_CLOSURES, which is ON for the CAR profile and OFF for every other one.
+ * It stays a UI toggle rather than being implied by an API key: resolving one refresh costs up to
  * SAMPLES_PER_CLOSURE * MAX_CLOSURES probes on the single shared road-lookup thread that the
- * location arrow's own snap-to-road uses, so an API key alone is not an acceptable on switch.
+ * location arrow's own snap-to-road uses, so it must remain stoppable without rebuilding.
  */
 public class ClosureSyncHelper {
 

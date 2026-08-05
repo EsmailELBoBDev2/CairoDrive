@@ -2083,12 +2083,20 @@ public class OsmandSettings {
 		GOOGLE_TRAFFIC_ON_ROUTE.setModeDefaultValue(ApplicationMode.CAR, true);
 	}
 
-	// Live road closures (TomTom/HERE) held as impassable roads. Defaults OFF because a provider
-	// key is not a user-facing off switch: resolving one refresh issues up to 45 road-segment
-	// lookups on CurrentPositionHelper's single shared executor - the same one the location arrow
-	// snaps with - so it must stay stoppable from the UI independently of which keys the build
-	// carries. Profile-scoped for the same reason as GOOGLE_TRAFFIC_ON_ROUTE.
-	public final OsmandPreference<Boolean> LIVE_ROAD_CLOSURES = new BooleanPreference(this, "live_road_closures", false).makeProfile().cache();
+	// Live road closures (TomTom/HERE) held as impassable roads: ON for CAR, OFF for every other
+	// profile. A closed road is the one piece of live data that changes the ROUTE rather than just
+	// colouring it, which is why it earns its cost in a driving app - and only there.
+	//
+	// It stays a UI toggle rather than being implied by the presence of a provider key, because
+	// resolving one refresh issues up to 45 road-segment lookups on CurrentPositionHelper's single
+	// shared executor - the same one the location arrow snaps with. That is the heavier of the two
+	// pollers and the one to switch off first if the arrow ever stutters; switching it off also
+	// releases any roads currently held impassable, so the router is clean immediately.
+	public final CommonPreference<Boolean> LIVE_ROAD_CLOSURES = new BooleanPreference(this, "live_road_closures", false).makeProfile().cache();
+
+	{
+		LIVE_ROAD_CLOSURES.setModeDefaultValue(ApplicationMode.CAR, true);
+	}
 
 	public final CommonPreference<String> MAP_UNDERLAY_PREVIOUS = new StringPreference(this, "map_underlay_previous", null).makeGlobal().cache();
 
