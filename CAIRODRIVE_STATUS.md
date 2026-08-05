@@ -82,9 +82,9 @@ out-of-scope *variable*, which is what one of the four errors was. Kept in `tool
 | **N1** | GNSS health as `gnss=OK\|DEGRADED` |
 | **N2** | Arrow no longer un-snaps, and voice no longer goes silent, on a recalculation the driver did not cause |
 | **N3** | Stationary hold. Thresholds **simulated, not chosen** — the naive "2 km/h" froze 13.4% of fixes from a car moving at 3 km/h. Applied at the provider *and* the tracking utilities, because they gate different things |
-| **N4** | Instrumented (`CD_FIXRATE`), not changed — the premise is unproven |
+| **N4** | Position prediction at `INTERPOLATION=90`, plus the Android 12 request that forbids batching and blocks a battery-pressure downgrade. Still instrumented by `CD_FIXRATE`, which is what says whether the second part changed anything |
 | **N6** | Offline HMM/Viterbi map matching, consumed for display only. Re-projects onto the matched segment; stands down when routing already snapped |
-| **N7** | Speech lead — additive only, never moves an existing prompt |
+| **N7** | Speech lead — additive only, never moves an existing prompt — **and** turn-now brevity, which shortens the sentence rather than moving it |
 
 ### Security
 
@@ -120,9 +120,7 @@ a download that cannot start.
 
 | Item | Reason |
 |---|---|
-| **N7**: the long sentence still overrunning the junction | Structurally forced, not a choice. A phrase that takes longer to say than the driver has cannot be fixed by saying it earlier — only by saying less, which is a different feature |
-| **N4** — raising the GNSS fix rate | Not a change, because there is nothing to raise: both helpers already ask for more than the hardware gives. What N4 turned out to be — position prediction — *is* done |
-| **Popular times / "best time to visit"** | Not a Places API field at all. Only reachable by scraping Maps through a third party — separate provider, separate bill, breaks on any markup change, and it is scraped Google data on a Play-listed app |
+_Empty. Every row that was here has moved into the table below._
 
 ### Moved out of this table since it was written
 
@@ -135,6 +133,11 @@ because the *reasons* they were held are the useful part.
 | **N8** — deviation threshold | Correctly held on N1's data | Done as a *tightening only where the fix is good*, capped by `Math.min` against the old formula so no case is looser. The first version was looser above ~20 m accuracy; simulation caught it |
 | **N6** — local-graph cache, speed term | "Optimisations, not gaps" | Both in. Cache keyed on road identity, hit rate in `CD_MATCH graphCache=`. Speed term applied only *above* the limit — the "fast car ⇒ fast road" form stays rejected, because Cairo flyovers jam |
 | **N7** — roundabouts, arrival clause | Roundabouts excluded as "not safe to say twice"; arrival clause "under-fires, which is the safe direction" | Nothing says it twice — the cue is timed, never spoken. Roundabouts are the worst case for late guidance, and the final manoeuvre is the one a driver can least recover from |
+| **N7** — the long sentence overrunning the junction | "Structurally forced. Cannot be fixed by saying it earlier — only by saying less, which is a different feature" | The reasoning was right and the conclusion was wrong: saying less is a feature, so it got built. `CairoDriveTurnBrevity` drops whole named parts of the turn-now sentence, least actionable first — the road being left, then the destination clause, then the ref. `toStreetName` is never dropped. Turn-now only; turn-in has the room and keeps the full text |
+| **N4** — raising the GNSS fix rate | "Nothing to raise: both helpers already ask for more than the hardware gives" | True of the legacy call, which is what was checked. Android 12 lets an app state two more things: `setMaxUpdateDelayMillis(0)` forbids BATCHING — which preserves the fix rate while destroying latency — and `QUALITY_HIGH_ACCURACY` stops a battery-pressure downgrade. Neither raises the ceiling; both stop it being lowered underneath us. `CD_FIXRATE` says whether it mattered on this device |
+| **Popular times** | "Not a Places API field at all" | Still true of Google, and irrelevant: the owner supplied a BestTime.app key. `BestTimeProvider` generates a venue's forecast once with the private key and re-reads it free with the public one. Egypt coverage is unverified, so a venue that resolves to nothing is remembered as absent and the row is omitted |
+| **D1** — resume a download after the app closes | Listed under **Dropped** as architecturally blocked, because `.obf` maps arrive as zip streams and no offset maps compressed bytes to decompressed ones | True for `.obf`, and it was over-generalised to every download. `DownloadActivityType.isZipStream()` is FALSE for HILLSHADE, SLOPE, GEOTIFF, SQLITE, WIKIVOYAGE and GPX — the largest raw files there are. Resume is implemented for those; `.obf` still cannot without splitting download from decompression |
+| **Google Places photos / autocomplete / nearby** | Shipped behind build flags | The flags were on, the API methods worked, and NOTHING CALLED THEM. Found by grepping for callers instead of for flags. All three are wired now. Nearby also needed a real bug fixed: `location` was in the field mask, and paid for, but never parsed — so a result had a name and no coordinates |
 | **D5** — help-article gating | Current state never confirmed | Confirmed and done |
 | **D4** — catalogue gating | "Current state never confirmed. Not claimed either way" | Checked, and it was **already done**. `AppInitializer.checkMapUpdates` gates the startup catalogue fetch on `blocksBulkTransfer`, alongside the `* 1000L` fix — without it the two-day throttle was 172800 ms, under three minutes, so the worldwide index could be pulled several times a day on mobile data. The other ten `runReloadIndexFiles()` callers are all screens the user opened, and are deliberately NOT gated: an explicit request is not a bulk transfer |
 
@@ -161,7 +164,6 @@ car; the alternative was churn, not an improvement.
 
 | Item | Why |
 |---|---|
-| **D1** — resume a download after the app closes | **Architecturally blocked.** `.obf` maps arrive as zip streams: bytes downloaded are compressed, bytes on disk are decompressed, and no offset maps between them. Resume *within* a download already exists (HTTP `Range`, 15 retries) |
 | **B4** — OBD | Owner's decision |
 | Lowering `recalculateDistance` from 20 km alone | Only affects the `BinaryRoutePlanner` path, which HH pre-empts |
 
