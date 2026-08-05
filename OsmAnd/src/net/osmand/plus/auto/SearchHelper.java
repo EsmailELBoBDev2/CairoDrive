@@ -304,12 +304,21 @@ public class SearchHelper {
 		}
 		if (placeLocation != null && searchLocation != null) {
 			float dist = (float) MapUtils.getDistance(placeLocation, searchLocation);
-			StringBuilder descriptionBuilder = new StringBuilder(" ");
-			if (!Algorithms.isEmpty(description)) {
-				descriptionBuilder.append(" • ");
-				descriptionBuilder.append(description);
-			}
-			SpannableString descriptionSpannable = new SpannableString(descriptionBuilder.toString());
+			// C3. The separator comes from ltr_or_rtl_combine_via_bold_point rather than being
+			// concatenated here. That resource exists in this app precisely so the ORDER of the
+			// two halves is the translator's decision and not the layout engine's guess, and
+			// every other place that joins two labels already uses it - including
+			// PlaceDetailsScreen, which was written later and got it right while this shared
+			// path, the one behind every car search result, kept building the string by hand.
+			//
+			// The leading placeholder is load-bearing and is why this is a substitution rather
+			// than a rewrite: the host replaces character 0 with the rendered distance via the
+			// DistanceSpan below, so whatever is produced here MUST still start with exactly one
+			// substitutable character.
+			String combined = Algorithms.isEmpty(description)
+					? " "
+					: app.getString(R.string.ltr_or_rtl_combine_via_bold_point, " ", description);
+			SpannableString descriptionSpannable = new SpannableString(combined);
 			DistanceSpan distanceSpan = DistanceSpan.create(TripUtils.getDistance(app, dist));
 			descriptionSpannable.setSpan(distanceSpan, 0, 1, SPAN_INCLUSIVE_INCLUSIVE);
 			builder.addText(descriptionSpannable);

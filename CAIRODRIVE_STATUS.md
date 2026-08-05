@@ -98,8 +98,17 @@ out-of-scope *variable*, which is what one of the four errors was. Kept in `tool
 
 ### Correctness / data
 
-`C1`–`C10` · `D2` `D3` `D6` · `P8` `P10` · `ArabicNormalizer` `charAt(0)` · Estedad (Naskh) in
-the font manifest · `CD_LAYER` per-layer timing · metered tile gate with `CD_DATA`
+`C1` `C2` `C4`–`C10` · `D3` `D6` · `P1` `P2` `P5` `P6` `P8` `P10` · `ArabicNormalizer` `charAt(0)`
+· Estedad (Naskh) in the font manifest · `CD_LAYER` per-layer timing · metered tile gate with
+`CD_DATA`
+
+**`C3` is now in too** — `SearchHelper.buildSearchRow` was still concatenating `" • "` by hand
+instead of using `ltr_or_rtl_combine_via_bold_point`, which exists in both `values/` and
+`values-ar/`. It is the shared builder behind *every* car search result, and it was the last
+place still assembling a two-part label itself; `PlaceDetailsScreen`, written later, already did
+it correctly.
+
+**`D2` is NOT done, and this line previously claimed it was.** See "Not done, and why".
 
 ---
 
@@ -108,7 +117,7 @@ the font manifest · `CD_LAYER` per-layer timing · metered tile gate with `CD_D
 | Item | Reason |
 |---|---|
 | **N7**: the long sentence still overrunning the junction | Structurally forced, not a choice. A phrase that takes longer to say than the driver has cannot be fixed by saying it earlier — only by saying less, which is a different feature |
-| **N4** — raise the GNSS fix rate | Deliberately not changed. `CD_FIXRATE` measures it instead, because the premise — that the fix rate is what makes the arrow stutter — is unproven, and requesting a faster rate costs battery on a claim no log supports yet |
+| **D2** — per-download metered prompt | **Genuinely not done, and the "Done" list claimed otherwise until this audit.** There is no metered check anywhere under `plus/download/`. It is not a copy of D3/D4/D6 either: those gate *automatic* transfers and can simply refuse, whereas a map download is something the user explicitly asked for, so the right shape is a confirmation with the size — refusing it silently would read as a broken app. That needs a dialog and three new strings, which is why it is a task rather than a one-line gate |
 | **Popular times / "best time to visit"** | Not a Places API field at all. Only reachable by scraping Maps through a third party — separate provider, separate bill, breaks on any markup change, and it is scraped Google data on a Play-listed app |
 
 ### Moved out of this table since it was written
