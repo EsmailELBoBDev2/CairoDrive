@@ -13,6 +13,7 @@ import android.net.TrafficStats;
 import android.net.Uri;
 import android.os.AsyncTask.Status;
 import android.os.Build;
+import android.os.Looper;
 import android.view.View;
 
 import androidx.annotation.NonNull;
@@ -29,6 +30,8 @@ import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.Version;
 import net.osmand.plus.base.BasicProgressAsyncTask;
+import net.osmand.plus.cairodrive.CairoDriveDataSaver;
+import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.download.DatabaseHelper.HistoryDownloadEntry;
 import net.osmand.plus.download.DownloadFileHelper.DownloadFileShowWarning;
 import net.osmand.plus.download.IndexItem.DownloadEntry;
@@ -267,7 +270,83 @@ public class DownloadIndexesThread {
 		enqueueDownloadFiles(filesToDelete, item);
 	}
 
+	/**
+	 * D2. Confirms before spending mobile data on a map download.
+	 *
+	 * <p><b>This ASKS rather than refuses, and that is the whole design.</b> D3, D4 and D6 gate
+	 * transfers nobody requested - the live-updates sweep, the startup catalogue fetch, weather
+	 * and map tiles - so those can simply decline and say nothing. A map download is different in
+	 * kind: the user pressed a button. Silently refusing it, or quietly queueing it for later,
+	 * reads as a broken app, which is the same reason D4 leaves the ten user-initiated
+	 * {@code runReloadIndexFiles} callers ungated.
+	 *
+	 * <p>So the only thing missing was the one fact needed to decide - how big it is. Egyptian
+	 * {@code .obf} regions run to hundreds of megabytes and the download UI shows the size on a
+	 * row the user has usually already scrolled past.
+	 *
+	 * <p>Fails OPEN in every uncertain case. No activity to host a dialog, an activity that is
+	 * finishing, a size the catalogue never supplied, data saver off, or an unmetered connection -
+	 * all proceed exactly as before. A prompt that cannot be shown must never become a download
+	 * that cannot start.
+	 *
+	 * @return true when the caller should stop; the dialog re-enters this method on confirmation
+	 */
+	private boolean confirmMeteredDownload(@NonNull List<File> filesToDelete,
+	                                       IndexItem... items) {
+		if (!CairoDriveDataSaver.isEnabled() || !CairoDriveDataSaver.isMetered(app)) {
+			return false;
+		}
+		if (!(uiActivity instanceof Activity activity) || activity.isFinishing()) {
+			return false;
+		}
+		// Every caller in this tree reaches here from the UI, but nothing in the signature
+		// enforces it, and show() off the main looper throws. A background caller must get the
+		// old behaviour - an unprompted download - rather than a crash on the path that installs
+		// maps.
+		if (Looper.myLooper() != Looper.getMainLooper()) {
+			return false;
+		}
+		long total = 0;
+		for (IndexItem item : items) {
+			// Skip anything already in flight, so a re-entrant call after confirmation does not
+			// re-prompt, and so the figure shown matches what is actually about to transfer.
+			if (!isCurrentDownloading(item) && !indexItemDownloading.contains(item)) {
+				total += item.getContentSize();
+			}
+		}
+		if (total <= 0) {
+			return false;
+		}
+		AlertDialog.Builder confirm = new AlertDialog.Builder(activity);
+		confirm.setTitle(R.string.cairodrive_metered_download_title);
+		confirm.setMessage(app.getString(R.string.cairodrive_metered_download_message,
+				AndroidUtils.formatSize(activity, total)));
+		confirm.setPositiveButton(R.string.shared_string_download,
+				(dialog, which) -> {
+					meteredDownloadConfirmed = true;
+					try {
+						enqueueDownloadFiles(filesToDelete, items);
+					} finally {
+						meteredDownloadConfirmed = false;
+					}
+				});
+		confirm.setNegativeButton(R.string.shared_string_cancel, null);
+		confirm.show();
+		CairoDriveLogger.getInstance().log("CD_DATA",
+				"metered download prompt shown bytes=" + total + " items=" + items.length);
+		return true;
+	}
+
+	/**
+	 * Set only for the duration of the re-entrant call the confirmation dialog makes, so the
+	 * second pass skips the prompt instead of showing it again forever.
+	 */
+	private boolean meteredDownloadConfirmed;
+
 	private void enqueueDownloadFiles(@NonNull List<File> filesToDelete, IndexItem... items) {
+		if (!meteredDownloadConfirmed && confirmMeteredDownload(filesToDelete, items)) {
+			return;
+		}
 		if (getCurrentRunningTask() instanceof ReloadIndexesTask) {
 			if (checkRunning(false)) {
 				return;
