@@ -106,11 +106,29 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 					+ "magnitudeOfDelay,delay,roadNumbers,events{description,code}}}}";
 
 	/**
-	 * Arabic first because the car is driven in Cairo and the descriptions are read at a glance.
-	 * TomTom rejects an unsupported language tag with HTTP 400 rather than falling back, so
-	 * {@link #languageFallback} latches to this list's second entry on the first such rejection.
+	 * English, because TomTom does not support Arabic here and never did.
+	 *
+	 * <p>This was {@code ar-EG} on the reasoning that the car is driven in Cairo. A probe of the
+	 * live endpoint (tools/cd-tomtom-probe.sh) returned:
+	 *
+	 * <pre>
+	 *   incidents: +language=ar-EG        400
+	 *     {"detailedError":{"code":"INVALID_REQUEST",
+	 *      "message":"Unsupported language parameter value: ar-EG"}}
+	 *   incidents: +language=en-GB        200
+	 * </pre>
+	 *
+	 * <p>{@link #languageFallback} was supposed to absorb exactly this, and could not: it is a
+	 * plain volatile, so it resets on every process start. Every session therefore spent its FIRST
+	 * incident request on a request that could not succeed, and on a 4-minute opening cadence a
+	 * restart loop turns that into a stream of 400s - which is the shape of the ~131.2k 4XX on the
+	 * dashboard, given that every flow variant probed clean at 200.
+	 *
+	 * <p>So the fix is to stop sending a value known to be invalid rather than to keep catching it.
+	 * The latch stays as a safety net for a future tag that stops being supported; it is no longer
+	 * load-bearing.
 	 */
-	private static final String LANGUAGE_PRIMARY = "ar-EG";
+	private static final String LANGUAGE_PRIMARY = "en-GB";
 	private static final String LANGUAGE_FALLBACK = "en-GB";
 
 	// ------------------------------------------------------------------ incident vocabulary
