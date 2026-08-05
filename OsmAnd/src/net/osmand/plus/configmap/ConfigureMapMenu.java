@@ -262,8 +262,6 @@ public class ConfigureMapMenu {
 				.setItemDeleteAction(settings.SHOW_MAP_MARKERS)
 				.setListener(listener));
 
-		// Google Routes live traffic on the navigated route - deliberate opt-in (billed + ToS-gray),
-		// so it is off by default and the toggle only appears when the build carries a key. Without
 		// API status. Always present, unlike every toggle around it, and that is the point: the
 		// question it answers - "why am I not seeing anything" - is asked exactly when a provider
 		// is missing its key, which is also when a key-gated menu item would be hidden.
@@ -281,10 +279,12 @@ public class ConfigureMapMenu {
 					// can be read afterwards against the drive it belonged to.
 					CairoDriveLog.log("APISTATUS",
 							net.osmand.plus.cairodrive.providers.ApiHealth.summary()
-									.replace('\n', ' | '));
+									.replace("\n", " | "));
 					return false;
 				}));
 
+		// Google Routes live traffic on the navigated route - deliberate opt-in (billed + ToS-gray),
+		// so it is off by default and the toggle only appears when the build carries a key. Without
 		// this item the preference is unreachable and the whole live-traffic stack stays inert.
 		if (!Algorithms.isEmpty(BuildConfig.CAIRODRIVE_ROUTES_KEY)) {
 			selected = settings.GOOGLE_TRAFFIC_ON_ROUTE.get();

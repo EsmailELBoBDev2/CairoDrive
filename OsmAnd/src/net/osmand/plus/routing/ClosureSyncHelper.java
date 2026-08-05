@@ -9,6 +9,7 @@ import net.osmand.osm.io.NetworkUtils;
 import net.osmand.plus.BuildConfig;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
+import net.osmand.plus.cairodrive.providers.ApiHealth;
 import net.osmand.plus.helpers.CairoDriveLog;
 import net.osmand.plus.settings.backend.ApplicationMode;
 import net.osmand.router.RoutingConfiguration;
@@ -152,6 +153,12 @@ public class ClosureSyncHelper {
 		}
 		if (!Algorithms.isEmpty(hereKey)) {
 			fetchHere(closures, hereKey, bbox);
+		} else {
+			// HERE has no other reporter in the app - the traffic OVERLAY it also feeds is fetched
+			// by the tile engine, which never reports back here. Without this the status screen
+			// would say "not used yet this session" for a build that simply has no HERE key, which
+			// is the exact silence this screen exists to break.
+			ApiHealth.recordSkipped(ApiHealth.Api.HERE, ApiHealth.Skip.NO_KEY);
 		}
 		// Nearest closures first, then cap - id resolution costs a routing-data probe each.
 		LatLon me = new LatLon(loc.getLatitude(), loc.getLongitude());
@@ -188,7 +195,7 @@ public class ClosureSyncHelper {
 					"https://api.tomtom.com/traffic/services/5/incidentDetails?key=%s"
 							+ "&bbox=%f,%f,%f,%f&categoryFilter=8&timeValidityFilter=present",
 					key, bbox[0], bbox[1], bbox[2], bbox[3]); // minLon,minLat,maxLon,maxLat
-			String body = get(url);
+			String body = get(url, ApiHealth.Api.TOMTOM_INCIDENTS);
 			if (body == null) {
 				return;
 			}
@@ -217,6 +224,7 @@ public class ClosureSyncHelper {
 			// Type only, never getMessage(): the key rides in this URL as a query parameter and
 			// MalformedURLException / FileNotFoundException both carry the full URL as their message.
 			log.info("TomTom closures skipped: " + t.getClass().getSimpleName());
+			ApiHealth.recordFailure(ApiHealth.Api.TOMTOM_INCIDENTS, 0, t.getClass().getSimpleName());
 		}
 	}
 
@@ -227,7 +235,7 @@ public class ClosureSyncHelper {
 					"https://data.traffic.hereapi.com/v7/incidents?in=bbox:%f,%f,%f,%f"
 							+ "&locationReferencing=shape&type=roadClosure&apiKey=%s",
 					bbox[0], bbox[1], bbox[2], bbox[3], key); // west,south,east,north
-			String body = get(url);
+			String body = get(url, ApiHealth.Api.HERE);
 			if (body == null) {
 				return;
 			}
@@ -260,6 +268,7 @@ public class ClosureSyncHelper {
 		} catch (Throwable t) {
 			// Type only - same key-in-URL reason as fetchTomTom.
 			log.info("HERE closures skipped: " + t.getClass().getSimpleName());
+			ApiHealth.recordFailure(ApiHealth.Api.HERE, 0, t.getClass().getSimpleName());
 		}
 	}
 
@@ -497,7 +506,7 @@ public class ClosureSyncHelper {
 		return MapUtils.getDistance(me, mid);
 	}
 
-	private static String get(String url) throws Exception {
+	private static String get(String url, ApiHealth.Api api) throws Exception {
 		HttpURLConnection c = NetworkUtils.getHttpURLConnection(url);
 		try {
 			c.setConnectTimeout(CONNECT_TIMEOUT);
@@ -509,8 +518,12 @@ public class ClosureSyncHelper {
 				// parameters, and reading the error stream surfaces the full URL in the exception
 				// message. Log the code only, never the URL or the body.
 				log.info("Closure provider HTTP " + code);
+				// Code only, no body, for the same reason - which is why the status screen shows
+				// the generic 403 wording for these two rather than a provider's own message.
+				ApiHealth.recordFailure(api, code, null);
 				return null;
 			}
+			ApiHealth.recordOk(api);
 			StringBuilder sb = new StringBuilder();
 			try (BufferedReader r = new BufferedReader(
 					new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8))) {
