@@ -194,6 +194,39 @@ public final class BudgetPacer {
 			if (app == null) {
 				return 0;
 			}
+			// MEMOISED, and it has to be. This is called two to four times per GPS fix - once per
+			// stream, twice more when the TomTom due-check re-tests under its lock - on the
+			// location callback, which may be the main thread whose frame budget CD_FRAME already
+			// measures at 46.9 ms.
+			//
+			// getLeftTime() is not a field read. It walks the route, runs the ETA calibrator, and
+			// calls TrafficAwareRouting.adjustedSeconds() on top. HazardBannerLayer throttles the
+			// very same call to 2 s and its comment says why; calling it four times a second from
+			// here would have undone that lesson.
+			//
+			// Five seconds because an ETA does not move meaningfully faster than that, so the cache
+			// costs no accuracy at all - it only removes repeats of identical work.
+			long now = System.currentTimeMillis();
+			long cachedAt = horizonCachedAtMs;
+			if (cachedAt != 0 && now - cachedAt < HORIZON_CACHE_MS && now >= cachedAt) {
+				return horizonCachedMin;
+			}
+			int computed = computeHorizonMinutes(app, now);
+			horizonCachedMin = computed;
+			horizonCachedAtMs = now;
+			return computed;
+		} catch (Throwable t) {
+			return 0;
+		}
+	}
+
+	private static volatile long horizonCachedAtMs;
+	private static volatile int horizonCachedMin;
+	/** See {@link #routeHorizonMinutes}. An ETA does not move faster than this. */
+	private static final long HORIZON_CACHE_MS = 5000L;
+
+	private static int computeHorizonMinutes(@NonNull OsmandApplication app, long now) {
+		try {
 			RoutingHelper helper = app.getRoutingHelper();
 			if (helper != null && helper.isRouteCalculated() && helper.isFollowingMode()) {
 				int leftSeconds = helper.getLeftTime();
@@ -204,7 +237,11 @@ public final class BudgetPacer {
 			// FREE DRIVING: no destination, so no ETA to read. Fall back to the mean-residual-life
 			// estimate over this driver's own past sessions - see FreeDriveHorizon. It applies no
 			// slack of its own because its quantile is already the pessimistic one.
-			long now = System.currentTimeMillis();
+			//
+			// NOTE: unreachable today. Both providers return early on !isFollowingMode(), so no
+			// traffic is polled at all while free driving and nothing ever calls into here. Kept
+			// because the branch is correct the moment free-drive polling is enabled; see the
+			// class javadoc on FreeDriveHorizon.
 			FreeDriveHorizon.onFreeDriveFix(app, now);
 			return FreeDriveHorizon.estimateRemainingMinutes(app, now);
 		} catch (Throwable t) {
