@@ -23,6 +23,9 @@
     <string name="cairodrive_popular_steady">عادي دلوقتي</string>
     <string name="cairodrive_popular_busy">زحمة دلوقتي</string>
     <string name="cairodrive_popular_very_busy">زحمة جدًا دلوقتي</string>
+    <string name="cairo_osm_narrow_feedback">بلّغ OSM عن الشوارع الضيقة غير الموسومة</string>
+    <string name="cairo_osm_send_notes">ابعت %1$d ملاحظة لـ OSM</string>
+    <string name="cairo_osm_notes_sent">اتبعت %1$d ملاحظة</string>
     <string name="cairodrive_ev_charging">شحن كهربائي</string>
     <string name="cairodrive_ev_membership">ممكن تحتاج عضوية</string>
     <string name="cairo_google_traffic_on_route">الزحمة المباشرة على الطريق (جوجل)</string>

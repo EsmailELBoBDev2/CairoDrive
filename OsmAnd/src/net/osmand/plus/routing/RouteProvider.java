@@ -1409,6 +1409,13 @@ public class RouteProvider {
 				if (any) {
 					actionable++;
 				}
+				// The exact population this measurement was built to find: named as an alley,
+				// tagged as nothing. Recorded in memory only - nothing is uploaded until the
+				// driver asks, and the feature is off by default. See CairoDriveOsmFeedback.
+				if (!any && name != null && startsWithAny(name, NARROW_NAME_WORDS)) {
+					net.osmand.plus.cairodrive.CairoDriveOsmFeedback.observeNarrowCandidate(
+							resolvedApp, segmentLocation(segment), name);
+				}
 			}
 			if (ways == 0) {
 				return;
@@ -1422,6 +1429,34 @@ public class RouteProvider {
 		} catch (RuntimeException e) {
 			// Diagnostics must never be able to break a navigation calculation.
 			log.error(NARROW_TAG + " failed to measure tag coverage", e);
+		}
+	}
+
+	/**
+	 * A point on the segment, for an OSM note.
+	 *
+	 * <p>The START point rather than a midpoint: a note wants to land on the way, and the start of
+	 * a segment is a vertex that is definitely on it, where an interpolated midpoint of a curved
+	 * segment can sit off the road entirely - which for a note reading "is this street narrow?" is
+	 * the difference between a useful survey lead and a mapper wondering which street is meant.
+	 */
+	@Nullable
+	private static LatLon segmentLocation(@Nullable RouteSegmentResult segment) {
+		if (segment == null) {
+			return null;
+		}
+		try {
+			net.osmand.router.RouteSegmentResult s = segment;
+			int index = s.getStartPointIndex();
+			RouteDataObject obj = s.getObject();
+			if (obj == null || index < 0 || index >= obj.getPointsLength()) {
+				return null;
+			}
+			return new LatLon(
+					MapUtils.get31LatitudeY(obj.getPoint31YTile(index)),
+					MapUtils.get31LongitudeX(obj.getPoint31XTile(index)));
+		} catch (RuntimeException e) {
+			return null;
 		}
 	}
 

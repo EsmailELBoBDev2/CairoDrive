@@ -95,7 +95,8 @@ class POIScreen(
      */
     private fun withNearby(base: ItemList): ItemList {
         val extra = nearbyResults
-        if (extra.isEmpty()) {
+        val ev = evStations()
+        if (extra.isEmpty() && ev.isEmpty()) {
             return base
         }
         val builder = ItemList.Builder()
@@ -106,6 +107,36 @@ class POIScreen(
             count++
         }
         val location = app.mapViewTrackingUtilities.defaultLocation
+        for (station in ev) {
+            if (count >= contentLimit) break
+            val rowBuilder = Row.Builder().setTitle(station.name ?: continue)
+            // Membership first, because 65% of Egyptian sites require it and a driver who arrives
+            // at a charger they cannot use has wasted the range that got them there.
+            val note = StringBuilder()
+            if (station.membershipRequired) {
+                note.append(carContext.getString(R.string.cairodrive_ev_membership))
+            }
+            if (station.maxPowerKw > 0) {
+                if (note.isNotEmpty()) note.append(" • ")
+                note.append("${station.maxPowerKw.toInt()} kW")
+            }
+            if (!Algorithms.isEmpty(station.operator)) {
+                if (note.isNotEmpty()) note.append(" • ")
+                note.append(station.operator)
+            }
+            if (note.isNotEmpty()) rowBuilder.addText(note.toString())
+            rowBuilder.setMetadata(
+                Metadata.Builder().setPlace(
+                    Place.Builder(
+                        CarLocation.create(
+                            station.location.latitude,
+                            station.location.longitude)).build()).build())
+            rowBuilder.setOnClickListener {
+                openRoutePreview(settingsAction, asEvResult(station))
+            }
+            builder.addItem(rowBuilder.build())
+            count++
+        }
         for (place in extra) {
             if (count >= contentLimit) break
             val where = place.location ?: continue
@@ -188,6 +219,30 @@ class POIScreen(
     }
 
     /**
+     * The bundled Egypt EV dataset, for the charging-station category only.
+     *
+     * Costs nothing and cannot fail: no key, no quota, no network, 485 records read from the APK.
+     * So unlike [maybeRequestNearby] there is no thin-results gate - there is nothing to spend and
+     * nothing to save by withholding it. OSM's own charging-station coverage in Egypt is patchy
+     * enough that this is usually the majority of what the driver sees.
+     *
+     * Deduped against the offline results by distance: OCM and OSM both know about the big
+     * operators' sites, and showing Infinity EV twice is worse than showing it once.
+     */
+    private fun evStations(): List<net.osmand.plus.cairodrive.providers.EvChargingBundle.Station> {
+        if (!net.osmand.plus.cairodrive.providers.EvChargingBundle.isEnabled()) {
+            return emptyList()
+        }
+        val types = GooglePlaceTypes.forCategory(categoryResult, app)
+        if (!types.contains("electric_vehicle_charging_station")) {
+            return emptyList()
+        }
+        val here = app.mapViewTrackingUtilities.defaultLocation ?: return emptyList()
+        return net.osmand.plus.cairodrive.providers.EvChargingBundle.nearest(
+            app, LatLon(here.latitude, here.longitude), EV_MAX_RESULTS, EV_RADIUS_M)
+    }
+
+    /**
      * Fills a thin category result from Google, once per screen.
      *
      * The gate is the offline result COUNT, not the category: this is about coverage, and Cairo's
@@ -227,11 +282,26 @@ class POIScreen(
     private var nearbyRequested = false
     private var nearbyResults: List<GooglePlacesDetailsApi.PlaceDetails> = emptyList()
 
+    /** A bundled EV station as a routable destination. Same phrase-carrying rule as [asDestination]. */
+    private fun asEvResult(
+        station: net.osmand.plus.cairodrive.providers.EvChargingBundle.Station): SearchResult {
+        val result = SearchResult(categoryResult.requiredSearchPhrase)
+        result.location = LatLon(station.location.latitude, station.location.longitude)
+        result.objectType = ObjectType.LOCATION
+        result.localeName = station.name
+        result.addressName = station.address
+        result.preferredZoom = categoryResult.preferredZoom
+        return result
+    }
+
     private companion object {
         /** At or above this many offline hits, the list already answers the question. */
         const val NEARBY_THIN_RESULTS = 3
         const val NEARBY_MAX_RESULTS = 10
         const val NEARBY_RADIUS_M = 5000.0
+        const val EV_MAX_RESULTS = 8
+        /** Wider than the POI radius: chargers are sparse and worth a longer detour than a cafe. */
+        const val EV_RADIUS_M = 25000.0
     }
 
     private fun setupPOI(listBuilder: ItemList.Builder, searchResults: List<SearchResult>?) {

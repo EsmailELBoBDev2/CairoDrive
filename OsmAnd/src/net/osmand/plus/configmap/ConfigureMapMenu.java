@@ -188,6 +188,13 @@ public class ConfigureMapMenu {
 		addProviderToggle(adapter, activity, app, settings.SUN_GLARE_ON,
 				R.string.cairo_sun_glare, R.drawable.ic_action_sun, true);
 
+		// OSM write-back. Off by default and it stays a toggle rather than a button: turning it
+		// on only starts COLLECTING candidates in memory. The upload is a second, explicit act -
+		// see below - because a note carries a coordinate the owner drove to a public database.
+		addProviderToggle(adapter, activity, app, settings.OSM_NARROW_FEEDBACK,
+				R.string.cairo_osm_narrow_feedback, R.drawable.ic_action_openstreetmap_logo, true);
+		addOsmFeedbackUpload(adapter, activity, app);
+
 		ResourceManager resourceManager = app.getResourceManager();
 		boolean hasPoiData = !Algorithms.isEmpty(resourceManager.getAmenityRepositories())
 				|| resourceManager.hasTravelRepositories();
@@ -694,6 +701,40 @@ public class ConfigureMapMenu {
 					}
 					return false;
 				});
+	}
+
+	/**
+	 * The explicit "send them now" action for the OSM narrow-street notes.
+	 *
+	 * <p>Separate from the toggle ON PURPOSE, and this is the whole safety design of the feature.
+	 * The toggle starts collecting candidates in memory; this row is what publishes them. Each
+	 * note carries a coordinate the owner actually drove to a public, permanent database under
+	 * their own OSM identity, and that must be a thing they press, not a consequence of a setting
+	 * they left alone weeks ago.
+	 *
+	 * <p>Only shown when there is something to send, so it is not a permanent no-op row, and the
+	 * count is in the title so the driver knows the size of what they are about to publish before
+	 * they publish it.
+	 */
+	private void addOsmFeedbackUpload(@NonNull ContextMenuAdapter adapter,
+	                                  @NonNull MapActivity activity,
+	                                  @NonNull OsmandApplication app) {
+		int pending = net.osmand.plus.cairodrive.CairoDriveOsmFeedback.pendingCount();
+		if (!net.osmand.plus.cairodrive.CairoDriveOsmFeedback.isEnabled(app) || pending == 0) {
+			return;
+		}
+		adapter.addItem(new ContextMenuItem(null)
+				.setTitle(app.getString(R.string.cairo_osm_send_notes, pending))
+				.setIcon(R.drawable.ic_action_export)
+				.setListener((uiAdapter, view, item, isChecked) -> {
+					// Off the main thread: this is a network call per note.
+					new Thread(() -> {
+						int sent = net.osmand.plus.cairodrive.CairoDriveOsmFeedback.uploadPending(app);
+						app.runInUIThread(() -> app.showToastMessage(
+								app.getString(R.string.cairo_osm_notes_sent, sent)));
+					}, "cd-osm-notes").start();
+					return false;
+				}));
 	}
 
 	/**
