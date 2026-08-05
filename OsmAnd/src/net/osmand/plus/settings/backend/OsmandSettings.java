@@ -3430,6 +3430,11 @@ public class OsmandSettings {
 	// With it off, ANIMATE_MY_LOCATION still animates smoothly, but only ever TO the current fix,
 	// so the arrow is permanently about one fix behind reality. See CairoDriveFeatures for why
 	// this, and not the GNSS fix rate, is what N4 actually turned out to be.
+	// OSM write-back for the CD_NARROW signal. OFF by default and deliberately so: it publishes a
+	// coordinate the owner drove to a public database under their own OSM identity, and nothing
+	// about that should happen because a default was left alone. See CairoDriveOsmFeedback.
+	public final OsmandPreference<Boolean> OSM_NARROW_FEEDBACK = new BooleanPreference(this, "cairodrive_osm_narrow_feedback", false).makeGlobal().makeShared().cache();
+
 	// Runtime switches for the provider stack, bound to the Configure map toggles.
 	//
 	// Separate from the BuildConfig flags on purpose, and BOTH are checked: the build flag decides
