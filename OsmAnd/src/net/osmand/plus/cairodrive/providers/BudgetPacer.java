@@ -316,56 +316,6 @@ public final class BudgetPacer {
 		return ladder.length == 0 ? 0 : ladder[ladder.length - 1].intervalMs;
 	}
 
-	/**
-	 * Today's allowance, from what is LEFT of the month rather than from a fixed share of it.
-	 *
-	 * <h3>Why a fixed daily cap wastes most of the tier</h3>
-	 *
-	 * {@code floor(monthlyFree / 31)} is sized for a 24-hour driving day. Actual use is about 45
-	 * minutes, so on a normal month 32-73% of the allowance expires unused - 6,500 TomTom flow
-	 * points, 3,650 Google delay polls. Meanwhile the integer rounding that a fixed cap loses is
-	 * 0.8%, which is the wrong thing to have been optimising.
-	 *
-	 * <pre>
-	 *   allowance = (monthlyFree - usedThisMonth) / daysRemainingInMonth
-	 * </pre>
-	 *
-	 * <p>Ten quiet days therefore RAISE the allowance for the rest of the month instead of
-	 * forfeiting it, and the tier is consumed to ~100% whenever there is driving to spend it on.
-	 *
-	 * <h3>Why it cannot overrun</h3>
-	 *
-	 * The divisor is days remaining INCLUDING today, so the worst case is spending exactly the
-	 * remainder on the final day. Every earlier day can only claim a fraction of what is left, and
-	 * each day's spend is subtracted before the next division - the sequence is strictly decreasing
-	 * in remainder and cannot sum past the tier.
-	 *
-	 * @param daysRemaining days left in the month including today; clamped to at least 1
-	 */
-	public static int dailyAllowance(int monthlyFree, int usedThisMonth, int daysRemaining) {
-		int left = Math.max(0, monthlyFree - Math.max(0, usedThisMonth));
-		int days = Math.max(1, daysRemaining);
-		// Floor, so rounding can only ever leave budget unspent rather than overrun it. The
-		// remainder is not lost: it returns to `left` tomorrow and raises that day's allowance.
-		return left / days;
-	}
-
-	/**
-	 * A floor under {@link #dailyAllowance}, as a fraction of the flat share.
-	 *
-	 * <p>Without one, a month whose budget was spent early would leave the last days at zero -
-	 * traffic simply off. This guarantees a usable minimum by borrowing against the overrun the
-	 * flat cap would have allowed anyway, which is safe because the flat cap itself was inside the
-	 * tier: worst case the month lands slightly under 100% of free rather than over it.
-	 */
-	public static int dailyAllowanceWithFloor(int monthlyFree, int usedThisMonth,
-	                                          int daysRemaining, int daysInMonth) {
-		int flat = monthlyFree / Math.max(1, daysInMonth);
-		int paced = dailyAllowance(monthlyFree, usedThisMonth, daysRemaining);
-		int floor = Math.max(1, flat / 4);
-		return Math.max(floor, paced);
-	}
-
 	@NonNull
 	public static String describe(int used, int cap, @NonNull Tier[] ladder) {
 		Tier tier = tierFor(used, cap, ladder);
