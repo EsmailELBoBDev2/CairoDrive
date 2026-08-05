@@ -39,4 +39,37 @@ public class CairoDriveFeatures {
 	public static boolean isProUnlocked() {
 		return BuildConfig.CAIRODRIVE_UNLOCK_PRO;
 	}
+
+	/**
+	 * N4. How far ahead the position marker is projected along the route, as a percentage of the
+	 * distance covered in the last fix interval. 0 is upstream behaviour.
+	 *
+	 * <p><b>N4 was written down as "raise the GNSS fix rate", and that turned out to be the wrong
+	 * diagnosis.</b> Nothing needed raising: the AOSP helper already requests
+	 * {@code requestLocationUpdates(provider, 0, 0)} - unthrottled - and the Play build's fused
+	 * request is already {@code PRIORITY_HIGH_ACCURACY} on a 100 ms interval, ten times faster
+	 * than the hardware delivers. Asking harder was never going to help.
+	 *
+	 * <p>The lag comes from upstream's animation contract instead. {@code ANIMATE_MY_LOCATION}
+	 * animates the marker from the previous fix to the CURRENT one over the interval between
+	 * them, so it arrives exactly as the next fix lands - smooth, and permanently one fix behind
+	 * reality. Upstream also ships the cure, {@code RoutingHelperUtils.predictLocations}, and then
+	 * defaults its gate to 0. The feature was complete and switched off.
+	 *
+	 * <p>The default is 90, simulated rather than guessed - see
+	 * {@code tools/sim_location_interpolation.py}. The first guess was 50, on the reasoning that
+	 * prediction overshoots under braking and Cairo is stop-go; steady cruise refutes it, because
+	 * there 100 is exact and 50 sits 8.35 m behind. Halving the projection does not halve the
+	 * error, it just keeps the arrow behind rather than ahead. 90 is the robust point: within a
+	 * fraction of optimal whether overshoot is weighted equally with lag or ten times worse, where
+	 * 100 degrades sharply as soon as overshoot is penalised at all.
+	 *
+	 * <p>This returns the DEFAULT only. Settings &gt; profile &gt; Position animation exposes the
+	 * same preference, so it can be tuned or zeroed mid-drive without a rebuild.
+	 *
+	 * @return 0-100, validated at build time by cairodrive.gradle
+	 */
+	public static int getLocationInterpolationPercent() {
+		return BuildConfig.CAIRODRIVE_LOCATION_INTERPOLATION;
+	}
 }

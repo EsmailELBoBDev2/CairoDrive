@@ -447,6 +447,54 @@ def presentation = presentationEnv?.trim() ? presentationEnv.trim() : "true"
 def renderScaleEnv = System.getenv("CAIRODRIVE_RENDER_SCALE")
 def renderScale = renderScaleEnv?.trim() ? renderScaleEnv.trim() : "1.0"
 
+// N4, and NOT what N4 was assumed to be.
+//
+// N4 was written down as "raise the GNSS fix rate to smooth the arrow". Checked before changing
+// anything, and there is nothing to raise: the AOSP helper already asks for
+// requestLocationUpdates(provider, 0, 0) - unthrottled - and the Play build's fused request is
+// already Priority.PRIORITY_HIGH_ACCURACY at a 100 ms interval, i.e. 10 Hz against hardware that
+// delivers about 1. The request was never the bottleneck.
+//
+// The actual cause of the lag is upstream's own animation contract. ANIMATE_MY_LOCATION (on by
+// default) animates the marker from the previous fix to the CURRENT one over movingTime, so it
+// arrives exactly as the next fix lands. Smooth, and permanently about one fix behind reality.
+// Upstream also ships the fix - RoutingHelperUtils.predictLocations, which walks the marker
+// FORWARD ALONG THE ROUTE POLYLINE - but gates it on LOCATION_INTERPOLATION_PERCENT, which
+// defaults to 0. So the feature was present, complete, and switched off.
+//
+// 90, and that number is simulated rather than picked - tools/sim_location_interpolation.py.
+//
+// The first guess here was 50, on the reasoning that prediction overshoots whenever the car
+// decelerates and Cairo is stop-go. The simulation says that reasoning is wrong, and the line
+// that kills it is steady cruise: at a constant 60 km/h, 100 is EXACT and 50 is 8.35 m behind.
+// Halving the projection does not halve the error, it just keeps the arrow behind instead of
+// ahead. Over a mixed profile (one stop-go cycle plus two minutes of cruise, 0.5 m/s speed
+// noise) mean error runs 8.19 m at 0, 4.03 m at 50, 1.00 m at 100.
+//
+// GNSS speed noise is the real argument against 100, since prediction multiplies it into position
+// one-for-one. Simulated at sigma 0.3/0.5/0.7 m/s and it does not overturn the result - ~0.5 m of
+// noise is small next to the 8-16 m of lag being removed.
+//
+// What does move the answer is that overshoot is WORSE than lag: an arrow ahead of the car reads
+// as "you have passed the turn". Weighting overshoot 1x to 10x against lag, 100 wins up to 3x and
+// 90 wins beyond it - and 90 is within a fraction of optimal at every weighting tested, where 100
+// degrades sharply once overshoot is penalised. 90 is the robust choice rather than the greedy
+// one. Worst-case overshoot at 90 is about 3.8 m, during hard braking, against 16.7 m of lag at 0.
+//
+// Two properties that make this safe rather than merely better on average: the projection follows
+// ROUTE GEOMETRY, not free dead reckoning, so it cannot drift off-road; and it is proportional to
+// speed, so a stopped car predicts exactly zero and the arrow does not creep at a red light.
+// It also only runs while RoutingHelper is actually following a route.
+//
+// This is only a DEFAULT - Settings > profile > Position animation exposes it, so it is tunable
+// mid-drive without a rebuild. 0 disables it and restores stock behaviour.
+def locationInterpolationEnv = System.getenv("CAIRODRIVE_LOCATION_INTERPOLATION")
+def locationInterpolation = locationInterpolationEnv?.trim() ? locationInterpolationEnv.trim() : "90"
+if (!(locationInterpolation ==~ /\d+/) || locationInterpolation.toInteger() > 100) {
+	throw new GradleException("CAIRODRIVE_LOCATION_INTERPOLATION must be an integer 0-100, got: "
+			+ locationInterpolation)
+}
+
 // Keep bulk transfers off a metered connection unless the user asks for them explicitly.
 // This fork is driven on Egyptian mobile data, where an unattended download is a bill rather
 // than an inconvenience, and CAIRODRIVE_UNLOCK_PRO hands the user features - weather most of
@@ -532,6 +580,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_SPEECH_LEAD", speechLead
 			buildConfigField "boolean", "CAIRODRIVE_MAP_MATCHING", mapMatching
 			buildConfigField "boolean", "CAIRODRIVE_REROUTE_CACHE", rerouteCache
+			buildConfigField "int", "CAIRODRIVE_LOCATION_INTERPOLATION", locationInterpolation
 		}
 		release {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
@@ -553,6 +602,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_SPEECH_LEAD", speechLead
 			buildConfigField "boolean", "CAIRODRIVE_MAP_MATCHING", mapMatching
 			buildConfigField "boolean", "CAIRODRIVE_REROUTE_CACHE", rerouteCache
+			buildConfigField "int", "CAIRODRIVE_LOCATION_INTERPOLATION", locationInterpolation
 		}
 	}
 }

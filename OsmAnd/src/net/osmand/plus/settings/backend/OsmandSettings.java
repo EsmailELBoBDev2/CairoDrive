@@ -69,6 +69,7 @@ import net.osmand.plus.api.SettingsAPIImpl;
 import net.osmand.plus.auto.NavigationSession;
 import net.osmand.plus.avoidroads.AvoidRoadInfo;
 import net.osmand.plus.cairodrive.CairoDriveDataSaver;
+import net.osmand.plus.cairodrive.CairoDriveFeatures;
 import net.osmand.plus.card.color.palette.solid.data.DefaultColors;
 import net.osmand.plus.charts.GPXDataSetAxisType;
 import net.osmand.plus.charts.GPXDataSetType;
@@ -3421,7 +3422,12 @@ public class OsmandSettings {
 	public final OsmandPreference<Boolean> PT_SAFE_MODE = new BooleanPreference(this, "pt_safe_mode", false).makeProfile();
 	public final OsmandPreference<Boolean> NATIVE_RENDERING_FAILED = new BooleanPreference(this, "native_rendering_failed_init", false).makeGlobal();
 
-	public final CommonPreference<Integer> LOCATION_INTERPOLATION_PERCENT = new IntPreference(this, "location_interpolation_percent", 0).makeProfile().makeShared();
+	// N4. Upstream defaults this to 0, which switches off its OWN position-prediction feature -
+	// RoutingHelperUtils.predictLocations, which walks the marker forward along the route polyline.
+	// With it off, ANIMATE_MY_LOCATION still animates smoothly, but only ever TO the current fix,
+	// so the arrow is permanently about one fix behind reality. See CairoDriveFeatures for why
+	// this, and not the GNSS fix rate, is what N4 actually turned out to be.
+	public final CommonPreference<Integer> LOCATION_INTERPOLATION_PERCENT = new IntPreference(this, "location_interpolation_percent", CairoDriveFeatures.getLocationInterpolationPercent()).makeProfile().makeShared();
 
 	public final CommonPreference<Boolean> USE_OPENGL_RENDER = new BooleanPreference(this, "use_opengl_render",
 			Build.VERSION.SDK_INT >= Build.VERSION_CODES.P).makeGlobal().makeShared().cache();

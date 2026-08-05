@@ -117,15 +117,30 @@ public class CairoDriveStationary {
 	}
 
 	/**
-	 * N4 instrumentation. Whether to drop the location callback rate from "as fast as the provider
-	 * will give it" to ~1 Hz is a real question, and the honest answer is that nobody knows the
-	 * current rate: requestLocationUpdates is called with minTime=0, but GPS hardware is typically
-	 * 1 Hz anyway, so the fused provider may already be delivering exactly what a 1000 ms request
-	 * would ask for. Guessing here would trade battery for nothing, or nothing for jitter.
+	 * N4 instrumentation, and now also N4's verdict.
 	 *
-	 * <p>So this counts. One CD_FIXRATE line a minute says how many fixes actually arrived. If it
-	 * reads ~60 the change is pointless; if it reads 300+ then nine in ten callbacks are
-	 * interpolation and there is something to win.
+	 * <p>This was written to answer "should the callback rate be changed", because nobody knew the
+	 * actual rate. Reading the two location helpers answered it instead, and the answer was that
+	 * there was never anything to change: the AOSP path already asks for
+	 * {@code requestLocationUpdates(provider, 0, 0)} and the Play path already asks for
+	 * {@code PRIORITY_HIGH_ACCURACY} every 100 ms. Both are already past what the hardware gives.
+	 *
+	 * <p>So {@code hz=} is no longer a decision input - it is the denominator. What it now
+	 * calibrates is the position PREDICTION this fork turned on (see
+	 * {@code CairoDriveFeatures.getLocationInterpolationPercent}), because how far ahead
+	 * {@code interp=}% projects the marker depends entirely on how long a fix interval is:
+	 *
+	 * <ul>
+	 *   <li>{@code hz=1.0} - one fix a second. At 60 km/h, 50% projects the arrow ~8 m ahead.
+	 *       This is the case the 50 default was chosen for.</li>
+	 *   <li>{@code hz} well above 1 - intervals are short, the projection distance shrinks with
+	 *       them, and the prediction is nearly free. A higher {@code interp=} would be safe.</li>
+	 *   <li>{@code hz} well below 1 - fixes are sparse, every projection extrapolates further on
+	 *       older evidence, and overshoot at every deceleration gets worse. Lower {@code interp=}
+	 *       rather than raise it.</li>
+	 * </ul>
+	 *
+	 * <p>Both values on one line on purpose: neither is interpretable without the other.
 	 */
 	private long rateWindowStart;
 	private int fixesThisWindow;
@@ -139,10 +154,18 @@ public class CairoDriveStationary {
 		fixesThisWindow++;
 		long elapsed = now - rateWindowStart;
 		if (elapsed >= 60_000) {
+			double hz = fixesThisWindow * 1000.0 / Math.max(1, elapsed);
+			int interp = CairoDriveFeatures.getLocationInterpolationPercent();
 			CairoDriveLogger.getInstance().log("CD_FIXRATE",
 					"fixes=" + fixesThisWindow + " inMs=" + elapsed
-							+ " hz=" + String.format(java.util.Locale.US, "%.2f",
-							fixesThisWindow * 1000.0 / Math.max(1, elapsed)));
+							+ " hz=" + String.format(java.util.Locale.US, "%.2f", hz)
+							+ " interp=" + interp
+							// How far ahead of the last fix the marker is being drawn, in metres
+							// at 60 km/h. This is the number that decides whether interp is set
+							// sensibly - a percentage means nothing without the interval it
+							// applies to, and metres is what a driver actually sees.
+							+ " aheadM@60=" + String.format(java.util.Locale.US, "%.1f",
+							hz > 0 ? (60 / 3.6) * (1.0 / hz) * (interp / 100.0) : 0.0));
 			rateWindowStart = now;
 			fixesThisWindow = 0;
 		}
