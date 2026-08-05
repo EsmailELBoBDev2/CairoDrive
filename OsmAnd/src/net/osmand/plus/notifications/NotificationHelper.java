@@ -183,7 +183,43 @@ public class NotificationHelper {
 		return false;
 	}
 
+	/**
+	 * D7. Coalesces refreshes so a burst cannot become a burst of notification rebuilds.
+	 *
+	 * <p>The original finding claimed the recording path did "2 builds + 2 notify() per recorded
+	 * point". That was checked and does not reproduce in this tree - {@code SavingTrackHelper}
+	 * never calls this, so nothing fires per GPS point. The finding was either about an older
+	 * version or simply wrong, and it was recorded as not-reproducing rather than fixed.
+	 *
+	 * <p>The throttle goes in anyway, because the two things are separable: the CLAIM was
+	 * unverified, but the HAZARD is real and cheap to close. Every notification here rebuilds a
+	 * RemoteViews and crosses into NotificationManagerService, and this method is reachable from
+	 * several event paths whose rates nobody controls. A caller added later that does fire per fix
+	 * would reintroduce the exact problem, silently, on a device already at 46.9 ms per frame.
+	 *
+	 * <p>Deliberately NOT a drop: the last suppressed refresh is remembered and replayed, so a
+	 * state change arriving inside the window still reaches the notification a moment later rather
+	 * than being lost. Dropping would be the wrong trade - a stale "recording" notification is
+	 * worse than a slightly late one.
+	 */
+	private static final long REFRESH_MIN_INTERVAL_MS = 500;
+	private long lastRefreshMs;
+	private boolean refreshPending;
+
 	public void refreshNotifications() {
+		long now = android.os.SystemClock.elapsedRealtime();
+		long since = now - lastRefreshMs;
+		if (since < REFRESH_MIN_INTERVAL_MS) {
+			if (!refreshPending) {
+				refreshPending = true;
+				app.runInUIThread(() -> {
+					refreshPending = false;
+					refreshNotifications();
+				}, REFRESH_MIN_INTERVAL_MS - since);
+			}
+			return;
+		}
+		lastRefreshMs = now;
 		if (!hasAnyTopNotification()) {
 			removeTopNotification();
 		}

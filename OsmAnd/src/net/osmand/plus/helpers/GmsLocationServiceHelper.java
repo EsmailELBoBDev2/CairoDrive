@@ -48,7 +48,27 @@ public class GmsLocationServiceHelper extends LocationServiceHelper {
 		super(app);
 
 		fusedLocationProviderClient = LocationServices.getFusedLocationProviderClient(app);
-		fusedLocationRequest = new LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 100).build();
+		// N4, in its ORIGINAL wording: "raise the GNSS fix rate".
+		//
+		// There was nothing to raise - PRIORITY_HIGH_ACCURACY at a 100 ms interval is already ten
+		// times what the hardware delivers - which is why N4 became position prediction instead.
+		// But two knobs were still left on the table by the bare Builder, and leaving them unset
+		// while claiming "already maximal" was not quite true:
+		//
+		//   setMinUpdateIntervalMillis(0) - without this the minimum defaults to the interval, so
+		//   the fused provider will HOLD a fix that arrives early rather than deliver it. On a
+		//   phone whose GNSS bursts, that is a real fix arriving late for no reason.
+		//
+		//   setWaitForAccurateLocation(false) - stops the first fix being delayed while the
+		//   provider tries to improve it. Matters at the start of a drive, which is exactly when
+		//   the driver is waiting to be told where to go.
+		//
+		// Neither will move the steady-state rate, and neither is a substitute for the prediction.
+		// They close the gap between "we ask for everything" and "we actually ask for everything".
+		fusedLocationRequest = new LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 100)
+				.setMinUpdateIntervalMillis(0)
+				.setWaitForAccurateLocation(false)
+				.build();
 		networkLocationRequest = new LocationRequestCompat.Builder(5000)
 				.setQuality(LocationRequestCompat.QUALITY_HIGH_ACCURACY)
 				.setMinUpdateIntervalMillis(500)

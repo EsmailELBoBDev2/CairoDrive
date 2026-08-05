@@ -167,24 +167,48 @@ public abstract class MapButtonState {
 	}
 
 	@NonNull
+	/**
+	 * P11/8. One allocation per call instead of two.
+	 *
+	 * <p>This built a whole {@code ButtonAppearanceParams} purely to read four fallback values out
+	 * of it and then threw it away, on every visible button on every frame. The fallbacks are read
+	 * directly now, so the only object created is the one actually returned.
+	 *
+	 * <p><b>The remaining allocation cannot be cached, and the reason is worth recording so nobody
+	 * tries.</b> {@code ButtonAppearanceParams} is a Kotlin class of {@code var} fields, and
+	 * {@code QuickActionButtonState.createAppearanceParams} mutates the instance this returns.
+	 * {@code DefaultButtonsAppearanceFragment} also calls this twice specifically to hold a
+	 * current and an original copy to compare - handing both callers the same cached object would
+	 * alias those into one and silently break change detection. The earlier note that this was
+	 * "already bounded by an early return" was the wrong reason for the right conclusion.
+	 */
 	public ButtonAppearanceParams createAppearanceParams(@Nullable Boolean nightMode) {
-		ButtonAppearanceParams defaultParams = createDefaultAppearanceParams(nightMode);
+		MapButtonsHelper buttonsHelper = app.getMapButtonsHelper();
 
 		String iconName = getSavedIconName();
 		if (Algorithms.isEmpty(iconName)) {
-			iconName = defaultParams.getIconName();
+			iconName = getDefaultIconName(nightMode);
 		}
 		int size = sizePref.get();
 		if (size <= 0) {
-			size = defaultParams.getSize();
+			size = buttonsHelper.getDefaultSizePref().get();
+			if (size <= 0) {
+				size = getDefaultSize();
+			}
 		}
 		float opacity = opacityPref.get();
 		if (opacity < 0) {
-			opacity = defaultParams.getOpacity();
+			opacity = buttonsHelper.getDefaultOpacityPref().get();
+			if (opacity < 0) {
+				opacity = getDefaultOpacity();
+			}
 		}
 		int cornerRadius = cornerRadiusPref.get();
 		if (cornerRadius < 0) {
-			cornerRadius = defaultParams.getCornerRadius();
+			cornerRadius = buttonsHelper.getDefaultCornerRadiusPref().get();
+			if (cornerRadius < 0) {
+				cornerRadius = getDefaultCornerRadius();
+			}
 		}
 		return new ButtonAppearanceParams(iconName, size, opacity, cornerRadius);
 	}

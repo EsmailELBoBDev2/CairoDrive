@@ -408,9 +408,35 @@ public abstract class OsmandMapLayer implements MapRendererViewListener {
 		return intersects(boundIntersections, visibleRect, true);
 	}
 
+	/**
+	 * P11/5. Scratch list for {@link #intersects}, one per thread.
+	 *
+	 * <p>{@code QuadTree.queryInBox} calls {@code result.clear()} itself, so reuse needs no
+	 * bookkeeping here. ThreadLocal rather than a static field because this is a static method
+	 * called from the map draw threads and a shared list would be a data race, not an
+	 * optimisation.
+	 */
+	private static final ThreadLocal<List<QuadRect>> INTERSECT_SCRATCH =
+			ThreadLocal.withInitial(ArrayList::new);
+
+	/**
+	 * Label collision test.
+	 *
+	 * <p>This allocated three objects per label - a result list, a defensive copy of the query
+	 * box, and the stored rectangle - and was called once per candidate label. Two of the three
+	 * are gone: the list is a per-thread scratch, and the query box copy was never needed because
+	 * {@code queryInBox} neither retains nor mutates it. The third allocation stays, because that
+	 * one IS put in the tree and handing it the caller's rectangle would alias it.
+	 *
+	 * <p>Worth stating plainly: on this device the whole method is currently dead weight, because
+	 * {@code POIMapLayer:798} returns before the Canvas label branch on the OpenGL path. It is
+	 * fixed anyway - it is live on the legacy renderer, it is free, and "zero on the device I
+	 * happen to have" is a reason to deprioritise something, not a reason to leave a per-label
+	 * allocation in a shared helper.
+	 */
 	public static boolean intersects(@NonNull QuadTree<QuadRect> boundIntersections, @NonNull QuadRect visibleRect, boolean insert) {
-		List<QuadRect> result = new ArrayList<>();
-		boundIntersections.queryInBox(new QuadRect(visibleRect), result);
+		List<QuadRect> result = INTERSECT_SCRATCH.get();
+		boundIntersections.queryInBox(visibleRect, result);
 		for (QuadRect rect : result) {
 			if (QuadRect.intersects(rect, visibleRect)) {
 				return true;

@@ -705,7 +705,47 @@ public class CairoDriveLogger {
 				+ " systemSampleMs=" + SYSTEM_SAMPLE_INTERVAL_MS
 				+ " systemProbeMs=" + SYSTEM_PROBE_INTERVAL_MS
 				+ " coordDecimals=" + COORD_DECIMALS);
+		logLocationPermissions();
 		logSystemSample(true);
+	}
+
+	/**
+	 * F2. Whether the location permissions Android Auto needs are actually granted.
+	 *
+	 * <p>This was written down as "check the permission on the phone" - a thing to go and look at
+	 * by hand. Making it a log line is strictly better: a manual check is a snapshot of whatever
+	 * the phone happened to be that afternoon, and the answer matters on the drive rather than in
+	 * the settings screen.
+	 *
+	 * <p>It matters because of where the symptom lands. Upstream documents a 3-5 second freeze
+	 * when Android Auto starts without location permission, and that freeze surfaces in
+	 * {@code CD_FRAME}'s {@code lock} and {@code post} buckets - the two this project reads as
+	 * "the head unit is not taking frames, nothing app-side can help". A revoked permission would
+	 * therefore look exactly like the one diagnosis that says stop investigating. One line at
+	 * session start rules that out for good.
+	 *
+	 * <p>{@code background=} is separate on purpose: foreground-only is enough to drive with the
+	 * app open, and its absence is not a fault - so it is reported rather than warned about.
+	 */
+	private void logLocationPermissions() {
+		try {
+			boolean fine = androidx.core.content.ContextCompat.checkSelfPermission(app,
+					android.Manifest.permission.ACCESS_FINE_LOCATION)
+					== android.content.pm.PackageManager.PERMISSION_GRANTED;
+			boolean coarse = androidx.core.content.ContextCompat.checkSelfPermission(app,
+					android.Manifest.permission.ACCESS_COARSE_LOCATION)
+					== android.content.pm.PackageManager.PERMISSION_GRANTED;
+			boolean background = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+					|| androidx.core.content.ContextCompat.checkSelfPermission(app,
+					android.Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+					== android.content.pm.PackageManager.PERMISSION_GRANTED;
+			log("SESSION", "locationPermission fine=" + fine + " coarse=" + coarse
+					+ " background=" + background
+					+ (fine ? "" : "  <-- WITHOUT FINE LOCATION ANDROID AUTO FREEZES 3-5s AT START,"
+					+ " AND IT LOOKS LIKE A HEAD-UNIT STALL IN CD_FRAME lock/post"));
+		} catch (Throwable t) {
+			log("SESSION", "locationPermission probe failed", t);
+		}
 	}
 
 	private void installCrashHandler() {

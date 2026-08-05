@@ -423,7 +423,14 @@ def speechLead = speechLeadEnv?.trim() ? speechLeadEnv.trim() : "true"
 def glanceStyleEnv = System.getenv("CAIRODRIVE_GLANCE_STYLE")
 def glanceStyle = glanceStyleEnv?.trim() ? glanceStyleEnv.trim() : "true"
 
-// THE FIVE DEFERRED PLACES FEATURES, all on, at the owner's explicit and repeated instruction.
+// PLACES: Place Details ON, the other four OFF at the owner's instruction - "remember them
+// for later". The code stays; only the defaults change, so re-enabling any one of them is a
+// single environment variable rather than re-implementing it.
+//
+// This lands exactly where CLAUDE.md's one-per-build rule wanted to be anyway: ONE feature
+// live, judged on its own drive. Place Details is the right one to keep - it is the whole
+// reason the pane exists, and it is the only one billed per tap rather than per keystroke or
+// per photo.
 //
 // CLAUDE.md's rule is one per build, each judged on a drive. That rule exists for a concrete
 // reason and it is not billing: these all went in together once before, the app was "buggy as
@@ -451,18 +458,18 @@ def placesDetailsEnv = System.getenv("CAIRODRIVE_PLACES_DETAILS")
 def placesDetails = placesDetailsEnv?.trim() ? placesDetailsEnv.trim() : "true"
 
 def placesPhotosEnv = System.getenv("CAIRODRIVE_PLACES_PHOTOS")
-def placesPhotos = placesPhotosEnv?.trim() ? placesPhotosEnv.trim() : "true"
+def placesPhotos = placesPhotosEnv?.trim() ? placesPhotosEnv.trim() : "false"
 
 def placesReviewsEnv = System.getenv("CAIRODRIVE_PLACES_REVIEWS")
-def placesReviews = placesReviewsEnv?.trim() ? placesReviewsEnv.trim() : "true"
+def placesReviews = placesReviewsEnv?.trim() ? placesReviewsEnv.trim() : "false"
 
 // Watch this one WHILE TYPING, not after. It is the feature that runs per keystroke, and the
 // previous attempt's worst behaviour showed up in the search box rather than on the map.
 def placesAutocompleteEnv = System.getenv("CAIRODRIVE_PLACES_AUTOCOMPLETE")
-def placesAutocomplete = placesAutocompleteEnv?.trim() ? placesAutocompleteEnv.trim() : "true"
+def placesAutocomplete = placesAutocompleteEnv?.trim() ? placesAutocompleteEnv.trim() : "false"
 
 def placesNearbyEnv = System.getenv("CAIRODRIVE_PLACES_NEARBY")
-def placesNearby = placesNearbyEnv?.trim() ? placesNearbyEnv.trim() : "true"
+def placesNearby = placesNearbyEnv?.trim() ? placesNearbyEnv.trim() : "false"
 
 def placeDetailsEnv = System.getenv("CAIRODRIVE_PLACE_DETAILS")
 def placeDetails = placeDetailsEnv?.trim() ? placeDetailsEnv.trim() : "true"

@@ -135,7 +135,17 @@ public class SRTMPlugin extends OsmandPlugin {
 		BUILDINGS_3D_DETAIL_LEVEL = settings.getCustomRenderBooleanProperty("show3DbuildingParts");
 		BUILDINGS_3D_ENABLE_COLORING = settings.getCustomRenderBooleanProperty("useDefaultBuildingColor");
 
-		TERRAIN = registerBooleanPreference("terrain_layer", true).makeProfile();
+		// F1. Off by default in this fork, where upstream defaults it on.
+		//
+		// Terrain is hillshade and contour lines. In Cairo it is close to invisible - the city is
+		// flat - and it is not free: the layer is in every car frame, and enabling it makes the
+		// app open a SQLite tile database and walk a directory at cold start whether or not any
+		// terrain data is installed.
+		//
+		// A per-profile DEFAULT rather than a forced value, so Configure map still turns it on for
+		// anyone who wants it, and anyone who has already set it keeps their choice - a stored
+		// preference is not overwritten by a changed default.
+		TERRAIN = registerBooleanPreference("terrain_layer", false).makeProfile();
 		TerrainMode[] tms = TerrainMode.values(app);
 		TERRAIN_MODE = registerStringPreference("terrain_mode", tms.length == 0 ? "" : tms[0].getKeyName()).makeProfile();
 

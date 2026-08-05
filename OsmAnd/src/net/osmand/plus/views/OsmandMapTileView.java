@@ -2787,8 +2787,28 @@ public class OsmandMapTileView implements IMapDownloaderCallback {
 		} else {
 			frameRate = isUserMapInteractionActive() ? USER_INTERACTION_MAX_FRAME_RATE : ANIMATION_MAX_FRAME_RATE;
 		}
+		// P4. Skip the JNI transition when nothing changed.
+		//
+		// This method is reached from EVERY layer's onPrepareBufferImage, so with ~22 layers it
+		// crossed into native 22 times a frame - roughly 440 times a second - to set the same
+		// integer it had just set. The value only changes on four events: entering or leaving car
+		// view, the battery-saving preference, the start or end of a user gesture, and the
+		// renderer being recreated. Everything else is repetition.
+		//
+		// Guarded on the renderer identity as well as the value, because a recreated renderer
+		// starts at ITS default and would silently keep it if only the int were compared - which
+		// on the car path means the phone's 60/120 stamped over the car cap, the exact failure the
+		// branch above exists to prevent.
+		if (mapRenderer == lastFrameRateRenderer && frameRate == lastAppliedFrameRate) {
+			return;
+		}
+		lastFrameRateRenderer = mapRenderer;
+		lastAppliedFrameRate = frameRate;
 		mapRenderer.setMaximumFrameRate(frameRate);
 	}
+
+	private MapRendererView lastFrameRateRenderer;
+	private int lastAppliedFrameRate = -1;
 
 	public void applyDebugSettings(@NonNull MapRendererView mapRenderer) {
 		OsmandDevelopmentPlugin plugin = PluginsHelper.getPlugin(OsmandDevelopmentPlugin.class);
