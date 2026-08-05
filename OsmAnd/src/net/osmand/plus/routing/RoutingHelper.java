@@ -269,6 +269,9 @@ public class RoutingHelper {
 
 	public synchronized void clearCurrentRoute(LatLon newFinalLocation, List<LatLon> newIntermediatePoints) {
 		app.logRoutingEvent("clearCurrentRoute newFinalLocation " + newFinalLocation + " newIntermediatePoints " + newIntermediatePoints);
+		// Bumps the generation so any fetch still in flight discards its result instead of
+		// resurrecting traffic for a route that no longer exists.
+		GoogleTrafficHelper.reset(app);
 		routeWasFinished = false; // Prevent stale "arrived" state from leaking into the next navigation session
 		route = new RouteCalculationResult("");
 		isDeviatedFromRoute = false;
@@ -595,6 +598,9 @@ public class RoutingHelper {
 			}
 			lastFixedLocation = currentLocation;
 			lastProjection = locationProjection;
+			// Live traffic on the route. Self-gating and self-throttling: with the feature off or
+			// no key compiled in this returns on the first line and costs nothing per fix.
+			GoogleTrafficHelper.onLocationUpdate(this, currentLocation);
 			if (!route.isEmpty()) {
 				lastGoodRouteLocation = currentLocation;
 				// Feed the ETA calibrator the modelled speed the router expects for the segment

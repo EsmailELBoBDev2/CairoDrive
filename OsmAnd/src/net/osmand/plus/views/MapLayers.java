@@ -75,6 +75,7 @@ public class MapLayers {
 	private MapVectorLayer mapVectorLayer;
 	private GPXLayer gpxLayer;
 	private RouteLayer routeLayer;
+	private GoogleTrafficLayer googleTrafficLayer;
 	private PreviewRouteLineLayer previewRouteLineLayer;
 	private POIMapLayer poiMapLayer;
 	private FavouritesLayer mFavouritesLayer;
@@ -141,6 +142,10 @@ public class MapLayers {
 		// route layer, 6-th in the order
 		routeLayer = new RouteLayer(app);
 		mapView.addLayer(routeLayer, 1.0f, -2.0f);
+		// Google congestion spans, painted just above the route line so the colours land ON the
+		// route but stay under the preview line and every marker.
+		googleTrafficLayer = new GoogleTrafficLayer(app);
+		mapView.addLayer(googleTrafficLayer, 1.2f);
 
 		// 1.5 preview route line layer
 		previewRouteLineLayer = new PreviewRouteLineLayer(app);

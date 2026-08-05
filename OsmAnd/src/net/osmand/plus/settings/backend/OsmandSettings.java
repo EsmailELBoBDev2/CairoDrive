@@ -3430,6 +3430,17 @@ public class OsmandSettings {
 	// With it off, ANIMATE_MY_LOCATION still animates smoothly, but only ever TO the current fix,
 	// so the arrow is permanently about one fix behind reality. See CairoDriveFeatures for why
 	// this, and not the GNSS fix rate, is what N4 actually turned out to be.
+	// Live traffic on the active route, from Google's Routes API. OFF by default and gated a
+	// second time on a compiled-in key, so a build without the key makes zero network calls no
+	// matter what this says. See GoogleTrafficHelper.
+	public final OsmandPreference<Boolean> GOOGLE_TRAFFIC_ON_ROUTE = new BooleanPreference(this, "google_traffic_on_route", false).makeGlobal().makeShared().cache();
+	/** UTC day the counters below belong to, as System.currentTimeMillis()/86400000. */
+	public final OsmandPreference<Integer> GOOGLE_TRAFFIC_REQUEST_DAY = new IntPreference(this, "google_traffic_request_day", 0).makeGlobal();
+	/** Enterprise-SKU span polls spent today. Persisted so restarting cannot reset the budget. */
+	public final OsmandPreference<Integer> GOOGLE_TRAFFIC_REQUEST_COUNT = new IntPreference(this, "google_traffic_request_count", 0).makeGlobal();
+	/** Pro-SKU delay polls spent today. */
+	public final OsmandPreference<Integer> GOOGLE_TRAFFIC_DELAY_REQUEST_COUNT = new IntPreference(this, "google_traffic_delay_request_count", 0).makeGlobal();
+
 	public final CommonPreference<Integer> LOCATION_INTERPOLATION_PERCENT = new IntPreference(this, "location_interpolation_percent", CairoDriveFeatures.getLocationInterpolationPercent()).makeProfile().makeShared();
 
 	public final CommonPreference<Boolean> USE_OPENGL_RENDER = new BooleanPreference(this, "use_opengl_render",

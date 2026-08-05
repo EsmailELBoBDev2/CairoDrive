@@ -17,6 +17,8 @@
     <string name="cairodrive_place_closed">مقفول</string>
     <string name="cairodrive_place_call">اتصل</string>
     <string name="cairodrive_place_reviews">التقييمات</string>
+    <string name="cairo_traffic_delay">زحمة: +%1$d دقيقة على طريقك</string>
+    <string name="cairo_google_traffic_on_route">الزحمة المباشرة على الطريق (جوجل)</string>
     <string name="cairodrive_metered_download_message">حجم هذا التحميل %1$s وأنت على اتصال محدود. سيستهلك من باقة الإنترنت.</string>
     <string name="recording_context_menu_show">أظهر</string>
     <string name="av_def_action_picture">التقط صورة</string>

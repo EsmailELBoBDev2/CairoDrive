@@ -29,6 +29,8 @@
 	<string name="cairodrive_place_closed">Closed</string>
 	<string name="cairodrive_place_call">Call</string>
 	<string name="cairodrive_place_reviews">Reviews</string>
+	<string name="cairo_traffic_delay">Traffic: +%1$d min on your route</string>
+	<string name="cairo_google_traffic_on_route">Live traffic on route (Google)</string>
 	<string name="cairodrive_metered_download_message">This download is %1$s and you are on a metered connection. It will use your mobile data allowance.</string>
     <string name="release_5_4">
         • New spatial search — find places and search around a place\n\n

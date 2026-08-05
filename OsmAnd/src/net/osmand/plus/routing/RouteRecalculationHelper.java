@@ -201,6 +201,9 @@ class RouteRecalculationHelper {
 		}
 		app.getWaypointHelper().setNewRoute(res);
 		routingHelper.newRouteCalculated(newRoute, res);
+		// Score the fresh route sooner than the usual 3-minute tick, but with a debounce so the
+		// GPS churn around a reroute cannot fire a billed request per fix.
+		GoogleTrafficHelper.onNewRoute();
 		if (res.initialCalculation) {
 			app.runInUIThread(() -> routingHelper.recalculateRouteDueToSettingsChange(false));
 		}

@@ -1,0 +1,648 @@
+package net.osmand.plus.routing;
+
+import android.content.pm.PackageManager;
+import android.content.pm.Signature;
+import android.content.pm.SigningInfo;
+import android.os.Build;
+import android.os.Process;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+
+import net.osmand.Location;
+import net.osmand.PlatformUtil;
+import net.osmand.data.LatLon;
+import net.osmand.osm.io.NetworkUtils;
+import net.osmand.plus.OsmandApplication;
+import net.osmand.plus.R;
+import net.osmand.plus.Version;
+import net.osmand.plus.settings.backend.ApplicationMode;
+import net.osmand.plus.settings.backend.OsmandSettings;
+import net.osmand.util.Algorithms;
+import net.osmand.util.GeoPolylineParserUtil;
+import net.osmand.util.MapUtils;
+
+import org.apache.commons.logging.Log;
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+/**
+ * Live traffic congestion on the ACTIVE ROUTE, from Google's Routes API.
+ *
+ * <h3>Why this is not a tile layer</h3>
+ *
+ * Every ordinary traffic overlay is raster tiles - request {@code .../{z}/{x}/{y}.png}, draw them.
+ * Google has the best traffic data in Cairo by a distance and will not give you traffic tiles to
+ * put on someone else's basemap. So this stops thinking "map layer" and thinks "the route I am
+ * driving" instead: {@code computeRoutes} will, for a given path, return how long it takes now
+ * versus free-flow, and a list of spans marked SLOW or TRAFFIC_JAM. That is not a tile, but it is
+ * exactly what a driver wants - "this stretch ahead is red, and you are +6 min". OsmAnd still draws
+ * the map; Google only annotates the line already being followed.
+ *
+ * <h3>The billing squeeze, which is most of the design pressure</h3>
+ *
+ * {@code computeRoutes} bills by what the {@code X-Goog-FieldMask} asks for:
+ * <ul>
+ *   <li>congestion spans ({@code TRAFFIC_ON_POLYLINE} + {@code speedReadingIntervals}) bills the
+ *       Enterprise SKU - about 1,000 free calls a month;</li>
+ *   <li>durations only bills the Pro SKU - about 5,000 free a month.</li>
+ * </ul>
+ *
+ * The colours do not need refreshing as often as the delay number does. So: poll every 3 minutes,
+ * grant the expensive SPAN poll at most every OTHER poll (colours refresh ~6 min), and fill the
+ * between-slots with the cheap DELAY poll. Daily caps of {@value #SPANS_DAILY_CAP} and
+ * {@value #DELAY_DAILY_CAP} make a maxed 31-day month arithmetically free:
+ * 32x31 = 992 <= 1000 and 160x31 = 4960 <= 5000. The caps are persisted settings, so killing the
+ * app does not reset the budget.
+ *
+ * <h3>Safety</h3>
+ *
+ * Four independent guarantees stack. Two hard gates (a compiled-in key AND an off-by-default
+ * toggle) mean the common case costs literally nothing. The persisted caps keep both SKUs inside
+ * their free allowance. Every network path swallows its own exceptions and returns, so nothing
+ * here can touch navigation. And {@link #generation} plus the snapshot TTL mean stale or dead data
+ * can never paint.
+ *
+ * <p>The standing caveat is legal rather than technical: showing Google's data over an OSM basemap
+ * is ToS-grey. That is why it ships OFF and is a deliberate private-build opt-in.
+ */
+public class GoogleTrafficHelper {
+
+	private static final Log LOG = PlatformUtil.getLog(GoogleTrafficHelper.class);
+	private static final String TRACE_TAG = "CD_GTRAFFIC";
+
+	private static final String ROUTES_API =
+			"https://routes.googleapis.com/directions/v2:computeRoutes";
+
+	/** Enterprise SKU: asks for the polyline and the congestion intervals. */
+	private static final String FIELD_MASK_SPANS =
+			"routes.duration,routes.staticDuration,routes.polyline.encodedPolyline,"
+					+ "routes.travelAdvisory.speedReadingIntervals";
+	/** Pro SKU: durations only. Must NOT mention the polyline or travelAdvisory. */
+	private static final String FIELD_MASK_DELAY = "routes.duration,routes.staticDuration";
+
+	private static final long CHECK_INTERVAL_MS = 3 * 60 * 1000L;
+	private static final long REROUTE_DEBOUNCE_MS = 60 * 1000L;
+	/** How long spans stay paintable. Public so the layer applies the same rule. */
+	public static final long SNAPSHOT_TTL_MS = 10 * 60 * 1000L;
+	private static final long TOAST_REPEAT_MS = 10 * 60 * 1000L;
+	private static final int TOAST_MIN_DELAY_SEC = 300;
+	/** computeRoutes caps intermediates at 25; 20 leaves headroom. */
+	private static final int MAX_INTERMEDIATES = 20;
+	private static final int MIN_REMAINING_M = 1000;
+	private static final int SPANS_DAILY_CAP = 32;
+	private static final int DELAY_DAILY_CAP = 160;
+
+	private static final int TIER_NONE = 0;
+	private static final int TIER_DELAY = 1;
+	private static final int TIER_SPANS = 2;
+
+	private static final int CONNECT_TIMEOUT_MS = 8000;
+	private static final int READ_TIMEOUT_MS = 12000;
+
+	private GoogleTrafficHelper() {
+	}
+
+	// ------------------------------------------------------------------ model
+
+	/** One SLOW or JAM stretch, as inclusive indices into {@link TrafficSnapshot#points}. */
+	public static class CongestionSpan {
+		public final int start;
+		public final int end;
+		/** true = TRAFFIC_JAM (red), false = SLOW (orange). */
+		public final boolean jam;
+
+		CongestionSpan(int start, int end, boolean jam) {
+			this.start = start;
+			this.end = end;
+			this.jam = jam;
+		}
+	}
+
+	/**
+	 * Immutable, and GEO-ANCHORED rather than index-anchored.
+	 *
+	 * <p>It stores real {@link LatLon}s, not offsets into the current route, so it stays meaningful
+	 * across a reroute until the next poll replaces it. Indices into a route that has since been
+	 * recalculated would paint somewhere arbitrary.
+	 */
+	public static class TrafficSnapshot {
+		public final List<LatLon> points;
+		public final List<CongestionSpan> spans;
+		public final int delaySeconds;
+		public final long timeMs;
+		/**
+		 * When the SPANS were actually fetched, which is not the same as when this snapshot was
+		 * built. A cheap delay poll carries the previous spans forward unchanged, so expiry has to
+		 * run on this and not on {@link #timeMs} - otherwise a delay poll would silently "refresh"
+		 * colours it never re-fetched and stale paint would linger indefinitely.
+		 */
+		public final long spansTimeMs;
+		public final int version;
+
+		TrafficSnapshot(List<LatLon> points, List<CongestionSpan> spans, int delaySeconds,
+		                long timeMs, long spansTimeMs, int version) {
+			this.points = points;
+			this.spans = spans;
+			this.delaySeconds = delaySeconds;
+			this.timeMs = timeMs;
+			this.spansTimeMs = spansTimeMs;
+			this.version = version;
+		}
+	}
+
+	// ------------------------------------------------------------------ state
+	// Touched from the GPS thread, the fetch thread and the draw thread.
+
+	private static volatile TrafficSnapshot snapshot;
+	private static volatile long lastCheck;
+	private static volatile long lastToast;
+	private static volatile boolean inFlight;
+	private static volatile int generation;
+	private static volatile boolean lastPollWasSpans;
+	private static volatile boolean budgetExhaustedLogged;
+	private static int versionCounter;
+	private static volatile String signingCert;
+
+	@Nullable
+	public static TrafficSnapshot getSnapshot() {
+		return snapshot;
+	}
+
+	// ------------------------------------------------------------------ entry point
+
+	/**
+	 * Called on every GPS fix. A gauntlet of cheap bail-outs first, so the common case - feature
+	 * off - costs almost nothing.
+	 */
+	public static void onLocationUpdate(@Nullable RoutingHelper helper, @Nullable Location loc) {
+		if (helper == null || loc == null) {
+			return;
+		}
+		OsmandApplication app = helper.getApplication();
+		if (app == null) {
+			return;
+		}
+		try {
+			OsmandSettings settings = app.getSettings();
+			if (!settings.GOOGLE_TRAFFIC_ON_ROUTE.get() || Algorithms.isEmpty(apiKey(app))) {
+				return;
+			}
+			if (!helper.isFollowingMode() || !settings.isInternetConnectionAvailable()) {
+				return;
+			}
+			ApplicationMode mode = settings.getApplicationMode();
+			if (mode == null || !mode.isDerivedRoutingFrom(ApplicationMode.CAR)) {
+				return;
+			}
+			long now = System.currentTimeMillis();
+			if (inFlight || now - lastCheck < CHECK_INTERVAL_MS) {
+				return;
+			}
+			// Copied on THIS thread: getRouteLocations() is a live sublist view over the route and
+			// mutates as the car moves. Handing the live list to a background thread would let the
+			// geometry change underneath the request.
+			RouteCalculationResult route = helper.getRoute();
+			if (route == null) {
+				return;
+			}
+			List<Location> remaining = new ArrayList<>(route.getRouteLocations());
+			if (remaining.size() < 2) {
+				return;
+			}
+
+			int tier;
+			synchronized (GoogleTrafficHelper.class) {
+				// Re-checked under the lock: two fixes milliseconds apart can both pass the test
+				// above, and each would claim a billed request.
+				if (inFlight || now - lastCheck < CHECK_INTERVAL_MS) {
+					return;
+				}
+				lastCheck = now;
+				tier = claimRequestTier(app);
+				if (tier == TIER_NONE) {
+					return;
+				}
+				inFlight = true;
+			}
+
+			int gen = generation;
+			double lat = loc.getLatitude();
+			double lon = loc.getLongitude();
+			boolean spansPoll = tier == TIER_SPANS;
+			Thread worker = new Thread(() -> {
+				try {
+					Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND);
+					fetchTraffic(app, lat, lon, remaining, gen, spansPoll);
+				} catch (Throwable t) {
+					LOG.info(TRACE_TAG + " fetch failed", t);
+				} finally {
+					// In a finally so a thrown exception can never wedge the feature off forever.
+					inFlight = false;
+				}
+			}, "google-traffic");
+			worker.setPriority(Thread.MIN_PRIORITY);
+			worker.start();
+		} catch (Throwable t) {
+			LOG.info(TRACE_TAG + " onLocationUpdate failed", t);
+			inFlight = false;
+		}
+	}
+
+	/**
+	 * The budget accountant. MUST be called while holding the class lock.
+	 *
+	 * <p>Counters live in settings rather than memory precisely so the budget survives a restart -
+	 * you cannot reset the bill by killing the app.
+	 */
+	private static int claimRequestTier(@NonNull OsmandApplication app) {
+		OsmandSettings settings = app.getSettings();
+		int today = (int) (System.currentTimeMillis() / 86_400_000L);
+		if (settings.GOOGLE_TRAFFIC_REQUEST_DAY.get() != today) {
+			settings.GOOGLE_TRAFFIC_REQUEST_DAY.set(today);
+			settings.GOOGLE_TRAFFIC_REQUEST_COUNT.set(0);
+			settings.GOOGLE_TRAFFIC_DELAY_REQUEST_COUNT.set(0);
+			budgetExhaustedLogged = false;
+		}
+		int spansUsed = settings.GOOGLE_TRAFFIC_REQUEST_COUNT.get();
+		int delayUsed = settings.GOOGLE_TRAFFIC_DELAY_REQUEST_COUNT.get();
+
+		boolean delayPoolGone = delayUsed >= DELAY_DAILY_CAP;
+		// !lastPollWasSpans is the every-other-poll interleave. The "or the cheap pool is gone"
+		// clause means leftover span budget gets spent rather than wasted once delay polls stop.
+		if (spansUsed < SPANS_DAILY_CAP && (!lastPollWasSpans || delayPoolGone)) {
+			settings.GOOGLE_TRAFFIC_REQUEST_COUNT.set(spansUsed + 1);
+			lastPollWasSpans = true;
+			return TIER_SPANS;
+		}
+		if (!delayPoolGone) {
+			settings.GOOGLE_TRAFFIC_DELAY_REQUEST_COUNT.set(delayUsed + 1);
+			lastPollWasSpans = false;
+			return TIER_DELAY;
+		}
+		if (!budgetExhaustedLogged) {
+			budgetExhaustedLogged = true;
+			LOG.info(TRACE_TAG + " daily budget spent (spans=" + spansUsed
+					+ "/" + SPANS_DAILY_CAP + " delay=" + delayUsed + "/" + DELAY_DAILY_CAP
+					+ ") - no further polls until the UTC day rolls");
+		}
+		// lastCheck was already advanced, so this simply retries on the next 3-minute tick.
+		return TIER_NONE;
+	}
+
+	/**
+	 * A freshly recalculated route should be scored soon, but not instantly - the GPS chaos around
+	 * a reroute would otherwise fire a request per fix.
+	 */
+	public static void onNewRoute() {
+		long target = System.currentTimeMillis() - CHECK_INTERVAL_MS + REROUTE_DEBOUNCE_MS;
+		if (lastCheck > target) {
+			lastCheck = target;
+		}
+	}
+
+	/** Navigation stopped. Bumping the generation orphans any fetch still in flight. */
+	public static void reset(@Nullable OsmandApplication app) {
+		synchronized (GoogleTrafficHelper.class) {
+			generation++;
+			snapshot = null;
+			lastPollWasSpans = false;
+		}
+		lastCheck = 0;
+		lastToast = 0;
+		refreshMap(app);
+	}
+
+	// ------------------------------------------------------------------ network
+
+	private static void fetchTraffic(@NonNull OsmandApplication app, double lat, double lon,
+	                                 @NonNull List<Location> remaining, int gen, boolean spansPoll) {
+		String body = buildRequestBody(lat, lon, remaining, spansPoll);
+		if (body == null) {
+			return;
+		}
+		HttpURLConnection connection = null;
+		try {
+			connection = NetworkUtils.getHttpURLConnection(ROUTES_API);
+			connection.setRequestMethod("POST");
+			connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
+			connection.setReadTimeout(READ_TIMEOUT_MS);
+			connection.setDoOutput(true);
+			connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+			connection.setRequestProperty("Accept", "application/json");
+			connection.setRequestProperty("X-Goog-Api-Key", apiKey(app));
+			connection.setRequestProperty("X-Goog-FieldMask",
+					spansPoll ? FIELD_MASK_SPANS : FIELD_MASK_DELAY);
+			connection.setRequestProperty("User-Agent", Version.getFullVersion(app));
+			// An Android-restricted key is normally proven by the Maps SDK. A plain REST call has
+			// to present the same two headers itself or the request is rejected with
+			// API_KEY_ANDROID_APP_BLOCKED however the key is configured.
+			String cert = getSigningCertSha1(app);
+			if (cert != null) {
+				connection.setRequestProperty("X-Android-Package", app.getPackageName());
+				connection.setRequestProperty("X-Android-Cert", cert);
+			}
+			byte[] payload = body.getBytes(StandardCharsets.UTF_8);
+			connection.setFixedLengthStreamingMode(payload.length);
+			try (OutputStream out = connection.getOutputStream()) {
+				out.write(payload);
+			}
+			int code = connection.getResponseCode();
+			if (code != HttpURLConnection.HTTP_OK) {
+				LOG.info(TRACE_TAG + " HTTP " + code + " " + read(connection.getErrorStream()));
+				return;
+			}
+			parseAndStore(app, read(connection.getInputStream()), gen, spansPoll);
+		} catch (Throwable t) {
+			LOG.info(TRACE_TAG + " request failed", t);
+		} finally {
+			if (connection != null) {
+				connection.disconnect();
+			}
+		}
+	}
+
+	/**
+	 * Pins Google to OsmAnd's route.
+	 *
+	 * <p>Sending only origin and destination would make Google compute its OWN preferred route and
+	 * return spans for roads the driver is not on - the colours would paint the wrong streets,
+	 * convincingly. Sampling pass-through waypoints along the real geometry forces it to score this
+	 * path. {@code via: true} means no stop and no leg split.
+	 */
+	@Nullable
+	private static String buildRequestBody(double lat, double lon, @NonNull List<Location> remaining,
+	                                       boolean spansPoll) {
+		try {
+			double total = 0;
+			for (int i = 1; i < remaining.size(); i++) {
+				total += MapUtils.getDistance(
+						remaining.get(i - 1).getLatitude(), remaining.get(i - 1).getLongitude(),
+						remaining.get(i).getLatitude(), remaining.get(i).getLongitude());
+			}
+			// Arrival is imminent; not worth a billed request.
+			if (total < MIN_REMAINING_M) {
+				return null;
+			}
+			Location last = remaining.get(remaining.size() - 1);
+
+			JSONObject root = new JSONObject();
+			root.put("origin", waypoint(lat, lon, false));
+			root.put("destination", waypoint(last.getLatitude(), last.getLongitude(), false));
+
+			int wanted = (int) Math.min(MAX_INTERMEDIATES, total / 1000);
+			if (wanted > 0) {
+				JSONArray intermediates = new JSONArray();
+				double step = total / (wanted + 1);
+				double walked = 0;
+				double nextAt = step;
+				for (int i = 1; i < remaining.size() && intermediates.length() < wanted; i++) {
+					Location a = remaining.get(i - 1);
+					Location b = remaining.get(i);
+					walked += MapUtils.getDistance(a.getLatitude(), a.getLongitude(),
+							b.getLatitude(), b.getLongitude());
+					if (walked >= nextAt) {
+						intermediates.put(waypoint(b.getLatitude(), b.getLongitude(), true));
+						nextAt += step;
+					}
+				}
+				if (intermediates.length() > 0) {
+					root.put("intermediates", intermediates);
+				}
+			}
+			root.put("travelMode", "DRIVE");
+			root.put("routingPreference", "TRAFFIC_AWARE");
+			if (spansPoll) {
+				// These two are exactly what tips the call into the Enterprise SKU. A delay poll
+				// must never include them.
+				root.put("polylineQuality", "HIGH_QUALITY");
+				root.put("extraComputations", new JSONArray().put("TRAFFIC_ON_POLYLINE"));
+			}
+			return root.toString();
+		} catch (Throwable t) {
+			LOG.info(TRACE_TAG + " could not build request", t);
+			return null;
+		}
+	}
+
+	private static JSONObject waypoint(double lat, double lon, boolean via) throws Exception {
+		JSONObject latLng = new JSONObject();
+		latLng.put("latitude", lat);
+		latLng.put("longitude", lon);
+		JSONObject location = new JSONObject();
+		location.put("latLng", latLng);
+		JSONObject waypoint = new JSONObject();
+		waypoint.put("location", location);
+		if (via) {
+			waypoint.put("via", true);
+		}
+		return waypoint;
+	}
+
+	// ------------------------------------------------------------------ parsing
+
+	private static void parseAndStore(@NonNull OsmandApplication app, @NonNull String response,
+	                                  int gen, boolean spansPoll) {
+		try {
+			JSONArray routes = new JSONObject(response).optJSONArray("routes");
+			if (routes == null || routes.length() == 0) {
+				return;
+			}
+			JSONObject route = routes.getJSONObject(0);
+			int duration = seconds(route.optString("duration", null));
+			int staticDuration = seconds(route.optString("staticDuration", null));
+			int delay = Math.max(0, duration - staticDuration);
+
+			List<LatLon> points = Collections.emptyList();
+			List<CongestionSpan> spans = Collections.emptyList();
+			if (spansPoll) {
+				JSONObject polyline = route.optJSONObject("polyline");
+				String encoded = polyline != null ? polyline.optString("encodedPolyline", null) : null;
+				if (!Algorithms.isEmpty(encoded)) {
+					points = GeoPolylineParserUtil.parse(encoded, GeoPolylineParserUtil.PRECISION_5);
+				}
+				if (points == null) {
+					points = Collections.emptyList();
+				}
+				spans = parseSpans(route.optJSONObject("travelAdvisory"), points.size());
+			}
+
+			long now = System.currentTimeMillis();
+			synchronized (GoogleTrafficHelper.class) {
+				// The route this was requested for is gone; storing would resurrect dead traffic.
+				if (gen != generation) {
+					return;
+				}
+				long spansTime = now;
+				if (!spansPoll) {
+					TrafficSnapshot prev = snapshot;
+					if (prev != null && now - prev.spansTimeMs <= SNAPSHOT_TTL_MS) {
+						points = prev.points;
+						spans = prev.spans;
+						spansTime = prev.spansTimeMs;
+					} else {
+						points = Collections.emptyList();
+						spans = Collections.emptyList();
+						spansTime = 0;
+					}
+				}
+				snapshot = new TrafficSnapshot(points, spans, delay, now, spansTime, ++versionCounter);
+			}
+			LOG.info(TRACE_TAG + " Google traffic (" + (spansPoll ? "spans" : "delay")
+					+ " poll): +" + delay + "s delay, " + spans.size() + " congested span(s)");
+
+			if (delay >= TOAST_MIN_DELAY_SEC && now - lastToast > TOAST_REPEAT_MS) {
+				lastToast = now;
+				int minutes = Math.round(delay / 60f);
+				app.runInUIThread(() -> app.showToastMessage(
+						app.getString(R.string.cairo_traffic_delay, minutes)));
+			}
+			refreshMap(app);
+		} catch (Throwable t) {
+			LOG.info(TRACE_TAG + " parse failed", t);
+		}
+	}
+
+	/** Durations arrive as proto strings such as {@code "2112s"}. */
+	private static int seconds(@Nullable String value) {
+		if (Algorithms.isEmpty(value)) {
+			return 0;
+		}
+		String trimmed = value.endsWith("s") ? value.substring(0, value.length() - 1) : value;
+		try {
+			return (int) Math.round(Double.parseDouble(trimmed));
+		} catch (NumberFormatException e) {
+			return 0;
+		}
+	}
+
+	@NonNull
+	private static List<CongestionSpan> parseSpans(@Nullable JSONObject travelAdvisory, int pointCount) {
+		List<CongestionSpan> result = new ArrayList<>();
+		if (travelAdvisory == null || pointCount < 2) {
+			return result;
+		}
+		JSONArray intervals = travelAdvisory.optJSONArray("speedReadingIntervals");
+		if (intervals == null) {
+			return result;
+		}
+		for (int i = 0; i < intervals.length(); i++) {
+			JSONObject interval = intervals.optJSONObject(i);
+			if (interval == null) {
+				continue;
+			}
+			String speed = interval.optString("speed", "");
+			boolean jam = "TRAFFIC_JAM".equals(speed);
+			if (!jam && !"SLOW".equals(speed)) {
+				continue; // NORMAL, or a value this build does not know about
+			}
+			// proto3 omits zero-valued fields, so an absent start index means 0 rather than
+			// "missing" - defaulting it to -1 would silently drop every span that begins at the
+			// route's origin, which is the one the driver is about to enter.
+			int start = Math.max(0, interval.optInt("startPolylinePointIndex", 0));
+			int end = Math.min(pointCount - 1, interval.optInt("endPolylinePointIndex", -1));
+			if (end <= start) {
+				continue;
+			}
+			CongestionSpan previous = result.isEmpty() ? null : result.get(result.size() - 1);
+			if (previous != null && previous.jam == jam && start <= previous.end + 1) {
+				result.set(result.size() - 1,
+						new CongestionSpan(previous.start, Math.max(previous.end, end), jam));
+			} else {
+				result.add(new CongestionSpan(start, end, jam));
+			}
+		}
+		return result;
+	}
+
+	// ------------------------------------------------------------------ plumbing
+
+	@NonNull
+	private static String apiKey(@NonNull OsmandApplication app) {
+		try {
+			return app.getString(R.string.google_routes_api_key);
+		} catch (Throwable t) {
+			return "";
+		}
+	}
+
+	/**
+	 * SHA-1 of this app's own signing certificate, uppercase hex with no separators - the exact
+	 * format the Cloud Console Android restriction compares against. Computed once.
+	 */
+	@Nullable
+	private static String getSigningCertSha1(@NonNull OsmandApplication app) {
+		String cached = signingCert;
+		if (cached != null) {
+			return cached.isEmpty() ? null : cached;
+		}
+		String computed = "";
+		try {
+			PackageManager manager = app.getPackageManager();
+			Signature[] signatures;
+			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+				SigningInfo info = manager.getPackageInfo(app.getPackageName(),
+						PackageManager.GET_SIGNING_CERTIFICATES).signingInfo;
+				signatures = info.hasMultipleSigners()
+						? info.getApkContentsSigners() : info.getSigningCertificateHistory();
+			} else {
+				signatures = manager.getPackageInfo(app.getPackageName(),
+						PackageManager.GET_SIGNATURES).signatures;
+			}
+			if (signatures != null && signatures.length > 0) {
+				byte[] digest = MessageDigest.getInstance("SHA1").digest(signatures[0].toByteArray());
+				StringBuilder hex = new StringBuilder(digest.length * 2);
+				for (byte b : digest) {
+					hex.append(String.format("%02X", b));
+				}
+				computed = hex.toString();
+			}
+		} catch (Throwable t) {
+			LOG.info(TRACE_TAG + " signing certificate unavailable", t);
+		}
+		signingCert = computed;
+		return computed.isEmpty() ? null : computed;
+	}
+
+	private static void refreshMap(@Nullable OsmandApplication app) {
+		if (app == null) {
+			return;
+		}
+		try {
+			app.runInUIThread(() -> {
+				if (app.getOsmandMap() != null) {
+					app.getOsmandMap().refreshMap();
+				}
+			});
+		} catch (Throwable ignored) {
+		}
+	}
+
+	@NonNull
+	private static String read(@Nullable InputStream stream) {
+		if (stream == null) {
+			return "";
+		}
+		try (InputStream in = stream) {
+			ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+			byte[] chunk = new byte[4096];
+			int n;
+			while ((n = in.read(chunk)) > 0) {
+				buffer.write(chunk, 0, n);
+			}
+			return buffer.toString("UTF-8");
+		} catch (Throwable t) {
+			return "";
+		}
+	}
+}
