@@ -135,7 +135,66 @@ def strip(src):
     return "".join(out)
 
 
-def inherited_nested(src, imported, wildcards, own_pkg, pkgs, depth=3):
+def nested_within(src, outer):
+    """Types declared inside `class <outer> { ... }`, found by brace matching.
+
+    A regex over the whole file cannot tell a nested class from a sibling, and the difference is
+    exactly what Java inheritance does and does not give you.
+    """
+    m = re.search(r"\b(?:class|interface|enum|record)\s+" + re.escape(outer) + r"\b[^{]*\{", src)
+    if not m:
+        return set()
+    depth, i, n = 0, m.end() - 1, len(src)
+    while i < n:
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        i += 1
+    body = src[m.end():i]
+    return set(re.findall(r"\b(?:class|interface|enum|record|@interface)\s+(\w+)", body))
+
+
+# The name after `extends` may be QUALIFIED - `extends SearchCoreFactory.SearchBaseAPI`. Capturing
+# only the first segment is not a small inaccuracy: it names the OUTER class, and everything
+# downstream then treats the outer class as the superclass. That is what turned this method into a
+# false negative (see below), so the dotted tail is part of the match.
+EXTENDS_RE = r"\bclass\s+\w+[^{]*?\bextends\s+([A-Z]\w*(?:\s*\.\s*[A-Z]\w*)*)"
+
+
+def resolve_supertype(name, import_map, wildcards, own_pkg, pkgs):
+    """A dotted `extends` name -> (file holding it, simple name of the class extended).
+
+    Two shapes have to land in the same place. `extends SearchCoreFactory.SearchBaseAPI` carries
+    its outer class in the text; `extends SearchBaseAPI` under an
+    `import net.osmand.search.core.SearchCoreFactory.SearchBaseAPI` carries it in the import. Both
+    must resolve to SearchCoreFactory.java with the target `SearchBaseAPI`, not `SearchCoreFactory`.
+    """
+    parts = [p.strip() for p in name.split(".")]
+    head = parts[0]
+    full = import_map.get(head)
+    if full:
+        dotted = ".".join([full] + parts[1:])
+    else:
+        dotted = None
+        for pkg in list(wildcards) + [own_pkg]:
+            if head in pkgs.get(pkg, set()):
+                dotted = ".".join([pkg] + parts)
+                break
+        if dotted is None:
+            return None
+    # Longest prefix that names a FILE. Anything left over is nesting inside it.
+    segs = dotted.split(".")
+    for i in range(len(segs), 0, -1):
+        cand = ".".join(segs[:i])
+        if cand in FILES:
+            return FILES[cand], segs[-1]
+    return None
+
+
+def inherited_nested(src, wildcards, own_pkg, pkgs, depth=3):
     """Nested type names visible through the `extends` chain, walked up to `depth` levels.
 
     Java lets a subclass refer to a superclass's nested type by its simple name, unqualified and
@@ -146,47 +205,46 @@ def inherited_nested(src, imported, wildcards, own_pkg, pkgs, depth=3):
     same way, but interfaces here are overwhelmingly small callback types with nothing nested, and
     each extra edge is more file reading on every checked file for no findings.
     """
+    # Imports keyed by simple name, because a nested type is imported by its FULL path and the
+    # outer class in that path is the only way to find the file it lives in.
+    import_map = {}
+    for im in re.finditer(r"^\s*import\s+(?:static\s+)?([\w.]+)\s*;", src, re.M):
+        path = im.group(1)
+        import_map[path.rsplit(".", 1)[-1]] = path
+
     found = set()
     seen = set()
     # EVERY extends in the file, not just the first. A nested class can extend something whose
     # nested types it then names unqualified - QuickSearchHelper's inner controller extends
     # TopToolbarController and uses its TopToolbarControllerType that way - and looking only at
     # the outermost class missed exactly that, which failed a CI build on a false positive.
-    pending = [m.group(1) for m in
-               re.finditer(r"\bclass\s+\w+[^{]*?\bextends\s+([A-Z]\w*)", src)]
+    pending = [m.group(1) for m in re.finditer(EXTENDS_RE, src)]
     hops = 0
     while pending and hops < depth * 4:
         hops += 1
-        simple = pending.pop(0)
-        if simple in seen:
+        name = pending.pop(0)
+        if name in seen:
             continue
-        seen.add(simple)
-        # Resolve the simple name to a file: an explicit import, the file's own package, or a
-        # wildcard-imported one. Unresolvable means it is outside this tree (a framework class),
-        # and its nested types are not knowable from here - which is fine, they are not the case
-        # this exists for.
-        fqn = None
-        for candidate in imported:
-            if candidate == simple:
-                for pkg, names in pkgs.items():
-                    if simple in names:
-                        fqn = pkg + "." + simple
-                        break
-        if fqn is None:
-            for pkg in list(wildcards) + [own_pkg]:
-                if simple in pkgs.get(pkg, set()):
-                    fqn = pkg + "." + simple
-                    break
-        if fqn is None or fqn not in FILES:
+        seen.add(name)
+        # Unresolvable means it is outside this tree (a framework class), and its nested types are
+        # not knowable from here - which is fine, they are not the case this exists for.
+        target = resolve_supertype(name, import_map, wildcards, own_pkg, pkgs)
+        if not target:
             continue
+        path, simple = target
         try:
-            parent = strip(open(FILES[fqn], encoding="utf-8").read())
+            parent = strip(open(path, encoding="utf-8").read())
         except OSError:
             continue
-        found |= set(re.findall(r"\b(?:class|interface|enum|record|@interface)\s+(\w+)", parent))
+        # ONLY the types nested inside the class actually extended - not every type in that FILE.
+        # Harvesting the whole file made a SIBLING of the superclass look importable:
+        # QuickSearchHelper extends SearchCoreFactory.SearchAmenityByTypeAPI, and this admitted its
+        # sibling SearchAmenityTypesAPI, which Java does not inherit. The result was a false
+        # NEGATIVE that let a real "cannot find symbol" reach CI - worse than the false positive
+        # this method was widened to remove.
+        found |= nested_within(parent, simple)
         # Keep climbing: the nested type may be declared further up the chain.
-        pending += [m.group(1) for m in
-                    re.finditer(r"\bclass\s+\w+[^{]*?\bextends\s+([A-Z]\w*)", parent)]
+        pending += [m.group(1) for m in re.finditer(EXTENDS_RE, parent)]
     return found
 
 
@@ -229,7 +287,7 @@ def check(path, pkgs):
     # NetworkListener` with no import and no qualifier, which is real Java and looked like an
     # unresolved name here. That matters more since these findings gate CI: a false positive that
     # fails a build is not noise, it is a broken gate.
-    available |= inherited_nested(src, imported, wildcards, own_pkg, pkgs)
+    available |= inherited_nested(src, wildcards, own_pkg, pkgs)
 
     # Type positions: `Foo bar =`, `new Foo(`, `Foo.class`, `extends Foo`, `implements Foo`,
     # `catch (Foo`, `instanceof Foo`, `(Foo)` casts, `<Foo>`.
