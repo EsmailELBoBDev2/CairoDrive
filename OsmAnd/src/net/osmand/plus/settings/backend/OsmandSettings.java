@@ -1781,6 +1781,17 @@ public class OsmandSettings {
 	public final OsmandPreference<Boolean> SPEAK_GPS_SIGNAL_STATUS = new BooleanPreference(this, "speak_gps_signal_status", true).makeProfile().cache();
 	public final OsmandPreference<Boolean> SPEAK_ROUTE_DEVIATION = new BooleanPreference(this, "speak_route_deviation", true).makeProfile().cache();
 
+	// Persisted free-tier budget for the Google traffic poller: UTC day index plus one counter per
+	// billing tier (spans = Enterprise SKU, delay = Pro SKU). Global on purpose - a profile-scoped
+	// counter would hand out a fresh daily budget on every profile switch, which is exactly how the
+	// $0 guarantee is lost. Day index 0 is 1970, so the first roll always fires; the roll is
+	// forward-only, so a device clock moved backwards cannot refill the budget. The counters are
+	// claimed BEFORE the request goes out and are never refunded on failure - that ordering is what
+	// makes the cap bind, so do not move an increment behind a successful response.
+	public final CommonPreference<Integer> GOOGLE_TRAFFIC_REQUEST_DAY = new IntPreference(this, "google_traffic_request_day", 0).makeGlobal().cache();
+	public final CommonPreference<Integer> GOOGLE_TRAFFIC_REQUEST_COUNT = new IntPreference(this, "google_traffic_request_count", 0).makeGlobal().cache();
+	public final CommonPreference<Integer> GOOGLE_TRAFFIC_DELAY_REQUEST_COUNT = new IntPreference(this, "google_traffic_delay_request_count", 0).makeGlobal().cache();
+
 	public final OsmandPreference<Boolean> SPEED_CAMERAS_UNINSTALLED = new BooleanPreference(this, "speed_cameras_uninstalled", false).makeGlobal().makeShared();
 	public final OsmandPreference<Boolean> SPEED_CAMERAS_ALERT_SHOWED = new BooleanPreference(this, "speed_cameras_alert_showed", false).makeGlobal().makeShared();
 
@@ -2091,6 +2102,35 @@ public class OsmandSettings {
 			new EnumStringPreference<>(this, "layer_transparency_seekbar_mode", LayerTransparencySeekbarMode.UNDEFINED, LayerTransparencySeekbarMode.values());
 
 	public final CommonPreference<String> MAP_OVERLAY_PREVIOUS = new StringPreference(this, "map_overlay_previous", null).makeGlobal().cache();
+
+	// Live traffic on the navigated route (Google Routes API). ON for the CAR profile, OFF for
+	// every other one (owner decision: congestion on the route is the point of a driving app, but
+	// a walking profile must not spend the day's request budget). Requests are hard-capped at the
+	// free tier - 32 Enterprise + 160 Pro per day, each claimed BEFORE the request leaves and
+	// never refunded - so ON cannot become a bill. Two costs, stated plainly because they are why
+	// this was opt-in upstream of here: position is disclosed to Google whenever the map is open,
+	// and the poller runs while navigating. Switching it off in Configure map returns the feature
+	// to zero network - the same flag gates the free-drive poller.
+	public final CommonPreference<Boolean> GOOGLE_TRAFFIC_ON_ROUTE = new BooleanPreference(this, "google_traffic_on_route", false).makeProfile().cache();
+
+	{
+		GOOGLE_TRAFFIC_ON_ROUTE.setModeDefaultValue(ApplicationMode.CAR, true);
+	}
+
+	// Live road closures (TomTom/HERE) held as impassable roads: ON for CAR, OFF for every other
+	// profile. A closed road is the one piece of live data that changes the ROUTE rather than just
+	// colouring it, which is why it earns its cost in a driving app - and only there.
+	//
+	// It stays a UI toggle rather than being implied by the presence of a provider key, because
+	// resolving one refresh issues up to 45 road-segment lookups on CurrentPositionHelper's single
+	// shared executor - the same one the location arrow snaps with. That is the heavier of the two
+	// pollers and the one to switch off first if the arrow ever stutters; switching it off also
+	// releases any roads currently held impassable, so the router is clean immediately.
+	public final CommonPreference<Boolean> LIVE_ROAD_CLOSURES = new BooleanPreference(this, "live_road_closures", false).makeProfile().cache();
+
+	{
+		LIVE_ROAD_CLOSURES.setModeDefaultValue(ApplicationMode.CAR, true);
+	}
 
 	public final CommonPreference<String> MAP_UNDERLAY_PREVIOUS = new StringPreference(this, "map_underlay_previous", null).makeGlobal().cache();
 

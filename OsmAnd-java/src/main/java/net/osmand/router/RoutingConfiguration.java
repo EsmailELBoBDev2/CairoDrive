@@ -147,7 +147,11 @@ public class RoutingConfiguration {
 		private String defaultRouter = "";
 		private Map<String, GeneralRouter> routers = new LinkedHashMap<>();
 		private Map<String, String> attributes = new LinkedHashMap<>();
-		private Set<Long> impassableRoadLocations = new HashSet<>();
+		// Copy-on-write: build() snapshots this set while road closures (background poller) and the
+		// traffic detour add/remove ids on it. A plain HashSet made build() a ConcurrentModification
+		// away from a routing failure with no explanation; a lock instead would have parked every
+		// recalculation behind a multi-second detour computation. All readers are contains()-only.
+		private volatile Set<Long> impassableRoadLocations = new HashSet<>();
 		private QuadTree<Node> directionPointsBuilder;
 
 		public Builder() {
@@ -269,15 +273,17 @@ public class RoutingConfiguration {
 		}
 		
 		public void clearImpassableRoadLocations() {
-			impassableRoadLocations.clear();
+			impassableRoadLocations = new HashSet<>();
 		}
-		
+
 		public Set<Long> getImpassableRoadLocations() {
 			return impassableRoadLocations;
 		}
-		
+
 		public Builder addImpassableRoad(long routeId) {
-			impassableRoadLocations.add(routeId);
+			Set<Long> updated = new HashSet<>(impassableRoadLocations);
+			updated.add(routeId);
+			impassableRoadLocations = updated;
 			return this;
 		}
 
@@ -318,7 +324,9 @@ public class RoutingConfiguration {
 		}
 
 		public void removeImpassableRoad(long routeId) {
-			impassableRoadLocations.remove(routeId);
+			Set<Long> updated = new HashSet<>(impassableRoadLocations);
+			updated.remove(routeId);
+			impassableRoadLocations = updated;
 		}
 	}
 

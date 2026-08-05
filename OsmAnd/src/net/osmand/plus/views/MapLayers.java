@@ -148,6 +148,11 @@ public class MapLayers {
 		googleTrafficLayer = new GoogleTrafficLayer(app);
 		mapView.addLayer(googleTrafficLayer, 1.2f);
 
+		// 1.2 google live-traffic congestion spans - directly above the route line they colour,
+		// below the preview line and everything drawn on top of the map
+		googleTrafficLayer = new GoogleTrafficLayer(app);
+		mapView.addLayer(googleTrafficLayer, 1.2f);
+
 		// 1.5 preview route line layer
 		previewRouteLineLayer = new PreviewRouteLineLayer(app);
 		mapView.addLayer(previewRouteLineLayer, 1.5f);
@@ -616,6 +621,10 @@ public class MapLayers {
 
 	public RouteLayer getRouteLayer() {
 		return routeLayer;
+	}
+
+	public GoogleTrafficLayer getGoogleTrafficLayer() {
+		return googleTrafficLayer;
 	}
 
 	public PreviewRouteLineLayer getPreviewRouteLineLayer() {

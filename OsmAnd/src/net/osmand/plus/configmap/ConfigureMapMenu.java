@@ -46,6 +46,7 @@ import net.osmand.plus.configmap.routes.MapRoutesFragment;
 import net.osmand.plus.dashboard.DashboardType;
 import net.osmand.plus.dialogs.DetailsBottomSheet;
 import net.osmand.plus.dialogs.SelectMapStyleBottomSheetDialogFragment;
+import net.osmand.plus.helpers.CairoDriveLog;
 import net.osmand.plus.plugins.PluginsHelper;
 import net.osmand.plus.poi.PoiFiltersHelper;
 import net.osmand.plus.resources.ResourceManager;
@@ -259,6 +260,57 @@ public class ConfigureMapMenu {
 				.setIcon(R.drawable.ic_action_flag)
 				.setItemDeleteAction(settings.SHOW_MAP_MARKERS)
 				.setListener(listener));
+
+		// Google Routes live traffic on the navigated route - deliberate opt-in (billed + ToS-gray),
+		// so it is off by default and the toggle only appears when the build carries a key. Without
+		// this item the preference is unreachable and the whole live-traffic stack stays inert.
+		if (!Algorithms.isEmpty(app.getString(R.string.google_routes_api_key))) {
+			selected = settings.GOOGLE_TRAFFIC_ON_ROUTE.get();
+			adapter.addItem(new ContextMenuItem("map.layers.google_traffic")
+					.setTitleId(R.string.cairo_google_traffic, activity)
+					// Honest disclosure: opted-in position data goes to Google while the map is open.
+					.setDescription(activity.getString(R.string.cairo_google_traffic_desc))
+					.setSelected(selected)
+					.setColor(app, selected ? R.color.osmand_orange : INVALID_ID)
+					.setIcon(R.drawable.ic_action_gdirections_dark)
+					.setItemDeleteAction(settings.GOOGLE_TRAFFIC_ON_ROUTE)
+					.setListener((uiAdapter, view, item, isChecked) -> {
+						boolean enabled = !settings.GOOGLE_TRAFFIC_ON_ROUTE.get();
+						settings.GOOGLE_TRAFFIC_ON_ROUTE.set(enabled);
+						CairoDriveLog.log("SETTING",
+								"Google traffic toggled " + (enabled ? "ON" : "OFF") + " by user");
+						item.setSelected(enabled);
+						item.setColor(app, enabled ? R.color.osmand_orange : INVALID_ID);
+						uiAdapter.onDataSetChanged();
+						activity.refreshMap();
+						return false;
+					}));
+		}
+
+		// Live road closures held as impassable roads. Same opt-in reasoning; either provider key
+		// alone is enough, since ClosureSyncHelper queries whichever ones the build carries.
+		if (!Algorithms.isEmpty(app.getString(R.string.tomtom_routing_api_key))
+				|| !Algorithms.isEmpty(app.getString(R.string.here_api_key))) {
+			selected = settings.LIVE_ROAD_CLOSURES.get();
+			adapter.addItem(new ContextMenuItem("map.layers.live_closures")
+					.setTitleId(R.string.cairo_live_closures, activity)
+					.setDescription(activity.getString(R.string.cairo_live_closures_desc))
+					.setSelected(selected)
+					.setColor(app, selected ? R.color.osmand_orange : INVALID_ID)
+					.setIcon(R.drawable.ic_action_road_works_dark)
+					.setItemDeleteAction(settings.LIVE_ROAD_CLOSURES)
+					.setListener((uiAdapter, view, item, isChecked) -> {
+						boolean enabled = !settings.LIVE_ROAD_CLOSURES.get();
+						settings.LIVE_ROAD_CLOSURES.set(enabled);
+						CairoDriveLog.log("SETTING",
+								"Live closures toggled " + (enabled ? "ON" : "OFF") + " by user");
+						item.setSelected(enabled);
+						item.setColor(app, enabled ? R.color.osmand_orange : INVALID_ID);
+						uiAdapter.onDataSetChanged();
+						activity.refreshMap();
+						return false;
+					}));
+		}
 
 		String mapSourceTitle = settings.getSelectedMapSourceTitle();
 		adapter.addItem(new ContextMenuItem(MAP_SOURCE_ID)
