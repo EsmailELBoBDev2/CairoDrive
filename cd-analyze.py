@@ -36,7 +36,7 @@ def read(paths):
         try:
             with open(p, encoding="utf-8", errors="replace") as fh:
                 for line in fh:
-                    m = re.search(r"(SESSION|CD_[A-Z_]+)\s+(.*)", line.rstrip("\n"))
+                    m = re.search(r"(SESSION|CD_[A-Z_]+):?\s+(.*)", line.rstrip("\n"))
                     if m:
                         rows[m.group(1)].append(m.group(2))
         except OSError as exc:

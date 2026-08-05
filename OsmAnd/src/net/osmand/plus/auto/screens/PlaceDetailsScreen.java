@@ -30,6 +30,7 @@ import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.auto.TripUtils;
 import net.osmand.plus.cairodrive.CairoDriveLogger;
+import net.osmand.plus.cairodrive.providers.BestTimeProvider;
 import net.osmand.plus.search.listitems.QuickSearchListItem;
 import net.osmand.plus.utils.OsmAndFormatter;
 import net.osmand.search.core.ObjectType;

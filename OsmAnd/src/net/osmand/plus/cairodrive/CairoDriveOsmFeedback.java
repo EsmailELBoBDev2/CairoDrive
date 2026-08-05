@@ -201,7 +201,14 @@ public final class CairoDriveOsmFeedback {
 			Object warning = result.getClass().getField("warning").get(result);
 			return warning != null;
 		} catch (Throwable t) {
-			return false;
+			// TRUE, not false. The javadoc above promised "candidates are kept and retried, which
+			// is the harmless direction" and the code did the opposite: false here makes
+			// `ok = result != null && !hasWarning(result)` true, so an unreadable result counted
+			// as an accepted upload and the candidate was DELETED. An upstream rename of
+			// OsmBugResult.warning would have silently discarded the entire queue while reporting
+			// success. Treating an unreadable answer as a failure keeps the observation.
+			LOG.error("OsmBugResult.warning unreadable - treating upload as failed", t);
+			return true;
 		}
 	}
 

@@ -160,7 +160,7 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	 */
 	private static final long INCIDENT_INTERVAL_MS = 150 * 1000L;
 	/** 5 minutes, and each tick costs {@value #FLOW_SAMPLE_POINTS} requests. See the class note. */
-	private static final long FLOW_INTERVAL_MS = 5 * 60 * 1000L;
+	private static final long FLOW_INTERVAL_MS = 3 * 60 * 1000L;
 
 	/**
 	 * A recalculated route should be scored soon but not instantly. Without this the GPS churn
@@ -201,7 +201,7 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	 * 300 flow POINTS a day, not polls: 50 sweeps of {@value #FLOW_SAMPLE_POINTS}, so a little over
 	 * four hours of driving. Counted in points because points are what the vendor bills.
 	 */
-	private static final int FLOW_DAILY_CAP = 300;
+	private static final int FLOW_DAILY_CAP = 500;
 
 	private static final int CONNECT_TIMEOUT_MS = 8000;
 	private static final int READ_TIMEOUT_MS = 12000;

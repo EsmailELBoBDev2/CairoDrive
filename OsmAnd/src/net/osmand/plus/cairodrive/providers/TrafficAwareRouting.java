@@ -185,16 +185,36 @@ public final class TrafficAwareRouting {
 	private static final int MIN_FLOW_SAMPLES = 2;
 
 	/**
-	 * Speed ratios Google's two congestion grades correspond to.
+	 * Speed ratios Google's two congestion grades correspond to, as a fraction of free flow.
 	 *
-	 * <p>The Routes API returns a BAND - {@code TRAFFIC_JAM} or {@code SLOW} - not a speed, so a
-	 * number has to be assigned to use it as flow. These are deliberately conservative: a stretch
-	 * called SLOW is treated as still moving at two thirds, not crawling, because over-stating a
-	 * delay pushes the ETA out and makes the driver distrust it. Under-stating it costs nothing
-	 * they will notice.
+	 * <h3>Google publishes no numbers, so these are transplanted</h3>
+	 *
+	 * The Routes API returns a BAND - {@code TRAFFIC_JAM} or {@code SLOW} - and its documentation
+	 * defines them only qualitatively ("Slowdown detected, medium amount of traffic"). There is a
+	 * Google Maps community thread asking for the thresholds with no official answer. So these come
+	 * from three banding schemes that DO define their bands numerically, and which agree with each
+	 * other closely:
+	 *
+	 * <pre>
+	 *              jam band          slow band
+	 *   DATEX II   &lt;10% / 10-25%      25-75%
+	 *   INRIX      0-31% (black)     32-62% (red)
+	 *   HCM LOS    F: &lt;=30%          D-E: 30-50%
+	 * </pre>
+	 *
+	 * <p>The jam ceiling lands at 25% / 31% / 30% independently, which is the strongest agreement
+	 * in the set.
+	 *
+	 * <h3>Why the first values were wrong in a specific way</h3>
+	 *
+	 * They were 0.25 and 0.65 - and both are BAND EDGES, not band centres. 0.25 is the top of
+	 * DATEX II's queuing band and 0.65 is INRIX's congestion ONSET threshold, the point at which
+	 * a road is first called congested at all. Using an edge as the representative value
+	 * systematically under-states both bands: every jam was treated as the mildest jam that still
+	 * counts as one. The centres are ~0.20 and ~0.50.
 	 */
-	private static final double JAM_SPEED_RATIO = 0.25;
-	private static final double SLOW_SPEED_RATIO = 0.65;
+	private static final double JAM_SPEED_RATIO = 0.20;
+	private static final double SLOW_SPEED_RATIO = 0.50;
 
 	/**
 	 * How much more Google's route-measured stretch counts than TomTom's area-sampled one.
@@ -757,7 +777,7 @@ public final class TrafficAwareRouting {
 	 * <p>Four gates, on top of the ahead/on-route/not-current tests the closures already pass:
 	 * <ul>
 	 *   <li><b>Severity</b> - {@code TRAFFIC_JAM} only. SLOW is what the ETA stretch is for.</li>
-	 *   <li><b>Length</b> - a jam shorter than {@link #MIN_JAM_POINTS} polyline points is a queue
+	 *   <li><b>Length</b> - a jam shorter than {@link #MIN_JAM_METRES} is a queue
 	 *       at a light, and rerouting round a traffic light is worse than waiting at it.</li>
 	 *   <li><b>Persistence</b> - the same road has to be reported jammed in
 	 *       {@link #JAM_CONFIRMATIONS} consecutive snapshots. One poll is noise; a jam that is
@@ -779,11 +799,24 @@ public final class TrafficAwareRouting {
 
 		if (snapshot != null && snapshot.version != lastJamVersion) {
 			lastJamVersion = snapshot.version;
+			// Cumulative distance along the polyline, so span length is measured in METRES. A point
+			// count is not a length: Google's vertices are road SHAPE points, dense through bends
+			// and sparse on a straight, so the same jam spans a dozen points on a back street and
+			// three on the Ring Road.
+			List<LatLon> pts = snapshot.points;
+			double[] cum = new double[pts.size()];
+			for (int i = 1; i < pts.size(); i++) {
+				cum[i] = cum[i - 1] + MapUtils.getDistance(pts.get(i - 1), pts.get(i));
+			}
+			int shortSpan = 0;
 			for (GoogleTrafficHelper.CongestionSpan span : snapshot.spans) {
 				if (span == null || !span.jam) {
 					continue;
 				}
-				if (span.end - span.start < MIN_JAM_POINTS) {
+				int lo = Math.max(0, Math.min(span.start, cum.length - 1));
+				int hi = Math.max(0, Math.min(span.end, cum.length - 1));
+				if (cum[hi] - cum[lo] < MIN_JAM_METRES) {
+					shortSpan++;
 					continue;
 				}
 				// Anchor on the MIDDLE of the span. Its start is where the queue currently ends,
@@ -815,10 +848,14 @@ public final class TrafficAwareRouting {
 			for (Long id : seenThisPoll) {
 				Integer seen = jamSeen.get(id);
 				jamSeen.put(id, seen == null ? 1 : seen + 1);
+				if (!jamFirstSeen.containsKey(id)) {
+					jamFirstSeen.put(id, now);
+				}
 			}
 			// A road that has dropped out of the data loses its progress towards confirmation, but
 			// NOT its hold if it already earned one - see jamHeldUntil below.
 			jamSeen.keySet().retainAll(seenThisPoll);
+			jamFirstSeen.keySet().retainAll(seenThisPoll);
 
 			// One line per SNAPSHOT, which is the cadence the decision actually changes on - not
 			// per fix, which would be ~1/s of near-identical lines. This is the line that answers
@@ -836,6 +873,9 @@ public final class TrafficAwareRouting {
 				CairoDriveLogger.getInstance().log(TRACE_TAG, "jams"
 						+ " ver=" + snapshot.version
 						+ " spans=" + snapshot.spans.size()
+						+ " shortSpanM=" + shortSpan
+						+ " minJamM=" + (int) MIN_JAM_METRES
+						+ " minEvidenceS=" + (JAM_MIN_EVIDENCE_MS / 1000)
 						+ " candidates=" + seenThisPoll.size()
 						+ " needConfirm=" + JAM_CONFIRMATIONS
 						+ " seen=[" + counts + "]"
@@ -845,7 +885,13 @@ public final class TrafficAwareRouting {
 		}
 
 		for (Map.Entry<Long, Integer> entry : jamSeen.entrySet()) {
-			if (entry.getValue() >= JAM_CONFIRMATIONS) {
+			Long firstSeen = jamFirstSeen.get(entry.getKey());
+			boolean longEnough = firstSeen != null && now - firstSeen >= JAM_MIN_EVIDENCE_MS;
+			// BOTH tests, and the slower one governs. A count alone only means "persisted" if the
+			// poll interval is fixed, and it is not - the spans tier is granted every other check
+			// and skipped entirely once the daily cap is spent, so two snapshots can be six
+			// minutes apart or a whole day.
+			if (entry.getValue() >= JAM_CONFIRMATIONS && longEnough) {
 				jamHeldUntil.put(entry.getKey(), now + JAM_HOLD_MS);
 			}
 		}
@@ -862,22 +908,59 @@ public final class TrafficAwareRouting {
 		}
 	}
 
-	/** A jam shorter than this is a queue at a light, not a road worth going around. */
-	private static final int MIN_JAM_POINTS = 4;
-	/** Consecutive SNAPSHOTS, not fixes - see the counting note in {@link #addGoogleJams}. */
+	/**
+	 * A jam shorter than this is a queue at a light, not a road worth going around. METRES.
+	 *
+	 * <h3>Why this stopped being a point count</h3>
+	 *
+	 * It was "4 polyline points", and that is not a length. Google's polyline vertices are road
+	 * SHAPE points, so their spacing is driven by curvature: a few metres through a bend, over a
+	 * hundred on a straight. The identical physical jam therefore spans a dozen points on a
+	 * winding back street and three on the Ring Road - and Google's own documented example shows a
+	 * 3-point SLOW interval, which under a point rule is indistinguishable from noise however long
+	 * it actually is. The threshold is now summed haversine metres, which deletes the dependency
+	 * rather than trying to calibrate it.
+	 *
+	 * <h3>Where 200 m comes from</h3>
+	 *
+	 * Queue storage is ~7 m per vehicle; an urban cycle of 60-90 s at ~2.4 s saturation headway
+	 * discharges ~14 vehicles, giving a ~100 m back-of-queue, and turn-lane design applies 1.5-2x
+	 * for the 95th percentile - so 150-200 m. Cross-check: a dense urban block is 150-250 m, so
+	 * past 200 m the jam spans intersections and is no longer one signal's queue.
+	 */
+	private static final double MIN_JAM_METRES = 200;
+
+	/**
+	 * Consecutive SNAPSHOTS a jam must appear in, AND the wall-clock evidence window below.
+	 *
+	 * <p>A count alone is the wrong invariant: what matters is how long the jam has persisted, and
+	 * a count only means that if the poll interval is fixed. Incident-detection practice puts the
+	 * persistence test at roughly 90-120 s of continuous evidence - the published guidance is
+	 * specifically to raise it from 2 periods to 3 to cut false alarms - so both tests apply and
+	 * the slower one governs.
+	 */
 	private static final int JAM_CONFIRMATIONS = 2;
+	private static final long JAM_MIN_EVIDENCE_MS = 120 * 1000L;
 	/**
 	 * How long an avoided jam stays avoided after it leaves the data.
 	 *
-	 * <p>The anti-oscillation gate. Five minutes is longer than a reroute takes to commit and
-	 * shorter than a jam typically lasts, so the car cannot be offered the road back at the same
-	 * junction it just left.
+	 * <p>The anti-oscillation gate, and it has to outlast the DATA cadence as well as the jam.
+	 * Google's traffic layer refreshes on the order of 5-10 minutes in a major city, so a 5-minute
+	 * hold was about one refresh cycle - short enough to expire before the next snapshot could
+	 * re-confirm the jam, which is exactly the flap it exists to prevent. Ten minutes covers a
+	 * refresh with margin and sits under the ~12-15 minute median urban jam duration, so it does
+	 * not keep avoiding a road long after it has cleared.
+	 *
+	 * <p>This is the least well-evidenced constant in the class: the jam-duration figure could not
+	 * be traced to a paper anyone here has read. CD_TRAFFIC_ROUTE logs holdMs so a drive can
+	 * settle it.
 	 */
-	private static final long JAM_HOLD_MS = 5 * 60 * 1000L;
+	private static final long JAM_HOLD_MS = 10 * 60 * 1000L;
 
 	/** Main/routing-thread only, like the rest of the reconciler. */
 	private static final Map<Long, Integer> jamSeen = new LinkedHashMap<>();
 	private static final Map<Long, Long> jamHeldUntil = new LinkedHashMap<>();
+	private static final Map<Long, Long> jamFirstSeen = new LinkedHashMap<>();
 	private static int lastJamVersion = -1;
 
 	/**
