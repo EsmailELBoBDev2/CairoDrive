@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""Check the BudgetPacer ladders and the staleness windows that depend on them.
+
+Run with no arguments; it reads the tree.
+
+WHY THIS EXISTS
+---------------
+The pacing ladders and the TTLs that consume them live in four different files,
+and in one afternoon the same defect appeared three separate times:
+
+  * Google spans paced down to a 65-minute poll against a fixed 10-minute paint
+    TTL, so the overlay was hidden for 85% of a long drive;
+  * TomTom incidents paced to 26 minutes against a 4-minute window;
+  * TomTom flow paced to 10 minutes against a 4-minute window.
+
+In every case the budget was being spent exactly as designed and the user saw
+nothing, because the data expired before the poll that would have replaced it.
+Nothing in a compile or a unit test catches that - the two numbers are correct
+in isolation and only wrong in relation to each other.
+
+So the invariant is: FOR EVERY STREAM, THE STALENESS WINDOW MUST BE AT LEAST AS
+LONG AS THE SLOWEST POLL THE LADDER CAN EVER ISSUE. Plus the ladder properties
+themselves - budget fully spent, 24-hour coverage, monotone degradation, and a
+last rung that really is the floor.
+"""
+import re
+import sys
+import os
+
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+SRC = os.path.join(ROOT, "OsmAnd", "src", "net", "osmand", "plus")
+
+TOMTOM = os.path.join(SRC, "cairodrive", "providers", "TomTomTrafficProvider.java")
+GOOGLE = os.path.join(SRC, "routing", "GoogleTrafficHelper.java")
+PROVIDERS = os.path.join(SRC, "cairodrive", "providers", "CairoDriveProviders.java")
+
+# stream, ladder file, ladder name, cap name, ttl file, ttl const, ttl scales with cadence
+STREAMS = [
+    ("TomTom flow", TOMTOM, "FLOW_LADDER", "FLOW_DAILY_CAP",
+     PROVIDERS, "FLOW_TTL_MS", True),
+    ("TomTom incidents", TOMTOM, "INCIDENT_LADDER", "INCIDENT_DAILY_CAP",
+     PROVIDERS, "INCIDENTS_TTL_MS", True),
+    ("Google spans", GOOGLE, "SPANS_LADDER", "SPANS_DAILY_CAP",
+     GOOGLE, "SNAPSHOT_TTL_MS", True),
+    ("Google delay", GOOGLE, "DELAY_LADDER", "DELAY_DAILY_CAP",
+     None, None, False),
+]
+
+TIER_RE = re.compile(r"Tier\(\s*([0-9.]+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)")
+DAY_MIN = 1440.0
+# The margin the runtime applies on top of the poll interval (interval * 3/2).
+# Kept in step with CairoDriveProviders.effectiveTtl and spansPaintTtlMs.
+TTL_MARGIN_NUM, TTL_MARGIN_DEN = 3, 2
+
+
+def read(path):
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def find_const(src, name):
+    """Value of a `... NAME = <int> [* <int>]*;` constant, in its own units."""
+    # Values are written as `4 * 60 * 1000L`, so the long suffix has to be tolerated.
+    m = re.search(r"\b" + re.escape(name) + r"\s*=\s*([0-9*\sLl]+?)\s*;", src)
+    if not m:
+        return None
+    value = 1
+    for part in m.group(1).split("*"):
+        value *= int(part.strip().rstrip("Ll"))
+    return value
+
+
+def find_ladder(src, name):
+    m = re.search(r"\b" + re.escape(name) + r"\s*=\s*\{(.*?)\n\t\};", src, re.S)
+    if not m:
+        return None
+    return [(float(a), int(b), int(c)) for a, b, c in TIER_RE.findall(m.group(1))]
+
+
+def main():
+    problems = []
+    print(f"{'stream':20s} {'cap':>5s} {'rungs':>5s} {'spend':>6s} {'covers':>7s} "
+          f"{'floor':>7s} {'window':>7s}")
+    for (name, lfile, lname, cname, tfile, tname, scales) in STREAMS:
+        lsrc = read(lfile)
+        tiers = find_ladder(lsrc, lname)
+        cap = find_const(lsrc, cname)
+        if not tiers or cap is None:
+            problems.append(f"{name}: could not parse {lname}/{cname}")
+            continue
+
+        fsum = sum(t[0] for t in tiers)
+        covers = sum((cap * f / u) * (s / 60.0) for f, u, s in tiers)
+        floor_s = tiers[-1][2]
+
+        if abs(fsum - 1.0) > 0.002:
+            problems.append(f"{name}: fractions sum to {fsum:.4f}, not 1.000 - "
+                            f"the free tier is not fully spent")
+        if covers < DAY_MIN:
+            problems.append(f"{name}: covers {covers/60:.2f} h, under the 24 h guarantee")
+        if floor_s != max(t[2] for t in tiers):
+            problems.append(f"{name}: last rung is not the slowest, so it is not a floor")
+        for i in range(1, len(tiers)):
+            if tiers[i][2] < tiers[i - 1][2]:
+                problems.append(f"{name}: interval decreases at rung {i+1}")
+            if tiers[i][1] > tiers[i - 1][1]:
+                problems.append(f"{name}: units increase at rung {i+1}")
+
+        window = "-"
+        if tname:
+            base = find_const(read(tfile), tname)
+            if base is None:
+                problems.append(f"{name}: could not parse {tname}")
+            else:
+                base_s = base // 1000
+                effective = max(base_s, floor_s * TTL_MARGIN_NUM // TTL_MARGIN_DEN) \
+                    if scales else base_s
+                window = f"{effective//60}m"
+                if effective < floor_s:
+                    problems.append(
+                        f"{name}: staleness window {effective//60}m is SHORTER than the "
+                        f"{floor_s//60}m poll floor - the data expires before the poll that "
+                        f"would replace it, so the feature goes dark while the budget is "
+                        f"still being spent")
+                elif not scales and base_s < floor_s:
+                    problems.append(
+                        f"{name}: {tname} is fixed at {base_s//60}m but the ladder floors at "
+                        f"{floor_s//60}m; it must scale with the cadence")
+
+        print(f"{name:20s} {cap:5d} {len(tiers):5d} {fsum:6.3f} {covers/60:6.2f}h "
+              f"{floor_s//60:5d}m/{tiers[-1][1]}u {window:>7s}")
+
+    print()
+    for p in problems:
+        print("FAIL " + p)
+    if problems:
+        print(f"\n{len(problems)} problem(s)")
+        return 1
+    print("all ladders spend 100%, cover 24 h, degrade monotonically, and every "
+          "staleness window outlasts its poll floor")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

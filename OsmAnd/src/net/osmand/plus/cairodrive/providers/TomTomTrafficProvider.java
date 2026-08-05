@@ -51,10 +51,11 @@ import java.util.Locale;
  *       BEHAVIOUR - it can become a nogo point and send the router the long way round.</li>
  *   <li><b>Flow</b> ({@code flowSegmentData}, v4) takes a single {@code point} and answers for the
  *       one road segment under it. There is no batch form. A route is therefore N requests, and N
- *       is chosen by us: {@value #FLOW_SAMPLE_POINTS} points on a {@value #FLOW_INTERVAL_MS} ms
- *       cadence rather than a dense sweep, because flow only corrects an ETA. Sampling the whole
- *       route densely would spend the entire day's allowance inside one drive to move a number
- *       the driver glances at.</li>
+ *       is chosen by us - {@value #FLOW_SAMPLE_POINTS} points a minute at the top of
+ *       {@link #FLOW_LADDER}, falling to 2 points every 10 minutes as the day's budget is consumed,
+ *       rather than a dense sweep, because flow only corrects an ETA. Sampling the whole route
+ *       densely would spend the entire day's allowance inside one drive to move a number the driver
+ *       glances at.</li>
  * </ul>
  *
  * <h3>Confidence is the reason flow is worth having at all</h3>
@@ -153,13 +154,20 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	// ------------------------------------------------------------------ cadence and budget
 
 	/**
-	 * 2.5 minutes. The corridor bbox covers everything ahead in one request, so the cadence is set
-	 * by how fast a closure needs to become actionable rather than by cost. Faster than the 10
-	 * minute {@link CairoDriveProviders#INCIDENTS_TTL_MS} so three or four polls can be lost in an
-	 * underpass before the data expires.
+	 * 90 seconds, and no longer the poll period - {@link #INCIDENT_LADDER} sets that. This survives
+	 * as the SEED for {@link #lastIncidentIntervalMs}, i.e. the backdate a reroute gets before the
+	 * first poll of a session has established a rung.
+	 *
+	 * <p>(It previously claimed 2.5 minutes for a 90-second value, and compared itself to a "10
+	 * minute" {@link CairoDriveProviders#INCIDENTS_TTL_MS} that is four. Both numbers were prose
+	 * that had drifted from the constants beside them.)
 	 */
 	private static final long INCIDENT_INTERVAL_MS = 90 * 1000L;
-	/** Matches TomTom's own 1-minute data refresh; each tick costs {@value #FLOW_SAMPLE_POINTS} requests. */
+	/**
+	 * Matches TomTom's own 1-minute data refresh, which is also {@link #FLOW_LADDER}'s first rung.
+	 * Like the incident constant above this is now only the pre-first-poll seed; each actual sweep
+	 * costs the tier's point count, which starts at {@value #FLOW_SAMPLE_POINTS} and falls to 2.
+	 */
 	private static final long FLOW_INTERVAL_MS = 60 * 1000L;
 
 	/**
@@ -204,8 +212,10 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	 * derived from it cannot overrun a shorter one. 80 x 31 = 2,480 of 2,500 - 99.2%, and the
 	 * remaining 20 is the rounding, not a reserve.
 	 *
-	 * <p>At the 90 s cadence that is 120 minutes of driving before it runs dry, against ~45 minutes
-	 * of typical use, so a normal day spends 36% of the month's allowance.
+	 * <p>It never runs dry: {@link #INCIDENT_LADDER} is solved so the 80 last past hour 24. A
+	 * typical ~45-minute drive stays on the first rung and spends about 11 of them, so a normal
+	 * month lands near 14% of the allowance and the rest is there for the long day it was sized
+	 * for.
 	 */
 	private static final int INCIDENT_DAILY_CAP = 80;
 	/**
@@ -219,66 +229,66 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	private static final int FLOW_DAILY_CAP = 645;
 
 	/**
-	 * Flow ladder: 645 points across a 24-hour drive, spending 100% of the cap.
+	 * Flow ladder: 645 points, 24.1 hours, 100% of the cap, and a <b>10-minute floor</b>.
 	 *
-	 * <h3>What this replaces</h3>
+	 * <h3>What this replaces, and why twice</h3>
 	 *
-	 * A two-state thin (full rate, then half) reached 5.3 hours and then stopped. A hard cap is
-	 * worse still - it goes silent partway through the drive where the data is most wanted. Neither
-	 * satisfies "one hour or twelve hours, I'm covered in both".
+	 * A two-state thin (full rate, then half) reached 5.3 hours and then stopped. The replacement
+	 * was tuned for a six-hour maximum and reached 32.9 hours, but it bought that number with a
+	 * 40-minute tail - technically still running at hour twelve, and by then reporting speeds
+	 * measured over half an hour ago. That is coverage on paper only.
 	 *
-	 * <h3>Tuned for a SIX-hour maximum, with insurance past it</h3>
+	 * <h3>Solved backwards from the floor</h3>
 	 *
-	 * The owner's realistic longest drive is about six hours. An earlier ladder spread the budget
-	 * evenly towards 24 hours, which sounds safer and is worse: it held back budget for hours that
-	 * almost never happen and paid for it with coarser data in the hours that do. At six hours it
-	 * was down to a 4-point sweep every 8 minutes having spent only 78% of the day's allowance -
-	 * conserving for a drive that was not going to occur.
+	 * The floor is 2 points every 10 minutes. It costs 0.2 points a minute, so holding it from the
+	 * end of the burst to hour 24 reserves 239 of the 645 points and leaves 406 for the burst. The
+	 * burst then spends that as fast as it can while still landing on the floor rather than falling
+	 * through it: 1-minute sweeps for 12 minutes, 90 s to minute 32, 2 min to the hour, 3 min to
+	 * hour two, 5 min to hour four, floor thereafter.
 	 *
-	 * <p>Rebalanced so <b>87% of the budget is spent inside six hours</b> and the last 12.5% is a
-	 * slow reserve stretched across the remaining 22. Coverage went UP, not down - 32.9 hours - and
-	 * the six-hour experience improved: a 4-point sweep every 6 minutes, held all the way from hour
-	 * three to hour six instead of degrading through it.
+	 * <h3>Why the sweep gets smaller instead of only slower</h3>
 	 *
-	 * <h3>Why tier one asks for 14 points</h3>
+	 * Flow is the one stream with two axes. Sample count is SPATIAL resolution and interval is
+	 * FRESHNESS, and only one of them is what "recent" means. So the ladder spends its degradation
+	 * budget on the axis that costs less: 8 points down to 2 quarters the price of a sweep, which
+	 * is what buys the 10-minute refresh all the way to hour 24. A flat 645/1440 would have been
+	 * 2.2 minutes with no burst at all, and any single-axis ladder reaching 24 h ends past 20.
 	 *
-	 * That is what the free tier actually affords. 20,000 points a month against 30 days x 45
-	 * minutes of driving is 14.8 points per driving minute. At 10 the month ended at 68% of the
-	 * allowance with the rest simply expiring; at 14 it lands at 94%.
-	 *
-	 * <p>Flow is the ONLY stream where spare budget converts into information. Incidents, delay and
-	 * spans are all affordable faster than their data changes, so their leftover can only buy
-	 * duplicate bytes - 27-54% is their true ceiling and no cap change moves it. Flow scales
-	 * SPATIALLY: 14 samples along the corridor is a genuinely better picture than 10, not a
-	 * re-fetch of the same one.
+	 * <p>Tier one is 8 points rather than the old 14 for the same reason: at 14 points a minute the
+	 * first ten minutes of a drive eat a third of the day, which is affordable exactly once.
 	 */
 	private static final BudgetPacer.Tier[] FLOW_LADDER = {
-			new BudgetPacer.Tier(0.130, 14, 60),
-			new BudgetPacer.Tier(0.130, 10, 90),
-			new BudgetPacer.Tier(0.175, 8, 150),
-			new BudgetPacer.Tier(0.220, 6, 240),
-			new BudgetPacer.Tier(0.220, 4, 360),
-			// The reserve. Deliberately small and deliberately slow: 12.5% of the budget stretched
-			// over 22 hours, so a drive that runs past the owner's realistic maximum still has
-			// traffic rather than none. It is insurance, not service.
-			new BudgetPacer.Tier(0.125, 2, 2400),
+			new BudgetPacer.Tier(0.149, 8, 60),
+			new BudgetPacer.Tier(0.124, 6, 90),
+			new BudgetPacer.Tier(0.116, 5, 120),
+			new BudgetPacer.Tier(0.124, 4, 180),
+			new BudgetPacer.Tier(0.116, 3, 300),
+			// The floor. 37% of the day's points, held at a 10-minute refresh from hour four to
+			// hour 24. Not a reserve to be eked out - it is the slowest this stream is ever
+			// allowed to get, and the tiers above exist to leave enough budget to guarantee it.
+			new BudgetPacer.Tier(0.371, 2, 600),
 	};
 
 	/**
-	 * Incident ladder: 80 requests, 27.1 hours of coverage, one request per call at every rung.
+	 * Incident ladder: 80 requests, 24.1 hours, one request per call, <b>26-minute floor</b>.
 	 *
 	 * <p>Degrades on interval alone because an incident poll has no resolution to trade - a bbox
-	 * request either covers the city or it does not. Closures also persist for hours, so a 70-minute
-	 * interval deep into a long drive still catches them; that is why this ladder can afford a much
-	 * longer tail than flow's.
+	 * request either covers the city or it does not. That missing second axis is the whole reason
+	 * this floor is 26 minutes and flow's is 10, on a budget only eight times smaller.
+	 *
+	 * <p>26 is above the 18-minute flat maximum (80 requests / 1440 minutes) rather than below it,
+	 * and that is the cost of having a burst at all: the first 48 minutes at 4-minute polls and the
+	 * next 84 at 7 spend 24 requests, and every one of those has to come out of the tail. The trade
+	 * is sound for this stream specifically - a closure or a collision persists for tens of minutes
+	 * to hours, so a 26-minute poll still catches it, while a jam that formed and cleared inside 26
+	 * minutes was never worth a reroute. It would NOT be sound for flow, which is why flow's floor
+	 * was bought instead of its burst.
 	 */
 	private static final BudgetPacer.Tier[] INCIDENT_LADDER = {
-			new BudgetPacer.Tier(0.100, 1, 120),
-			new BudgetPacer.Tier(0.125, 1, 180),
-			new BudgetPacer.Tier(0.175, 1, 270),
-			new BudgetPacer.Tier(0.225, 1, 360),
-			new BudgetPacer.Tier(0.250, 1, 450),
-			new BudgetPacer.Tier(0.125, 1, 6480),
+			new BudgetPacer.Tier(0.150, 1, 240),
+			new BudgetPacer.Tier(0.150, 1, 420),
+			new BudgetPacer.Tier(0.125, 1, 720),
+			new BudgetPacer.Tier(0.575, 1, 1560),
 	};
 
 	/**
@@ -312,13 +322,40 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 		return BudgetPacer.tierFor(flowUsed, FLOW_DAILY_CAP, FLOW_LADDER).unitsPerCall;
 	}
 
+	/**
+	 * Also DECLARES the interval, because the arbiter's staleness window has to widen in step with
+	 * it. Declared here rather than at the call sites: this method is the only place the flow
+	 * interval is decided, so declaring here is the one arrangement in which the window cannot
+	 * drift out of step with the poll it is supposed to be covering.
+	 */
 	private static long flowIntervalForBudget(int flowUsed) {
-		return BudgetPacer.tierFor(flowUsed, FLOW_DAILY_CAP, FLOW_LADDER).intervalMs;
+		long interval = BudgetPacer.tierFor(flowUsed, FLOW_DAILY_CAP, FLOW_LADDER).intervalMs;
+		CairoDriveProviders.declareFlowCadence(interval);
+		lastFlowIntervalMs = interval;
+		return interval;
 	}
 
+	/** Declares the incident cadence for the same reason as {@link #flowIntervalForBudget}. */
 	private static long incidentIntervalForBudget(int incidentUsed) {
-		return BudgetPacer.tierFor(incidentUsed, INCIDENT_DAILY_CAP, INCIDENT_LADDER).intervalMs;
+		long interval = BudgetPacer.tierFor(incidentUsed, INCIDENT_DAILY_CAP, INCIDENT_LADDER)
+				.intervalMs;
+		CairoDriveProviders.declareIncidentCadence(interval);
+		lastIncidentIntervalMs = interval;
+		return interval;
 	}
+
+	/**
+	 * The ladder intervals currently in force, republished for {@link #onNewRoute()}.
+	 *
+	 * <p>{@code onNewRoute} has no {@link OsmandApplication} to read the budget counters from, and
+	 * giving it one would change a signature called from several sites. These cost a volatile write
+	 * on a path that already reads a preference.
+	 *
+	 * <p>Seeded with the flat constants so a reroute before the first poll of a session behaves as
+	 * it did before the pacer existed.
+	 */
+	private static volatile long lastFlowIntervalMs = FLOW_INTERVAL_MS;
+	private static volatile long lastIncidentIntervalMs = INCIDENT_INTERVAL_MS;
 
 	private static final int CONNECT_TIMEOUT_MS = 8000;
 	private static final int READ_TIMEOUT_MS = 12000;
@@ -570,14 +607,21 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	/**
 	 * A freshly recalculated route should be scored soon, but not on the next fix - see
 	 * {@link #REROUTE_DEBOUNCE_MS}. Only pulls the deadlines forward, never pushes them back.
+	 *
+	 * <p>Backdates by the interval CURRENTLY in force rather than by the flat constants. Those
+	 * constants stopped being the poll period when the budget pacer landed, and the due-check has
+	 * used the ladder ever since - so subtracting 90 s from a deadline the ladder had set 26
+	 * minutes out moved it by 90 s and left the poll 24 minutes away. The nudge silently stopped
+	 * working from about hour four of a drive, which is precisely when a reroute is most likely to
+	 * be the thing that needed fresh incidents.
 	 */
 	public static void onNewRoute() {
 		long now = System.currentTimeMillis();
-		long incidentTarget = now - INCIDENT_INTERVAL_MS + REROUTE_DEBOUNCE_MS;
+		long incidentTarget = now - lastIncidentIntervalMs + REROUTE_DEBOUNCE_MS;
 		if (lastIncidentPoll > incidentTarget) {
 			lastIncidentPoll = incidentTarget;
 		}
-		long flowTarget = now - FLOW_INTERVAL_MS + REROUTE_DEBOUNCE_MS;
+		long flowTarget = now - lastFlowIntervalMs + REROUTE_DEBOUNCE_MS;
 		if (lastFlowPoll > flowTarget) {
 			lastFlowPoll = flowTarget;
 		}
@@ -751,7 +795,13 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 				+ " bbox=" + bbox + " lang=" + language
 				+ " n=" + incidents.size() + " closures=" + closures
 				+ " laneClosed=" + laneClosed + " flooding=" + flooding
-				+ " budget=" + used(app, PREF_INCIDENT_COUNT) + "/" + INCIDENT_DAILY_CAP);
+				// The full pacer state, not just the count. A bare budget=n/80 cannot answer the
+				// question a long drive raises - which rung is in force, how far the floor is, and
+				// whether the ladder still reaches hour 24 - and that is the whole subject of this
+				// stream's design. describe() recomputes coverage from the constants, so a retune
+				// that breaks the guarantee is visible in the drive log rather than on the road.
+				+ " pace=" + BudgetPacer.describe(used(app, PREF_INCIDENT_COUNT),
+						INCIDENT_DAILY_CAP, INCIDENT_LADDER));
 	}
 
 	/**
@@ -930,7 +980,11 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 		CairoDriveLogger.getInstance().log(TRACE_TAG, "flow http="
 				+ (failures == 0 ? 200 : lastCode) + " ms=" + elapsed
 				+ " pts=" + samples.size() + "/" + points.size() + " failed=" + failures
-				+ " budget=" + used(app, PREF_FLOW_COUNT) + "/" + FLOW_DAILY_CAP
+				// Same reasoning as the incident line: rung, units, interval, floor and coverage,
+				// because this is the one ladder that degrades on TWO axes and the point count
+				// alone does not say whether a small sweep was the tier or a partial failure.
+				+ " pace=" + BudgetPacer.describe(used(app, PREF_FLOW_COUNT),
+						FLOW_DAILY_CAP, FLOW_LADDER)
 				// The distribution is the point of this endpoint: a sweep that is all low-confidence
 				// means the route is on roads TomTom has no probes for, and the ETA correction
 				// should be ignored rather than averaged in. Buckets AND the raw values, because

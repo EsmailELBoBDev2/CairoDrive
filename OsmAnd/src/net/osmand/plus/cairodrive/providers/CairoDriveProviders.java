@@ -103,15 +103,22 @@ public final class CairoDriveProviders {
 	 * Incidents are the shortest-lived thing here because they are the only data that changes
 	 * BEHAVIOUR: a reported closure can become an impassable-road nogo point and send the router
 	 * the long way round. A cleared closure that is still believed is therefore worse than no
-	 * closure at all, which argues for a short window; PROVIDERS.md 3.1 polls every 2-3 minutes,
-	 * so 10 minutes survives three or four missed polls in an underpass without ever acting on
-	 * something a quarter of an hour old. Same figure as GoogleTrafficHelper.SNAPSHOT_TTL_MS, for
-	 * the same reason.
+	 * closure at all, which argues for a short window - four minutes survives a poll or two lost
+	 * in an underpass without ever acting on something a quarter of an hour old.
+	 *
+	 * <p><b>This is a FLOOR, not the whole rule</b> - see {@link #declareIncidentCadence}. It was
+	 * written when the provider polled every 2-3 minutes flat. It no longer does: TomTom's incident
+	 * ladder paces itself down to a 26-minute floor so the daily budget lasts a 24-hour drive, and
+	 * a fixed four-minute window against a 26-minute poll would mark the data expired for 22 of
+	 * every 26 minutes. The feature would have looked switched off from hour four onwards while the
+	 * budget was being spent exactly as designed.
 	 */
 	public static final long INCIDENTS_TTL_MS = 4 * 60 * 1000L;
 	/**
-	 * Flow only adjusts an ETA, so stale flow shows a wrong number rather than driving down a
-	 * wrong street. PROVIDERS.md 3.2 samples every 5 minutes; 15 covers two missed samples.
+	 * Flow only adjusts an ETA, so stale flow shows a wrong number rather than driving down a wrong
+	 * street. Also a floor rather than the whole rule, for the same reason as the incident window
+	 * above: flow paces down to a 10-minute floor, against which four minutes would blank the ETA
+	 * correction for 60% of a long drive.
 	 */
 	public static final long FLOW_TTL_MS = 4 * 60 * 1000L;
 	/**
@@ -119,6 +126,46 @@ public final class CairoDriveProviders {
 	 * a short window here would blank the banner between refreshes for no gain.
 	 */
 	public static final long HAZARD_TTL_MS = 40 * 60 * 1000L;
+
+	private static volatile long incidentCadenceMs;
+	private static volatile long flowCadenceMs;
+
+	/**
+	 * How often the serving provider currently intends to refresh incidents.
+	 *
+	 * <p>Freshness is not a property this class can know on its own. It is a property of whoever is
+	 * publishing: a provider pacing a daily budget refreshes on a ladder, not on a constant, and it
+	 * is the only party that knows which rung is in force. So the provider declares the cadence and
+	 * this class turns it into a window - see {@link #effectiveTtl}.
+	 *
+	 * <p>Declaring is optional. A provider that never calls this leaves the cadence at zero and
+	 * gets the fixed floor, which is the old behaviour exactly.
+	 */
+	public static void declareIncidentCadence(long intervalMs) {
+		incidentCadenceMs = Math.max(0, intervalMs);
+	}
+
+	/** How often the serving provider currently intends to refresh flow. */
+	public static void declareFlowCadence(long intervalMs) {
+		flowCadenceMs = Math.max(0, intervalMs);
+	}
+
+	/**
+	 * The window that actually applies: the floor, or one and a half poll intervals, whichever is
+	 * longer.
+	 *
+	 * <p>The 1.5x is the same margin used for Google spans and exists for the same reason - it
+	 * absorbs exactly one missed poll (a tunnel, a dropped request) without the data blinking out,
+	 * and no more. Anything larger would start hiding a provider that had genuinely stopped
+	 * answering, which is the one thing a TTL is really for.
+	 *
+	 * <p>Note what this does NOT do: it never shortens a window, only widens one, so a provider
+	 * cannot use it to make stale data look fresh. And it widens only in step with a slower poll,
+	 * which means the data is exactly as old as the budget forces it to be and no older.
+	 */
+	private static long effectiveTtl(long floorMs, long cadenceMs) {
+		return Math.max(floorMs, cadenceMs + cadenceMs / 2);
+	}
 
 	private CairoDriveProviders() {
 	}
@@ -669,7 +716,7 @@ public final class CairoDriveProviders {
 	@NonNull
 	public static List<TrafficIncident> getIncidents() {
 		Snapshot current = snapshot;
-		return fresh(current.incidentsTimeMs, INCIDENTS_TTL_MS)
+		return fresh(current.incidentsTimeMs, effectiveTtl(INCIDENTS_TTL_MS, incidentCadenceMs))
 				? current.incidents : Collections.<TrafficIncident>emptyList();
 	}
 
@@ -677,7 +724,7 @@ public final class CairoDriveProviders {
 	@NonNull
 	public static List<FlowSample> getFlow() {
 		Snapshot current = snapshot;
-		return fresh(current.flowTimeMs, FLOW_TTL_MS)
+		return fresh(current.flowTimeMs, effectiveTtl(FLOW_TTL_MS, flowCadenceMs))
 				? current.flow : Collections.<FlowSample>emptyList();
 	}
 

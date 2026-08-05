@@ -394,7 +394,7 @@ public final class SunGlareProvider implements CairoDriveProviders.Provider {
 	 * <p>Needed because the evaluation path is what normally clears this banner and it only runs on
 	 * a fix above {@link #MIN_TRUSTED_SPEED_MS}. Park the car at dusk with a warning showing and
 	 * nothing re-evaluates: the banner then sits in the shared slot for the full
-	 * {@link CairoDriveProviders#HAZARD_TTL_MS}, which is 90 minutes and is sized for weather, not
+	 * {@link CairoDriveProviders#HAZARD_TTL_MS}, which is 40 minutes and is sized for weather, not
 	 * for a glare episode that is over the moment the driver stops.
 	 *
 	 * <p>{@link CairoDriveProviders#resetRouteState()} deliberately does NOT clear the hazard slot -

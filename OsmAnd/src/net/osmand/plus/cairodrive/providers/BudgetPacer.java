@@ -30,18 +30,44 @@ import java.util.Locale;
  * "two long drives" and "one continuous drive of the same length" identically, which is correct
  * because the cap is daily rather than per-trip.
  *
+ * <h3>The last rung is a FLOOR, not the bottom of a slide</h3>
+ *
+ * An earlier shape degraded monotonically towards whatever interval made the arithmetic reach 24
+ * hours - 70 minutes for incidents, 120 for spans. That satisfies "still running at hour thirteen"
+ * and fails the thing the running was for: a two-hour-old congestion colour is not traffic data,
+ * it is a decoration. The owner's rule is the stricter one - <i>"give me data fast in the first
+ * hours and slow BUT NOT LOSE RELEVANCY after long hours"</i>.
+ *
+ * <p>So each ladder is now solved backwards from a floor interval that is still worth having, and
+ * only the budget left over after reserving the floor for the rest of the day is available to the
+ * burst. The floor is the LAST tier, it is reached in single-digit hours, and it never degrades
+ * again for the remaining twenty:
+ *
+ * <pre>
+ *   stream             floor        reaches floor   interval at 45 m / 2 h / 6 h / 24 h
+ *   TomTom flow        10 m, 2 pts      4.1 h        2 m  /  3 m  / 10 m / 10 m
+ *   TomTom incidents   26 m             4.2 h        4 m  /  7 m  / 26 m / 26 m
+ *   Google delay       16 m             2.8 h        2 m  /  4 m  / 16 m / 16 m
+ *   Google spans       65 m             1.8 h       20 m  / 65 m  / 65 m / 65 m
+ * </pre>
+ *
+ * <h3>Why the floors differ so much</h3>
+ *
+ * They are not preferences, they are what the budget divides into. 1440 minutes against the daily
+ * cap gives a hard flat maximum of 2.2 min for flow, 18 min for incidents, 9 min for delay and 45
+ * min for spans - and any burst at all pushes the tail above that. Flow's floor can stay tight
+ * because flow degrades on a SECOND axis: dropping a sweep from 8 sample points to 2 costs spatial
+ * resolution, not freshness, so the floor holds a 10-minute refresh for a quarter of the cost.
+ * Spans has no second axis and only 32 requests, so 65 minutes is close to the arithmetic limit
+ * rather than a choice - which is why the layer's paint TTL follows the tier instead of the
+ * colours simply blinking off, and why the cheap DELAY stream carries the freshness.
+ *
  * <h3>Coverage, computed rather than hoped for</h3>
  *
  * Each ladder is solved so the integral of (budget slice / units per call) x interval exceeds 24
- * hours while spending exactly 100% of the cap:
- *
- * <pre>
- *   stream             covers    tier-1 lasts    interval at 45 min / 3 h / 24 h
- *   TomTom flow        28.0 h      13 min          2 m  /  8 m  / 20 m
- *   TomTom incidents   27.1 h      24 min          3 m  /  7 m  / 70 m
- *   Google delay       25.8 h      32 min          2 m  /  5 m  / 30 m
- *   Google spans       24.5 h      32 min         15 m  / 30 m  / 120 m
- * </pre>
+ * hours while spending exactly 100% of the cap - 24.1 h for flow, 24.1 h incidents, 25.2 h delay,
+ * 25.7 h spans. {@link #coverageHours} recomputes it from the constants so a ladder edit that
+ * breaks the guarantee shows up in the SESSION header rather than on hour thirteen of a drive.
  */
 public final class BudgetPacer {
 
@@ -116,6 +142,18 @@ public final class BudgetPacer {
 	}
 
 	/**
+	 * The floor interval - the slowest this ladder can ever get, i.e. its last rung.
+	 *
+	 * <p>Exists so a consumer can size a staleness window off the ladder instead of hard-coding a
+	 * number that silently becomes wrong when a ladder is retuned. The spans overlay uses it for
+	 * exactly that: a fixed 10-minute paint TTL against a 65-minute floor would have blanked the
+	 * colours for 85% of a long drive while the budget was being spent correctly.
+	 */
+	public static long floorIntervalMs(@NonNull Tier[] ladder) {
+		return ladder.length == 0 ? 0 : ladder[ladder.length - 1].intervalMs;
+	}
+
+	/**
 	 * Today's allowance, from what is LEFT of the month rather than from a fixed share of it.
 	 *
 	 * <h3>Why a fixed daily cap wastes most of the tier</h3>
@@ -168,8 +206,10 @@ public final class BudgetPacer {
 	@NonNull
 	public static String describe(int used, int cap, @NonNull Tier[] ladder) {
 		Tier tier = tierFor(used, cap, ladder);
-		return String.format(Locale.US, "tier=%d/%d used=%d/%d units=%d intervalS=%d coversH=%.1f",
+		return String.format(Locale.US,
+				"tier=%d/%d used=%d/%d units=%d intervalS=%d floorS=%d coversH=%.1f",
 				tierIndex(used, cap, ladder) + 1, ladder.length, used, cap,
-				tier.unitsPerCall, tier.intervalMs / 1000, coverageHours(cap, ladder));
+				tier.unitsPerCall, tier.intervalMs / 1000, floorIntervalMs(ladder) / 1000,
+				coverageHours(cap, ladder));
 	}
 }

@@ -106,7 +106,11 @@ public class GoogleTrafficLayer extends OsmandMapLayer {
 		if (snapshot == null || snapshot.spans.isEmpty() || snapshot.points.size() < 2) {
 			return null;
 		}
-		if (System.currentTimeMillis() - snapshot.spansTimeMs > GoogleTrafficHelper.SNAPSHOT_TTL_MS) {
+		// The PAINT ttl, which tracks the spans ladder, rather than the fixed decision TTL. Late in
+		// a long drive spans are polled an hour apart by design; blanking the overlay 50 minutes out
+		// of every 60 would have hidden data that had already been paid for on the Enterprise SKU.
+		// The router keeps the stricter SNAPSHOT_TTL_MS for anything that steers the car.
+		if (System.currentTimeMillis() - snapshot.spansTimeMs > GoogleTrafficHelper.spansPaintTtlMs()) {
 			return null;
 		}
 		return snapshot;
