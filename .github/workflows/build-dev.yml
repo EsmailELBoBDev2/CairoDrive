@@ -305,6 +305,36 @@ jobs:
       # submodule, so cd-refcheck sees drawables and colours a local run cannot, and a checker
       # that can newly fail a build on a machine nobody can reproduce is worse than a noisy log.
       # The two that are deterministic everywhere do block.
+      - name: Key wiring
+        env:
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          TOMTOM_API_KEY: ${{ secrets.TOMTOM_API_KEY }}
+          OPENWEATHER_KEY: ${{ secrets.OPENWEATHER_KEY }}
+          HERE_API_KEY: ${{ secrets.HERE_API_KEY }}
+          BESTTIME_API_KEY: ${{ secrets.BESTTIME_API_KEY }}
+        run: |
+          # WARN, never fail: a build with no keys is a legitimate configuration and the app is
+          # written to degrade to offline behaviour. What is NOT legitimate is not knowing.
+          #
+          # This exists because the env blocks below read CAIRODRIVE_TOMTOM_KEY and
+          # CAIRODRIVE_OPENWEATHER_KEY, which are not secret names in this repository - the real
+          # ones are TOMTOM_API_KEY and OPENWEATHER_KEY. GitHub resolves a missing secret to an
+          # empty string with no warning, so TomTom traffic and the dust/weather hazards were
+          # built with no key and were inert in every build, silently. Only the presence or
+          # absence of each key is printed; no value is ever echoed.
+          for pair in "GOOGLE_PLACES_API_KEY:search + Google traffic" \
+                      "TOMTOM_API_KEY:TomTom traffic and closures" \
+                      "OPENWEATHER_KEY:dust and air-quality warnings" \
+                      "HERE_API_KEY:HERE raster traffic overlay" \
+                      "BESTTIME_API_KEY:popular times"; do
+            name="${pair%%:*}"; what="${pair#*:}"
+            if [ -n "${!name:-}" ]; then
+              echo "  present : ${name}  (${what})"
+            else
+              echo "::warning::${name} is not set - ${what} will be inert in this build."
+            fi
+          done
+
       - name: Static checks
         working-directory: android
         run: |
@@ -360,8 +390,17 @@ jobs:
         env:
           APP_EDITION: ${{ steps.variant.outputs.app_edition }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
-          CAIRODRIVE_TOMTOM_KEY: ${{ secrets.CAIRODRIVE_TOMTOM_KEY }}
-          CAIRODRIVE_OPENWEATHER_KEY: ${{ secrets.CAIRODRIVE_OPENWEATHER_KEY }}
+          # The secret NAMES in this repository are TOMTOM_API_KEY / OPENWEATHER_KEY /
+          # HERE_API_KEY / BESTTIME_API_KEY. These lines used to read CAIRODRIVE_-prefixed
+          # names that do not exist, and GitHub resolves a missing secret to an EMPTY STRING
+          # with no warning - so TomTom traffic and the dust/weather hazards shipped with no
+          # key and were inert, silently, in every build.
+          CAIRODRIVE_TOMTOM_KEY: ${{ secrets.TOMTOM_API_KEY }}
+          CAIRODRIVE_OPENWEATHER_KEY: ${{ secrets.OPENWEATHER_KEY }}
+          CAIRODRIVE_HERE_KEY: ${{ secrets.HERE_API_KEY }}
+          # BestTime bills the forecast POST against the PRIVATE key; the public one is for
+          # its browser widget and is not used here.
+          CAIRODRIVE_BESTTIME_PRIVATE_KEY: ${{ secrets.BESTTIME_API_KEY }}
           APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
           BUNDLE_TASK: ${{ steps.variant.outputs.bundle_task }}
         run: ./gradlew --no-daemon --stacktrace "${BUNDLE_TASK}"
@@ -436,8 +475,17 @@ jobs:
         env:
           APP_EDITION: ${{ steps.variant.outputs.app_edition }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
-          CAIRODRIVE_TOMTOM_KEY: ${{ secrets.CAIRODRIVE_TOMTOM_KEY }}
-          CAIRODRIVE_OPENWEATHER_KEY: ${{ secrets.CAIRODRIVE_OPENWEATHER_KEY }}
+          # The secret NAMES in this repository are TOMTOM_API_KEY / OPENWEATHER_KEY /
+          # HERE_API_KEY / BESTTIME_API_KEY. These lines used to read CAIRODRIVE_-prefixed
+          # names that do not exist, and GitHub resolves a missing secret to an EMPTY STRING
+          # with no warning - so TomTom traffic and the dust/weather hazards shipped with no
+          # key and were inert, silently, in every build.
+          CAIRODRIVE_TOMTOM_KEY: ${{ secrets.TOMTOM_API_KEY }}
+          CAIRODRIVE_OPENWEATHER_KEY: ${{ secrets.OPENWEATHER_KEY }}
+          CAIRODRIVE_HERE_KEY: ${{ secrets.HERE_API_KEY }}
+          # BestTime bills the forecast POST against the PRIVATE key; the public one is for
+          # its browser widget and is not used here.
+          CAIRODRIVE_BESTTIME_PRIVATE_KEY: ${{ secrets.BESTTIME_API_KEY }}
           APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
           APK_RELEASE_TASK: ${{ steps.variant.outputs.apk_release_task }}
         run: ./gradlew --no-daemon --stacktrace "${APK_RELEASE_TASK}"
@@ -793,8 +841,17 @@ jobs:
         env:
           APP_EDITION: ${{ steps.variant.outputs.app_edition }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
-          CAIRODRIVE_TOMTOM_KEY: ${{ secrets.CAIRODRIVE_TOMTOM_KEY }}
-          CAIRODRIVE_OPENWEATHER_KEY: ${{ secrets.CAIRODRIVE_OPENWEATHER_KEY }}
+          # The secret NAMES in this repository are TOMTOM_API_KEY / OPENWEATHER_KEY /
+          # HERE_API_KEY / BESTTIME_API_KEY. These lines used to read CAIRODRIVE_-prefixed
+          # names that do not exist, and GitHub resolves a missing secret to an EMPTY STRING
+          # with no warning - so TomTom traffic and the dust/weather hazards shipped with no
+          # key and were inert, silently, in every build.
+          CAIRODRIVE_TOMTOM_KEY: ${{ secrets.TOMTOM_API_KEY }}
+          CAIRODRIVE_OPENWEATHER_KEY: ${{ secrets.OPENWEATHER_KEY }}
+          CAIRODRIVE_HERE_KEY: ${{ secrets.HERE_API_KEY }}
+          # BestTime bills the forecast POST against the PRIVATE key; the public one is for
+          # its browser widget and is not used here.
+          CAIRODRIVE_BESTTIME_PRIVATE_KEY: ${{ secrets.BESTTIME_API_KEY }}
           APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
           CAIRODRIVE_KEYSTORE_FILE: ${{ steps.keystore.outputs.path }}
           CAIRODRIVE_KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -841,8 +898,17 @@ jobs:
         env:
           APP_EDITION: ${{ steps.variant.outputs.app_edition }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
-          CAIRODRIVE_TOMTOM_KEY: ${{ secrets.CAIRODRIVE_TOMTOM_KEY }}
-          CAIRODRIVE_OPENWEATHER_KEY: ${{ secrets.CAIRODRIVE_OPENWEATHER_KEY }}
+          # The secret NAMES in this repository are TOMTOM_API_KEY / OPENWEATHER_KEY /
+          # HERE_API_KEY / BESTTIME_API_KEY. These lines used to read CAIRODRIVE_-prefixed
+          # names that do not exist, and GitHub resolves a missing secret to an EMPTY STRING
+          # with no warning - so TomTom traffic and the dust/weather hazards shipped with no
+          # key and were inert, silently, in every build.
+          CAIRODRIVE_TOMTOM_KEY: ${{ secrets.TOMTOM_API_KEY }}
+          CAIRODRIVE_OPENWEATHER_KEY: ${{ secrets.OPENWEATHER_KEY }}
+          CAIRODRIVE_HERE_KEY: ${{ secrets.HERE_API_KEY }}
+          # BestTime bills the forecast POST against the PRIVATE key; the public one is for
+          # its browser widget and is not used here.
+          CAIRODRIVE_BESTTIME_PRIVATE_KEY: ${{ secrets.BESTTIME_API_KEY }}
           APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
           CAIRODRIVE_KEYSTORE_FILE: ${{ steps.keystore.outputs.path }}
           CAIRODRIVE_KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
