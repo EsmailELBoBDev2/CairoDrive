@@ -115,6 +115,8 @@ public class HazardBannerLayer extends OsmandMapLayer {
 	private float topMargin;
 
 	private final RectF chipRect = new RectF();
+	/** Reused, like chipRect and textBounds: this is scanned per incident on the draw thread. */
+	private final Location incidentScratch = new Location("cd-incident");
 	private final Rect textBounds = new Rect();
 
 	/** Last drawn content, so a steady state re-measures nothing. */
@@ -333,17 +335,15 @@ public class HazardBannerLayer extends OsmandMapLayer {
 		if (!here.hasBearing()) {
 			return true;
 		}
-		float toIncident = here.bearingTo(toLocation(in));
+		incidentScratch.setLatitude(in.at.getLatitude());
+		incidentScratch.setLongitude(in.at.getLongitude());
+		float toIncident = here.bearingTo(incidentScratch);
 		// Wrapped into -180..180 before comparing, or a heading of 350 and a bearing of 10 - ten
 		// degrees apart, straight ahead - would measure as 340 and be discarded.
 		float delta = Math.abs(MapUtils.unifyRotationDiff(here.getBearing(), toIncident));
 		return delta <= AHEAD_ARC_DEG;
 	}
 
-	@NonNull
-	private static Location toLocation(@NonNull CairoDriveProviders.TrafficIncident in) {
-		return new Location("cd-incident", in.at.getLatitude(), in.at.getLongitude());
-	}
 
 	/**
 	 * "Traffic: +N min on your route", or null when there is nothing honest to say.

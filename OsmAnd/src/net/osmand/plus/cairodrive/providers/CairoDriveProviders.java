@@ -680,9 +680,15 @@ public final class CairoDriveProviders {
 		List<TrafficIncident> frozen = freeze(incidents);
 		long now = System.currentTimeMillis();
 		synchronized (LOCK) {
-			if (generation != CairoDriveProviders.generation) {
-				return;
-			}
+			// NO generation check, unlike flow. It was inconsistent with resetRouteState keeping
+			// incidents across a route change: the same argument - a closure belongs to the city,
+			// not to the route - says an in-flight fetch is still valid when the destination
+			// changes under it. Dropping it threw away a billed request and pushed the next
+			// refresh out by a whole ladder interval, up to forty minutes, at exactly the moment
+			// the driver had just set a destination and most wanted it.
+			//
+			// The parameter is kept so the signature and the flow path stay symmetrical, and so a
+			// future corridor-scoped consumer can reinstate the test if one ever needs it.
 			Snapshot previous = snapshot;
 			snapshot = new Snapshot(frozen, now,
 					previous.flow, previous.flowTimeMs,
