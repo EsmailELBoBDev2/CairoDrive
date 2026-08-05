@@ -14,7 +14,8 @@ import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.cairodrive.providers.AddressLookup;
 import net.osmand.plus.cairodrive.providers.GeoapifyProvider;
 import net.osmand.plus.helpers.CairoDriveLog;
-import net.osmand.plus.helpers.TransliterationHelper;
+
+import net.osmand.search.SearchUICore.SearchResultMatcher;
 import net.osmand.search.core.ObjectType;
 import net.osmand.search.core.SearchCoreFactory;
 import net.osmand.search.core.SearchCoreFactory.SearchBaseAPI;
@@ -23,6 +24,7 @@ import net.osmand.search.core.SearchResult;
 import net.osmand.search.core.SearchSettings.SortType;
 import net.osmand.search.core.SearchWord;
 import net.osmand.util.Algorithms;
+import net.osmand.util.TransliterationHelper;
 
 import org.apache.commons.logging.Log;
 

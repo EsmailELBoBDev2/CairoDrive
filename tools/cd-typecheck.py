@@ -63,6 +63,7 @@ def index_packages(base):
     """package name -> set of top-level type names declared in it, plus fqn -> file path."""
     pkgs = {}
     FILES.clear()
+    DECLARED_IN.clear()
     for root in ROOTS:
         d = os.path.join(base, root)
         if not os.path.isdir(d):
@@ -75,10 +76,15 @@ def index_packages(base):
                 stem = fn.rsplit(".", 1)[0]
                 pkgs.setdefault(rel, set()).add(stem)
                 FILES[rel + "." + stem] = os.path.join(dirpath, fn)
+                DECLARED_IN.setdefault(stem, set()).add(rel)
     return pkgs
 
 
 FILES = {}
+
+# simple type name -> the package(s) that actually declare it. Used to tell "this import points at
+# the wrong package" apart from "this type is generated and has no source file anywhere".
+DECLARED_IN = {}
 
 
 def nested_types(fqn):
@@ -293,6 +299,7 @@ def check(path, pkgs):
     own_pkg = m.group(1) if m else ""
 
     imported, wildcards, static_wildcards = set(), set(), set()
+    import_paths = {}
     for im in re.finditer(r"^\s*import\s+(static\s+)?([\w.]+)(\.\*)?\s*;", src, re.M):
         if im.group(3):
             # `import static Foo.*` imports Foo's NESTED TYPES as well as its static members, so
@@ -301,14 +308,61 @@ def check(path, pkgs):
             (static_wildcards if im.group(1) else wildcards).add(im.group(2))
         else:
             imported.add(im.group(2).rsplit(".", 1)[-1])
+            import_paths[im.group(2)] = src[:im.start()].count("\n") + 1
+
+    # An import is EVIDENCE, and it was being taken on trust.
+    #
+    # Every name above is admitted purely because something imported it, with no check that the
+    # path leads anywhere. `import net.osmand.plus.helpers.TransliterationHelper` reads exactly
+    # like a real import - right project, plausible package, correct class name - and the class
+    # lives in net.osmand.util. The checker called the file clean; javac said "cannot find symbol".
+    #
+    # The test is deliberately NOT "does this path name a file". That version reported 1,770
+    # findings across the tree, because plenty of real types have no .java of their own: `R` and
+    # `BuildConfig` are generated at build time, the 261 .aidl interfaces are generated from IDL,
+    # net.osmand.core.android ships in a prebuilt AAR, and a Kotlin file may declare several
+    # top-level classes so the file stem proves nothing.
+    #
+    # So the test is the SHAPE OF THE ACTUAL BUG: a name that this tree does declare, imported
+    # from a package that is not where it lives. Anything the tree never declares is invisible
+    # from here - generated, prebuilt or Kotlin - and is left alone rather than guessed at.
+    bad_imports = {}
+    for path, line in import_paths.items():
+        segs = path.split(".")
+        if any(".".join(segs[:i]) in FILES for i in range(len(segs), 1, -1)):
+            continue  # some prefix names a real file: the tail is a nested type
+        name = segs[-1]
+        pkg = ".".join(segs[:-1])
+        # The package must be one THIS PROJECT owns. Without that, `java.text.ParseException` and
+        # `org.xmlpull.v1.XmlPullParser` were reported purely because the tree happens to declare
+        # its own class of the same simple name - a shadow, not a mistake.
+        if pkg not in pkgs:
+            continue
+        homes = DECLARED_IN.get(name)
+        if homes and pkg not in homes:
+            bad_imports[path] = line
 
     # Types declared in this file, including nested and enums.
     local = set(re.findall(r"\b(?:class|interface|enum|record|@interface)\s+(\w+)", src))
     # Type parameters: <T>, <T extends X>, <K, V>
+    #
+    # The length limit is what keeps this from swallowing USE sites: `Map<String, MyClass>` is not
+    # a declaration, and admitting MyClass from it would mask a genuinely missing import. Short
+    # names are the safe part of the convention - T, K, V, R, E.
     for tp in re.findall(r"<([A-Z]\w*(?:\s*,\s*[A-Z]\w*)*)>", src):
         for t in tp.split(","):
             t = t.strip()
             if len(t) <= 2:
+                local.add(t)
+    # ...but a DECLARATION site can be trusted whatever the name's length, and some of this tree
+    # spells them out: `interface RpcCallback<ParameterType>`, `HashSkipTileQuadTree<EntryIndex,
+    # ZoomIndex>`, `<Result>`. Those only began to surface once parameter types were checked -
+    # `void run(ParameterType p)` - and reporting a class's own type parameter as an unresolved
+    # import is pure noise.
+    for tp in re.findall(r"\b(?:class|interface)\s+\w+\s*<([^>{]*)>", src):
+        for t in tp.split(","):
+            t = t.strip().split()[0].strip() if t.strip() else ""
+            if re.fullmatch(r"[A-Z]\w*", t or ""):
                 local.add(t)
 
     available = set(imported) | local | JAVA_LANG
@@ -360,6 +414,21 @@ def check(path, pkgs):
         r"\bthrows\s+([A-Z]\w*)",
         r"(?<![.\w$])([A-Z]\w*)\s*\.\s*[a-zA-Z_]\w*\s*[(.,;)=]",
     ]
+    # There is deliberately NO pattern for method PARAMETER types.
+    #
+    # One was written, and it worked: it caught `search(SearchPhrase, SearchResultMatcher)` with
+    # SearchResultMatcher unimported, which is a real error this checker had missed and javac
+    # rejected. It also reported 18 files across the tree that compile perfectly well - generic
+    # type parameters on methods and inner classes, and nested types reached through an extends
+    # chain the resolver does not follow far enough (OnClickListener, DrawSettings, DrawPathData).
+    #
+    # Parameters are where nested and inherited types appear most, so this is the position with the
+    # worst signal-to-noise in the whole file. And the cost is not abstract: CI gates on the files
+    # a push CHANGED, so those 18 become build failures the moment anyone edits one, which is
+    # precisely how this checker failed a build on its own false positives earlier today.
+    #
+    # One missed error class is a better trade than a gate people learn to ignore. The import check
+    # above is the part of this idea that survived, because it costs nothing.
     # CONSTANTS are receivers too - `LOG.info(...)`, `CACHE.get(...)` - and they are fields, not
     # types, so the static-receiver pattern must not report them. Two filters, because either alone
     # leaks: the declaration sweep misses constants inherited from a superclass, and the naming
@@ -386,7 +455,7 @@ def check(path, pkgs):
 
     blind = [w for w in wildcards if not pkgs.get(w)]
     if blind:
-        return {}, blind, chars
+        return {}, blind, chars, bad_imports
 
     hits = {}
     for i, line in enumerate(src.split("\n"), 1):
@@ -398,7 +467,7 @@ def check(path, pkgs):
                 if name in declared_fields or is_constant(name):
                     continue
                 hits[name] = i
-    return {n: l for n, l in hits.items()}, [], chars
+    return {n: l for n, l in hits.items()}, [], chars, bad_imports
 
 
 def main():
@@ -438,14 +507,16 @@ def main():
             bad += 1
             continue
         checked += 1
-        hits, blind, chars = check(p, pkgs)
+        hits, blind, chars, bad_imports = check(p, pkgs)
         if blind:
             unverifiable += 1
-        if hits or chars:
+        if hits or chars or bad_imports:
             bad += 1
             print("\n%s" % os.path.relpath(p, base))
             for l, lit in sorted(chars.items()):
                 print("    line %-5d not a char literal - javac rejects it: '%s'" % (l, lit))
+            for imp, l in sorted(bad_imports.items(), key=lambda kv: kv[1]):
+                print("    line %-5d import does not resolve: %s" % (l, imp))
             for n, l in sorted(hits.items(), key=lambda kv: kv[1]):
                 print("    line %-5d unresolved: %s" % (l, n))
     print("\n%d file(s) checked, %d with unresolved names, %d unverifiable "

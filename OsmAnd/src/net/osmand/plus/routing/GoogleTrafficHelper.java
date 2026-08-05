@@ -775,10 +775,12 @@ public class GoogleTrafficHelper {
 			}
 			int code = connection.getResponseCode();
 			if (code != HttpURLConnection.HTTP_OK) {
-				String body = read(connection.getErrorStream());
+				// Named for what it is, and NOT `body` - that is this method's request-body
+				// parameter, and shadowing it here is what failed the build.
+				String error = read(connection.getErrorStream());
 				net.osmand.plus.cairodrive.providers.ApiHealth.recordFailure(
-						net.osmand.plus.cairodrive.providers.ApiHealth.Api.GOOGLE_ROUTES, code, body);
-				LOG.info(TRACE_TAG + " HTTP " + code + " " + body);
+						net.osmand.plus.cairodrive.providers.ApiHealth.Api.GOOGLE_ROUTES, code, error);
+				LOG.info(TRACE_TAG + " HTTP " + code + " " + error);
 				return null;
 			}
 			net.osmand.plus.cairodrive.providers.ApiHealth.recordOk(
