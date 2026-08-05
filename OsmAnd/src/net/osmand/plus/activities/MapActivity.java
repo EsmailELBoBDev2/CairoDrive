@@ -606,6 +606,12 @@ public class MapActivity extends OsmandActionBarActivity implements DownloadEven
 		}
 		RestartActivity.showRestartDialogIfNeeded(this);
 
+		// Traffic overlay tile sources, offered under Configure map > Overlay once Online maps is
+		// enabled - installed, never auto-selected. Called on every resume, not once per run: the
+		// helper latches the install itself but its overlay-visibility fix has to run again after
+		// the user first selects the overlay. Disk work happens on the helper's own thread.
+		TrafficOverlayHelper.installTrafficOverlaySource(app);
+
 		importHelper.setUiActivity(this);
 		app.getLocationProvider().ensureLatestLocation();
 

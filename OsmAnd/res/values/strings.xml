@@ -5777,4 +5777,15 @@ Download tile maps directly, or copy them as SQLite database files to OsmAnd\'s 
     <string name="routing_attr_difficulty_preference_description">Prefer routes of this difficulty, although routing over harder or easier pistes is still possible if shorter.</string>
     <string name="routing_attr_freeride_policy_name">Off-piste</string>
     <string name="routing_attr_freeride_policy_description">\'Freeride\' and \'Off-piste\' are unofficial routes and passages. Typically ungroomed, unmaintained and not checked in the evening. Enter at your own risk.</string>
+	<!-- Cairo Drive traffic stack. The format specifiers are NOT interchangeable and must stay
+	     identical here and in values-ar: cairo_traffic_delay is formatted with an int (%1$d) and
+	     cairo_traffic_detour with a String (%1$s). A mismatch throws IllegalFormatConversionException
+	     at runtime, on the driving path, where nothing catches it. -->
+	<string name="cairo_traffic_delay">Traffic ahead — about +%1$d min on your route</string>
+	<string name="cairo_traffic_detour">Faster route around the traffic — saving about %1$s min</string>
+	<string name="cairo_road_closed">Road closed ahead — rerouting around it</string>
+	<string name="cairo_google_traffic">Live traffic (Google)</string>
+	<string name="cairo_google_traffic_desc">Sends your position to Google while the map is open</string>
+	<string name="cairo_live_closures">Live road closures</string>
+	<string name="cairo_live_closures_desc">Sends your area to TomTom and HERE to find closures ahead</string>
 </resources>

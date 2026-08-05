@@ -10,6 +10,7 @@ import net.osmand.PlatformUtil;
 import net.osmand.data.LatLon;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
+import net.osmand.plus.helpers.CairoDriveLog;
 import net.osmand.plus.onlinerouting.engine.OnlineRoutingEngine;
 import net.osmand.plus.routing.GPXRouteParams.GPXRouteParamsBuilder;
 import net.osmand.plus.settings.backend.ApplicationMode;
@@ -155,9 +156,20 @@ class RouteRecalculationHelper {
 	}
 
 	private void setNewRoute(RouteCalculationResult prevRoute, RouteCalculationResult res, Location start) {
+		setNewRoute(prevRoute, res, start, false);
+	}
+
+	// servedInstantly marks a swap the driver never asked for (a traffic detour). Such a swap is
+	// announced once by its caller as what it saves; letting the generic route-recalculated prompt
+	// fire as well would give one event two voice lines.
+	private void setNewRoute(RouteCalculationResult prevRoute, RouteCalculationResult res, Location start,
+	                         boolean servedInstantly) {
 		routingHelper.setRoute(res);
+		// Re-arm the traffic poller against the new geometry. Non-urgent in both cases: a detour
+		// was live-scored moments ago, so a shorter rewind would only buy one extra billed poll.
+		GoogleTrafficHelper.onNewRoute();
 		boolean newRoute = !prevRoute.isCalculated();
-		if (isFollowingMode()) {
+		if (isFollowingMode() && !servedInstantly) {
 			Location lastFixedLocation = getLastFixedLocation();
 			if (lastFixedLocation != null) {
 				start = lastFixedLocation;
@@ -202,6 +214,52 @@ class RouteRecalculationHelper {
 			}
 		}
 		return !res.initialCalculation; // announce at final
+	}
+
+	/**
+	 * Installs a detour computed by {@link TrafficDetourHelper} through the same single-thread
+	 * executor the real recalculations use, so it can never overlap one. The route the detour was
+	 * computed against is re-checked here because that computation took seconds off-thread: a
+	 * navigation stopped or replaced meanwhile must not be resurrected. Installed silently, with
+	 * one announcement of what the detour saves.
+	 *
+	 * Not registered in tasksMap - it is not a recalculation, and isRouteBeingCalculated() must
+	 * keep reporting on real recalculations only.
+	 *
+	 * The re-check and the swap are one atomic step under the RoutingHelper monitor: clearCurrentRoute
+	 * is synchronized on it, so without that hold it could land entirely between the two and the
+	 * detour would resurrect navigation the driver had just stopped. Lock order is
+	 * RoutingHelper -> GoogleTrafficHelper.class everywhere; this thread holds neither the routing
+	 * config monitor nor the class monitor here, so the order is preserved.
+	 */
+	void installTrafficDetour(RouteCalculationResult expected, RouteCalculationResult detour,
+	                          Location start, int savedMinutes) {
+		executor.submit(() -> {
+			try {
+				synchronized (routingHelper) {
+					if (routingHelper.getRoute() != expected || !isFollowingMode()) {
+						return;
+					}
+					// The detour starts at the position the computation used; the driver has moved on
+					// since, so advance to the nearest node ahead before it becomes the live route.
+					List<Location> nodes = detour.getImmutableAllLocations();
+					if (nodes != null && !nodes.isEmpty()) {
+						int ahead = RoutingHelperUtils.lookAheadFindMinOrthogonalDistance(start, nodes, 0, 15);
+						if (ahead > 0 && ahead + 1 < nodes.size()) {
+							detour.updateCurrentRoute(ahead + 1);
+						}
+					}
+					setNewRoute(expected, detour, start, true);
+				}
+				CairoDriveLog.log("DETOUR", "detour installed - saving ~" + savedMinutes + " min");
+				// Visual only: the spoken sibling would need a CommandPlayer raw-text path that this
+				// fork does not carry - see the port notes. The toast is the whole notification.
+				app.runInUIThread(() -> app.showShortToastMessage(R.string.cairo_traffic_detour,
+						String.valueOf(savedMinutes)));
+			} catch (Throwable t) {
+				LOG.error("Traffic detour install failed", t);
+			}
+		});
 	}
 
 	void startRouteCalculationThread(RouteCalculationParams params, boolean paramsChanged, boolean updateProgress) {

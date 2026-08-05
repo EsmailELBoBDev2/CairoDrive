@@ -1747,6 +1747,17 @@ public class OsmandSettings {
 	public final OsmandPreference<Boolean> SPEAK_GPS_SIGNAL_STATUS = new BooleanPreference(this, "speak_gps_signal_status", true).makeProfile().cache();
 	public final OsmandPreference<Boolean> SPEAK_ROUTE_DEVIATION = new BooleanPreference(this, "speak_route_deviation", true).makeProfile().cache();
 
+	// Persisted free-tier budget for the Google traffic poller: UTC day index plus one counter per
+	// billing tier (spans = Enterprise SKU, delay = Pro SKU). Global on purpose - a profile-scoped
+	// counter would hand out a fresh daily budget on every profile switch, which is exactly how the
+	// $0 guarantee is lost. Day index 0 is 1970, so the first roll always fires; the roll is
+	// forward-only, so a device clock moved backwards cannot refill the budget. The counters are
+	// claimed BEFORE the request goes out and are never refunded on failure - that ordering is what
+	// makes the cap bind, so do not move an increment behind a successful response.
+	public final CommonPreference<Integer> GOOGLE_TRAFFIC_REQUEST_DAY = new IntPreference(this, "google_traffic_request_day", 0).makeGlobal().cache();
+	public final CommonPreference<Integer> GOOGLE_TRAFFIC_REQUEST_COUNT = new IntPreference(this, "google_traffic_request_count", 0).makeGlobal().cache();
+	public final CommonPreference<Integer> GOOGLE_TRAFFIC_DELAY_REQUEST_COUNT = new IntPreference(this, "google_traffic_delay_request_count", 0).makeGlobal().cache();
+
 	public final OsmandPreference<Boolean> SPEED_CAMERAS_UNINSTALLED = new BooleanPreference(this, "speed_cameras_uninstalled", false).makeGlobal().makeShared();
 	public final OsmandPreference<Boolean> SPEED_CAMERAS_ALERT_SHOWED = new BooleanPreference(this, "speed_cameras_alert_showed", false).makeGlobal().makeShared();
 
@@ -2057,6 +2068,19 @@ public class OsmandSettings {
 			new EnumStringPreference<>(this, "layer_transparency_seekbar_mode", LayerTransparencySeekbarMode.UNDEFINED, LayerTransparencySeekbarMode.values());
 
 	public final CommonPreference<String> MAP_OVERLAY_PREVIOUS = new StringPreference(this, "map_overlay_previous", null).makeGlobal().cache();
+
+	// Live traffic on the navigated route (Google Routes API). Deliberate opt-in: every poll is a
+	// billed request and it discloses position to Google whenever the map is open, so it defaults
+	// OFF and is switched on from Configure map. Profile-scoped: traffic matters when driving, not
+	// when hiking. Also gates the free-drive poller, so OFF means zero network from this feature.
+	public final OsmandPreference<Boolean> GOOGLE_TRAFFIC_ON_ROUTE = new BooleanPreference(this, "google_traffic_on_route", false).makeProfile().cache();
+
+	// Live road closures (TomTom/HERE) held as impassable roads. Defaults OFF because a provider
+	// key is not a user-facing off switch: resolving one refresh issues up to 45 road-segment
+	// lookups on CurrentPositionHelper's single shared executor - the same one the location arrow
+	// snaps with - so it must stay stoppable from the UI independently of which keys the build
+	// carries. Profile-scoped for the same reason as GOOGLE_TRAFFIC_ON_ROUTE.
+	public final OsmandPreference<Boolean> LIVE_ROAD_CLOSURES = new BooleanPreference(this, "live_road_closures", false).makeProfile().cache();
 
 	public final CommonPreference<String> MAP_UNDERLAY_PREVIOUS = new StringPreference(this, "map_underlay_previous", null).makeGlobal().cache();
 

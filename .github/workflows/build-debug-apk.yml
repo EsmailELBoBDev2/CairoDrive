@@ -1,7 +1,12 @@
 name: Build debug apk
 
 on:
-  [workflow_dispatch]
+  workflow_dispatch:
+    inputs:
+      inject_keys:
+        description: "Bake provider API keys into the APK. They become extractable from the uploaded artifact - only for builds you will install yourself."
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -47,18 +52,62 @@ jobs:
         repository: osmandapp/OsmAnd-misc
         path: misc
 
-    - name: set up JDK 11
+    # AGP 8.7.3 (build.gradle) requires JDK 17, and OsmAnd/build.gradle declares
+    # sourceCompatibility/targetCompatibility VERSION_17 with kotlin jvmTarget "17".
+    - name: set up JDK 17
       uses: actions/setup-java@v5
       with:
-        java-version: '11'
-        distribution: 'adopt'
+        java-version: '17'
+        distribution: 'temurin'
 
     - name: Grant execute permission for gradlew
       working-directory: ./android
       run: chmod +x gradlew
+    # -XX:MaxPermSize was removed in JDK 9, so the Gradle JVM refuses to start with it under
+    # JDK 17. 5120m is the value an OsmAnd assemble actually needs; 2048m OOMs.
     - name: Patch memory requirements
       working-directory: ./android
-      run: printf "\norg.gradle.jvmargs=-Xmx2048m -XX:MaxPermSize=512m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8\n" >> gradle.properties
+      run: printf "\norg.gradle.jvmargs=-Xmx5120m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8\n" >> gradle.properties
+    # Traffic provider keys are compiled in from res/values/no_translate.xml, which is committed
+    # empty. No secret -> the string stays empty -> TrafficOverlayHelper installs no overlay,
+    # ClosureSyncHelper returns before any request, GoogleTrafficHelper no-ops and its map toggle
+    # stays hidden. A keyless build is a valid, fully offline build - never fail here for a
+    # missing secret. Never add `set -x` to this step: it would expand a key into the log, and
+    # never add a later step that prints `git diff`/`git status` content or uploads anything but
+    # the APK - `sed -i` leaves the real key in the runner's working tree.
+    - name: Inject traffic provider keys (optional)
+      if: inputs.inject_keys
+      env:
+        TOMTOM_API_KEY: ${{ secrets.TOMTOM_API_KEY }}
+        HERE_API_KEY: ${{ secrets.HERE_API_KEY }}
+        GOOGLE_ROUTES_API_KEY: ${{ secrets.GOOGLE_ROUTES_API_KEY }}
+      run: |
+        set -euo pipefail
+        file="android/OsmAnd/res/values/no_translate.xml"
+        inject() {
+          name="$1"; value="$2"; unlocks="$3"
+          if [ -z "$value" ]; then
+            echo "No secret for ${name} - ${unlocks} stays OFF (app remains offline)"
+            return 0
+          fi
+          echo "::add-mask::${value}"
+          # Provider keys are limited to [A-Za-z0-9_-], so the '|' sed delimiter is safe. Escape the
+          # replacement anyway: in a sed RHS an unescaped '&' expands to the whole match and a
+          # trailing '\' starts an escape, so a key outside that charset would ship mangled - and the
+          # assertion below only checks non-empty, so it would still report success.
+          escaped=$(printf '%s' "$value" | sed -e 's/[&|\\]/\\&/g')
+          sed -i "s|\(<string name=\"${name}\" translatable=\"false\">\)[^<]*\(</string>\)|\1${escaped}\2|" "$file"
+          # sed exits 0 when it matches nothing, so a reformatted placeholder would ship a silently
+          # keyless build that logs success. Assert the element is now non-empty.
+          if ! grep -q "name=\"${name}\" translatable=\"false\">..*</string>" "$file"; then
+            echo "::error::${name} secret is set but no empty placeholder matched in ${file}. Restore the exact element: <string name=\"${name}\" translatable=\"false\"></string>"
+            exit 1
+          fi
+          echo "${name} injected from secret (${unlocks} ON)"
+        }
+        inject tomtom_routing_api_key "${TOMTOM_API_KEY:-}" "TomTom traffic overlay + road closures"
+        inject here_api_key "${HERE_API_KEY:-}" "HERE traffic overlay + road closures"
+        inject google_routes_api_key "${GOOGLE_ROUTES_API_KEY:-}" "Google live traffic-on-route"
     - name: Build with Gradle
       working-directory: ./android
       run: ./gradlew assembleNightlyFreeLegacyFatDebug
@@ -70,4 +119,7 @@ jobs:
       with:
         name: debug-apk
         path: android/OsmAnd/build/outputs/apk/*/*/*.apk
-        retention-days: 90
+        # Short retention: with inject_keys on, these artifacts embed the API keys in
+        # resources.arsc, and the debug build is signed with the repo's committed
+        # keystores/debug.keystore, so package + signing-cert key restrictions do not protect it.
+        retention-days: 7

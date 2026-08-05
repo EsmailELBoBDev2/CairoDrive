@@ -68,14 +68,18 @@ public class RoutingHelper {
 	private final RouteRecalculationHelper routeRecalculationHelper;
 	private final TransportRoutingHelper transportRoutingHelper;
 
-	private boolean isFollowingMode;
+	// volatile together with route below: both are read off the recalculation executor thread by
+	// RouteRecalculationHelper.installTrafficDetour, which re-checks that the route a detour was
+	// computed against is still the one being driven. Without the happens-before edge that check
+	// can pass on a stale value and install a detour over navigation already cancelled here.
+	private volatile boolean isFollowingMode;
 	private boolean isRoutePlanningMode;
 	private boolean isPauseNavigation;
 	private boolean isPausedOnAADisconnect;
 
 	private GPXRouteParamsBuilder currentGPXRoute;
 
-	private RouteCalculationResult route = new RouteCalculationResult("");
+	private volatile RouteCalculationResult route = new RouteCalculationResult("");
 
 	private LatLon finalLocation;
 	private List<LatLon> intermediatePoints;
@@ -115,6 +119,12 @@ public class RoutingHelper {
 
 	RouteProvider getProvider() {
 		return provider;
+	}
+
+	// Package-private on purpose: TrafficDetourHelper installs a computed detour through the same
+	// serialized recalculation executor real recalculations use, and it lives in this package.
+	RouteRecalculationHelper getRouteRecalculationHelper() {
+		return routeRecalculationHelper;
 	}
 
 	public void resetRouteWasFinished() {
@@ -245,6 +255,9 @@ public class RoutingHelper {
 		app.logRoutingEvent("clearCurrentRoute newFinalLocation " + newFinalLocation + " newIntermediatePoints " + newIntermediatePoints);
 		routeWasFinished = false; // Prevent stale "arrived" state from leaking into the next navigation session
 		route = new RouteCalculationResult("");
+		// Congestion spans are geo-anchored, not route-anchored, so nothing else drops them when
+		// navigation ends - without this they keep painting over whatever comes next.
+		GoogleTrafficHelper.reset(app);
 		isDeviatedFromRoute = false;
 		routeRecalculationHelper.resetEvalWaitInterval();
 		app.getWaypointHelper().setNewRoute(route);
@@ -503,6 +516,23 @@ public class RoutingHelper {
 						voiceRouterStopped = true; // Prevents excessive execution of stop() code
 					}
 					voiceRouter.announceOffRoute(distOrth);
+				}
+
+				// 5.5. Live traffic, navigation side. Both helpers own their preference gate and
+				// their throttle, so a disabled or throttled feature costs a cached read here; the
+				// free-drive side is driven by GoogleTrafficLayer's own location listener instead.
+				// Network and routing work is handed to background threads by both helpers.
+				// Known cost, accepted deliberately: on the polls that actually claim budget
+				// (at most one per 2 min while navigating, plus three on the first poll after a UTC
+				// day roll) GoogleTrafficHelper persists its counters through IntPreference, whose
+				// setValue ends in a synchronous commit() - a blocking disk write on this thread
+				// while this monitor is held. That is the price of a budget cap that survives process
+				// death, which is what keeps Google billing at zero; an in-memory counter flushed
+				// later could be lost on a kill and grant a second daily budget. Nothing else here
+				// may block, and no new blocking work belongs in this block.
+				if (isFollowingMode) {
+					ClosureSyncHelper.onLocationUpdate(app, currentLocation, true);
+					GoogleTrafficHelper.onLocationUpdate(this, currentLocation);
 				}
 
 				// calculate projection of current location
