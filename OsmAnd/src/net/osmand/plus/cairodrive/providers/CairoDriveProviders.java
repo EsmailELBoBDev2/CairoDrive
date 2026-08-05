@@ -87,11 +87,23 @@ public final class CairoDriveProviders {
 	public static final int PRIORITY_OPENWEATHER = 80;
 	public static final int PRIORITY_LOCAL = 60;
 	/**
-	 * Below every alternative on purpose. Google's Cairo traffic data is the best available and
-	 * is also the one thing Maps Platform ToS 19.2 explicitly forbids drawing on a non-Google
-	 * basemap. If a Google-backed traffic provider is ever registered - the
-	 * {@code TRAFFIC_ON_POLYLINE} path in {@code GoogleTrafficHelper} is still in the tree - it
-	 * must lose to TomTom by construction rather than by whoever registered first.
+	 * Reserved, and currently inert: NOTHING registers under {@link #NAME_GOOGLE}.
+	 *
+	 * <p>Worth stating plainly, because raising this number looks like it would make Google the
+	 * traffic source and does not. {@code GoogleTrafficHelper} is not a {@link Provider} at all -
+	 * it sits outside arbitration, gated only by its own toggle, and keeps its own snapshot. So
+	 * the two traffic sources never compete for this slot; they do different jobs:
+	 *
+	 * <pre>
+	 *   TomTom  (registered)  flow -> ETA correction,  incidents -> closure chip and nogo points
+	 *   Google  (standalone)  congestion spans -> the colours on the route,  delay -> the ETA
+	 * </pre>
+	 *
+	 * <p>Which is why "use Google, not the others" cannot be done by priority. Google publishes no
+	 * incidents, so switching TomTom off would not move the closure warning to Google - it would
+	 * delete it. If a Google-backed provider is ever registered here it must still lose to TomTom
+	 * by construction, for the reason below rather than any technical one: Maps Platform ToS 19.2
+	 * forbids drawing Google content on a non-Google basemap, and this app renders OSM.
 	 */
 	public static final int PRIORITY_GOOGLE = 40;
 	/** Anything not in the table. Loses to every named provider, then ties break on name. */

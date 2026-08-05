@@ -506,6 +506,11 @@ public class RoutingHelper {
 		// point that returns on its first line when its flag is off, so a default build still pays
 		// one boolean read per fix for the lot.
 		if (currentLocation != null) {
+			// Google traffic WITHOUT a destination - the corridor ahead instead of a route. Sits
+			// here for the same reason the three below do: setCurrentLocation returns above on
+			// finalLocation == null, so anything left further down never runs while free driving.
+			// It self-gates on the toggle, the key, foreground, car mode, speed and the ladder.
+			GoogleTrafficHelper.onFreeDriveLocation(app, currentLocation);
 			net.osmand.plus.cairodrive.providers.SunGlareProvider.onLocationUpdate(app, currentLocation);
 			net.osmand.plus.cairodrive.providers.OpenWeatherHazardProvider.onLocationUpdate(app, currentLocation);
 			net.osmand.plus.cairodrive.providers.TomTomTrafficProvider.onLocationUpdate(this, currentLocation);

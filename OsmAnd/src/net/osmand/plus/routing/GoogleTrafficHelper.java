@@ -211,6 +211,31 @@ public class GoogleTrafficHelper {
 	/** computeRoutes caps intermediates at 25; 20 leaves headroom. */
 	private static final int MAX_INTERMEDIATES = 20;
 	private static final int MIN_REMAINING_M = 1000;
+
+	// ---------------------------------------------------------------- free driving
+	//
+	// Ported from the claude/traffic-stack branch, which implemented Google traffic without a
+	// route and had NO budget control of any kind - it claimed a span straight against the daily
+	// cap and never touched a ladder. That is the shape most likely to have produced the ~140.9k
+	// requests on the dashboard, so the gates and the corridor idea are kept and the spending is
+	// not: the claim goes through claimRequestTier like every other poll, so free driving is paced
+	// by the same SPANS_LADDER as navigation and cannot outrun it.
+
+	/** How far ahead the corridor reaches. About ten minutes of Cairo driving. */
+	private static final double FREE_DRIVE_LOOKAHEAD_M = 5000;
+	/**
+	 * Below this the bearing is noise, so there is no corridor to ask about - a car crawling in a
+	 * car park would otherwise fetch a 5 km corridor pointing wherever it last happened to face.
+	 */
+	private static final float MIN_FREE_DRIVE_SPEED_MS = 5f;
+	/** Past this the corridor is refetched even if the car has not left it. */
+	private static final long CORRIDOR_MAX_AGE_MS = 5 * 60 * 1000L;
+	/** A turn this sharp means the old corridor describes a road no longer being driven. */
+	private static final double CORRIDOR_MAX_BEARING_DIFF = 35;
+
+	private static volatile double lastPollLat;
+	private static volatile double lastPollLon;
+	private static volatile float corridorBearing;
 	private static final int SPANS_DAILY_CAP = 32;
 	private static final int DELAY_DAILY_CAP = 161;
 
@@ -464,6 +489,123 @@ public class GoogleTrafficHelper {
 		}
 		// lastCheck was already advanced, so this retries on the next CHECK_INTERVAL_MS tick.
 		return TIER_NONE;
+	}
+
+	/**
+	 * Google traffic with NO destination - the road corridor ahead instead of a route.
+	 *
+	 * <h3>What it costs, and why that is the whole design</h3>
+	 *
+	 * It claims through {@link #claimRequestTier}, exactly as the navigation path does, so a
+	 * free-driving poll is a SPANS poll like any other: same ladder, same daily cap, same tier
+	 * intervals. The branch this came from used a raw cap check that bypassed pacing entirely;
+	 * routing it through the ladder is the difference between a feature and a bill.
+	 *
+	 * <h3>The gates, cheapest first</h3>
+	 *
+	 * Every one of these runs before a byte is spent, and the order matters because this is called
+	 * on every GPS fix. Notably it refuses while BACKGROUNDED - streaming position to Google when
+	 * the driver is not looking at the app is not something to do quietly - and refuses below
+	 * {@value #MIN_FREE_DRIVE_SPEED_MS} m/s, because a corridor needs a direction of travel and a
+	 * stationary car has none.
+	 *
+	 * <h3>Corridor reuse</h3>
+	 *
+	 * Still inside the last corridor, pointing the same way, data still young: return without
+	 * advancing the clock, so the next poll fires the moment the car turns or passes the midpoint
+	 * rather than on a timer. That is what stops a straight motorway run re-fetching the same 5 km.
+	 */
+	public static void onFreeDriveLocation(@Nullable OsmandApplication app, @Nullable Location loc) {
+		try {
+			if (app == null || loc == null) {
+				return;
+			}
+			OsmandSettings settings = app.getSettings();
+			if (!settings.GOOGLE_TRAFFIC_ON_ROUTE.get() || Algorithms.isEmpty(apiKey(app))) {
+				return;
+			}
+			if (app.getRoutingHelper().isFollowingMode()) {
+				return;                      // the navigation path owns polling; never double-fire
+			}
+			if (!settings.isInternetConnectionAvailable() || !app.isAppInForeground()) {
+				return;
+			}
+			ApplicationMode mode = settings.getApplicationMode();
+			if (mode == null || !mode.isDerivedRoutingFrom(ApplicationMode.CAR)) {
+				return;
+			}
+			if (!loc.hasBearing() || !loc.hasSpeed() || loc.getSpeed() < MIN_FREE_DRIVE_SPEED_MS) {
+				return;
+			}
+			long now = System.currentTimeMillis();
+			if (inFlight || now - lastCheck < CHECK_INTERVAL_MS) {
+				return;
+			}
+			double lat = loc.getLatitude();
+			double lon = loc.getLongitude();
+			TrafficSnapshot young = snapshot;
+			if (young != null && now - young.spansTimeMs < CORRIDOR_MAX_AGE_MS
+					&& MapUtils.getDistance(lat, lon, lastPollLat, lastPollLon)
+							< FREE_DRIVE_LOOKAHEAD_M / 2
+					&& Math.abs(MapUtils.degreesDiff(loc.getBearing(), corridorBearing))
+							< CORRIDOR_MAX_BEARING_DIFF) {
+				return;
+			}
+
+			int gen;
+			synchronized (GoogleTrafficHelper.class) {
+				if (inFlight || now - lastCheck < CHECK_INTERVAL_MS) {
+					return;
+				}
+				lastCheck = now;
+				// The ladder decides, not a bare cap. TIER_SPANS is the only tier worth having
+				// here: the delay figure is "how much longer than free-flow", which needs a route
+				// to be longer THAN, so it means nothing without a destination.
+				if (claimRequestTier(app) != TIER_SPANS) {
+					return;
+				}
+				inFlight = true;
+				lastPollLat = lat;
+				lastPollLon = lon;
+				corridorBearing = loc.getBearing();
+				gen = generation;
+			}
+
+			// A two-point route: here, and 5 km along the current bearing. That is all
+			// fetchTraffic needs, so the entire request, parse and store path is the one already
+			// proven on the navigation side rather than a second copy of it.
+			LatLon ahead = MapUtils.rhumbDestinationPoint(lat, lon, FREE_DRIVE_LOOKAHEAD_M,
+					loc.getBearing());
+			List<Location> corridor = new ArrayList<>(2);
+			Location start = new Location("cd-freedrive", lat, lon);
+			Location end = new Location("cd-freedrive", ahead.getLatitude(), ahead.getLongitude());
+			corridor.add(start);
+			corridor.add(end);
+
+			boolean started = false;
+			try {
+				Thread worker = new Thread(() -> {
+					try {
+						Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND);
+						fetchTraffic(app, lat, lon, corridor, gen, true);
+					} catch (Throwable t) {
+						LOG.info(TRACE_TAG + " free-drive poll failed", t);
+					} finally {
+						inFlight = false;
+					}
+				}, "google-traffic-free");
+				worker.setPriority(Thread.MIN_PRIORITY);
+				worker.start();
+				started = true;
+			} finally {
+				if (!started) {
+					// A thread that never started would otherwise wedge the poller off for good.
+					inFlight = false;
+				}
+			}
+		} catch (Throwable t) {
+			LOG.info(TRACE_TAG + " onFreeDriveLocation failed", t);
+		}
 	}
 
 	/**
