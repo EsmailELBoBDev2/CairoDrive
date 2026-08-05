@@ -475,6 +475,11 @@ def glanceStyle = glanceStyleEnv?.trim() ? glanceStyleEnv.trim() : "true"
 def tomtomKeyEnv = System.getenv("CAIRODRIVE_TOMTOM_KEY")
 def tomtomKey = tomtomKeyEnv?.trim() ? tomtomKeyEnv.trim() : ""
 
+// HERE traffic tiles. Same shape as every other key here: an env var, never a file. Empty is the
+// normal case - the raster overlay simply does not install - and that is checked at the call site
+// rather than assumed.
+def hereKeyEnv = System.getenv("CAIRODRIVE_HERE_KEY")
+def hereKey = hereKeyEnv?.trim() ? hereKeyEnv.trim() : ""
 def openWeatherKeyEnv = System.getenv("CAIRODRIVE_OPENWEATHER_KEY")
 def openWeatherKey = openWeatherKeyEnv?.trim() ? openWeatherKeyEnv.trim() : ""
 
@@ -749,6 +754,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_AUTOCOMPLETE", placesAutocomplete
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_NEARBY", placesNearby
 			buildConfigField "String", "CAIRODRIVE_TOMTOM_KEY", "\"" + tomtomKey + "\""
+			buildConfigField "String", "CAIRODRIVE_HERE_KEY", "\"" + hereKey + "\""
 			buildConfigField "String", "CAIRODRIVE_OPENWEATHER_KEY", "\"" + openWeatherKey + "\""
 			buildConfigField "String", "CAIRODRIVE_MAPILLARY_TOKEN", "\"" + mapillaryToken + "\""
 			buildConfigField "String", "CAIRODRIVE_BESTTIME_PRIVATE_KEY", "\"" + bestTimePrivate + "\""
@@ -792,6 +798,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_AUTOCOMPLETE", placesAutocomplete
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_NEARBY", placesNearby
 			buildConfigField "String", "CAIRODRIVE_TOMTOM_KEY", "\"" + tomtomKey + "\""
+			buildConfigField "String", "CAIRODRIVE_HERE_KEY", "\"" + hereKey + "\""
 			buildConfigField "String", "CAIRODRIVE_OPENWEATHER_KEY", "\"" + openWeatherKey + "\""
 			buildConfigField "String", "CAIRODRIVE_MAPILLARY_TOKEN", "\"" + mapillaryToken + "\""
 			buildConfigField "String", "CAIRODRIVE_BESTTIME_PRIVATE_KEY", "\"" + bestTimePrivate + "\""

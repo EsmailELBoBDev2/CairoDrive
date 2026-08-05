@@ -37,6 +37,7 @@ import androidx.annotation.StringRes;
 
 import net.osmand.OnResultCallback;
 import net.osmand.PlatformUtil;
+import net.osmand.plus.BuildConfig;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.activities.MapActivity;
@@ -264,7 +265,7 @@ public class ConfigureMapMenu {
 		// Google Routes live traffic on the navigated route - deliberate opt-in (billed + ToS-gray),
 		// so it is off by default and the toggle only appears when the build carries a key. Without
 		// this item the preference is unreachable and the whole live-traffic stack stays inert.
-		if (!Algorithms.isEmpty(app.getString(R.string.google_routes_api_key))) {
+		if (!Algorithms.isEmpty(BuildConfig.CAIRODRIVE_ROUTES_KEY)) {
 			selected = settings.GOOGLE_TRAFFIC_ON_ROUTE.get();
 			adapter.addItem(new ContextMenuItem("map.layers.google_traffic")
 					.setTitleId(R.string.cairo_google_traffic, activity)
@@ -289,8 +290,8 @@ public class ConfigureMapMenu {
 
 		// Live road closures held as impassable roads. Same opt-in reasoning; either provider key
 		// alone is enough, since ClosureSyncHelper queries whichever ones the build carries.
-		if (!Algorithms.isEmpty(app.getString(R.string.tomtom_routing_api_key))
-				|| !Algorithms.isEmpty(app.getString(R.string.here_api_key))) {
+		if (!Algorithms.isEmpty(BuildConfig.CAIRODRIVE_TOMTOM_KEY)
+				|| !Algorithms.isEmpty(BuildConfig.CAIRODRIVE_HERE_KEY)) {
 			selected = settings.LIVE_ROAD_CLOSURES.get();
 			adapter.addItem(new ContextMenuItem("map.layers.live_closures")
 					.setTitleId(R.string.cairo_live_closures, activity)

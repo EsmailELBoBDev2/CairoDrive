@@ -77,12 +77,9 @@
          open-and-close pair: a self-closing element compiles fine and silently defeats injection.
          Note: a TomTom/HERE key installed as a tile source is written into .metainfo on external
          storage and is exported in cleartext by "Map sources" settings export and Cloud backup. -->
-    <string name="tomtom_routing_api_key" translatable="false"></string>
-    <string name="here_api_key" translatable="false"></string>
     <!-- Google Routes API key for the live traffic-on-route stack (GoogleTrafficHelper). Restrict
          in Google Cloud Console (Android app restriction: package + signing-cert SHA-1, plus a
          Routes API restriction) AND set a requests/day quota cap - the app's own daily caps do not
          bind anyone holding an extracted key, and the debug keystore is committed to this repo. -->
-    <string name="google_routes_api_key" translatable="false"></string>
     <string name="test_discount_response" translatable="false">{\"url_params\":{\"selected_choose_plan_btn\":\"osmand_test_pro_annual\"},\"application\":{\"net.osmand\":true, \"net.osmand.plus\":true},\"show_day_frequency\":10,\"show_start_frequency\":40,\"icon\":\"ic_action_gift\",\"start\":\"22-05-2026 00:20\",\"description\":\"Подпишитесь на годовую подписку Maps+, Pro со скидкой 50% на первый год!\",\"end\":\"28-06-2026 23:59\",\"message\":\"РАСПРОДАЖА годовой подписки!\",\"oneOfConditions\":[{\"condition\":[{\"not_purchased_feature\":\"maps\"}, {\"not_purchased_feature\":\"pro\"}]}],\"url\":\"show-choose-plan:osmand-pro\",\"max_total_show\":20,\"discount\":\"-50\"}</string>
 </resources>

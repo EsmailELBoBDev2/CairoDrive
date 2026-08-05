@@ -3,6 +3,7 @@ package net.osmand.plus.helpers;
 import net.osmand.IndexConstants;
 import net.osmand.PlatformUtil;
 import net.osmand.map.TileSourceManager.TileSourceTemplate;
+import net.osmand.plus.BuildConfig;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.views.OsmandMap;
 import net.osmand.plus.R;
@@ -57,7 +58,7 @@ public class TrafficOverlayHelper {
 			// TomTom is the primary traffic overlay: 50,000 free tile requests/day (vs Azure's
 			// 5,000/MONTH, which one drive would exhaust - and Azure just resells TomTom data
 			// anyway). Installs only if the key is present. 3-min expiry = industry freshness.
-			String tomtomKey = app.getString(R.string.tomtom_routing_api_key);
+			String tomtomKey = BuildConfig.CAIRODRIVE_TOMTOM_KEY;
 			if (!Algorithms.isEmpty(tomtomKey)) {
 				install(app, "TomTom Traffic (flow)",
 						"https://api.tomtom.com/traffic/map/4/tile/flow/relative0/{0}/{1}/{2}.png?key="
@@ -66,7 +67,7 @@ public class TrafficOverlayHelper {
 			// HERE is a genuinely INDEPENDENT source (own map/probes, not TomTom-reheated) and
 			// covers Cairo - a real second opinion. Its freemium budget is far smaller
 			// (~250k transactions/MONTH), so its tiles refresh at 10 min instead of 3.
-			String hereKey = app.getString(R.string.here_api_key);
+			String hereKey = BuildConfig.CAIRODRIVE_HERE_KEY;
 			if (!Algorithms.isEmpty(hereKey)) {
 				install(app, "HERE Traffic (flow)",
 						"https://traffic.maps.hereapi.com/v3/flow/mc/{0}/{1}/{2}/256/png?apiKey=" + hereKey, 10);

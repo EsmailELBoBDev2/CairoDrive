@@ -6,6 +6,7 @@ import net.osmand.ResultMatcher;
 import net.osmand.binary.RouteDataObject;
 import net.osmand.data.LatLon;
 import net.osmand.osm.io.NetworkUtils;
+import net.osmand.plus.BuildConfig;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.helpers.CairoDriveLog;
@@ -106,8 +107,8 @@ public class ClosureSyncHelper {
 			if (fetching || (lastFetch != 0 && now - lastFetch < REFRESH_MS)) {
 				return;
 			}
-			String tomtomKey = app.getString(R.string.tomtom_routing_api_key);
-			String hereKey = app.getString(R.string.here_api_key);
+			String tomtomKey = BuildConfig.CAIRODRIVE_TOMTOM_KEY;
+			String hereKey = BuildConfig.CAIRODRIVE_HERE_KEY;
 			if (Algorithms.isEmpty(tomtomKey) && Algorithms.isEmpty(hereKey)) {
 				return; // no provider - fully offline build
 			}
