@@ -138,6 +138,38 @@ public class ConfigureMapMenu {
 				.setItemDeleteAction(settings.SHOW_FAVORITES)
 				.setListener(listener));
 
+		// Live traffic on the active route, from Google. Its own inline listener rather than
+		// MapLayerMenuListener: that listener switches on a fixed set of upstream item ids, and
+		// adding a fork-only case to it is a merge conflict on every upstream sync.
+		//
+		// Shown only when a key was compiled in. With no key the feature cannot do anything, and a
+		// switch that silently does nothing is worse than no switch - CAIRODRIVE_PLACE_DETAILS and
+		// the rest are build flags for the same reason.
+		if (!Algorithms.isEmpty(app.getString(R.string.google_routes_api_key))) {
+			boolean trafficOn = settings.GOOGLE_TRAFFIC_ON_ROUTE.get();
+			adapter.addItem(new ContextMenuItem(null)
+					.setTitleId(R.string.cairo_google_traffic_on_route, activity)
+					.setSelected(trafficOn)
+					.setColor(app, trafficOn ? R.color.osmand_orange : INVALID_ID)
+					.setIcon(R.drawable.ic_action_road_works_dark)
+					.setItemDeleteAction(settings.GOOGLE_TRAFFIC_ON_ROUTE)
+					.setListener((uiAdapter, view, item, isChecked) -> {
+						settings.GOOGLE_TRAFFIC_ON_ROUTE.set(isChecked);
+						item.setSelected(isChecked);
+						item.setColor(app, isChecked ? R.color.osmand_orange : INVALID_ID);
+						if (uiAdapter != null) {
+							uiAdapter.onDataSetChanged();
+						}
+						// Turning it OFF must drop the snapshot immediately, or the spans stay
+						// painted until the 10-minute TTL expires and the switch looks broken.
+						if (!isChecked) {
+							net.osmand.plus.routing.GoogleTrafficHelper.reset(app);
+						}
+						activity.refreshMap();
+						return false;
+					}));
+		}
+
 		ResourceManager resourceManager = app.getResourceManager();
 		boolean hasPoiData = !Algorithms.isEmpty(resourceManager.getAmenityRepositories())
 				|| resourceManager.hasTravelRepositories();
