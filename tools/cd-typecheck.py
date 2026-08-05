@@ -135,6 +135,55 @@ def strip(src):
     return "".join(out)
 
 
+def inherited_nested(src, imported, wildcards, own_pkg, pkgs, depth=3):
+    """Nested type names visible through the `extends` chain, walked up to `depth` levels.
+
+    Java lets a subclass refer to a superclass's nested type by its simple name, unqualified and
+    unimported. Without this, `NetworkListener` - declared `protected class` on
+    LocationServiceHelper and used bare in AndroidApiLocationServiceHelper - reads as unresolved.
+
+    Only `extends` is followed, not `implements`: an interface's nested types are reachable the
+    same way, but interfaces here are overwhelmingly small callback types with nothing nested, and
+    each extra edge is more file reading on every checked file for no findings.
+    """
+    found = set()
+    seen = set()
+    current = src
+    for _ in range(depth):
+        m = re.search(r"\bclass\s+\w+[^{]*?\bextends\s+([A-Z]\w*)", current)
+        if not m:
+            break
+        simple = m.group(1)
+        if simple in seen:
+            break
+        seen.add(simple)
+        # Resolve the simple name to a file: an explicit import, the file's own package, or a
+        # wildcard-imported one. Unresolvable means it is outside this tree (a framework class),
+        # and its nested types are not knowable from here - which is fine, they are not the case
+        # this exists for.
+        fqn = None
+        for candidate in imported:
+            if candidate == simple:
+                for pkg, names in pkgs.items():
+                    if simple in names:
+                        fqn = pkg + "." + simple
+                        break
+        if fqn is None:
+            for pkg in list(wildcards) + [own_pkg]:
+                if simple in pkgs.get(pkg, set()):
+                    fqn = pkg + "." + simple
+                    break
+        if fqn is None or fqn not in FILES:
+            break
+        try:
+            parent = strip(open(FILES[fqn], encoding="utf-8").read())
+        except OSError:
+            break
+        found |= set(re.findall(r"\b(?:class|interface|enum|record|@interface)\s+(\w+)", parent))
+        current = parent
+    return found
+
+
 def check(path, pkgs):
     raw = open(path, encoding="utf-8").read()
     src = strip(raw)
@@ -169,6 +218,12 @@ def check(path, pkgs):
         available.add(sw.rsplit(".", 1)[-1])
     # Same-directory siblings for the file's own package, keyed by path too.
     available |= pkgs.get(own_pkg, set())
+
+    # Nested types INHERITED from superclasses. A subclass may name its parent's `protected class
+    # NetworkListener` with no import and no qualifier, which is real Java and looked like an
+    # unresolved name here. That matters more since these findings gate CI: a false positive that
+    # fails a build is not noise, it is a broken gate.
+    available |= inherited_nested(src, imported, wildcards, own_pkg, pkgs)
 
     # Type positions: `Foo bar =`, `new Foo(`, `Foo.class`, `extends Foo`, `implements Foo`,
     # `catch (Foo`, `instanceof Foo`, `(Foo)` casts, `<Foo>`.

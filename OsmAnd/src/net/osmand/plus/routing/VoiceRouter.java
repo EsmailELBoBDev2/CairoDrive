@@ -473,9 +473,9 @@ public class VoiceRouter {
 		// STATUS_TURN = "Turn (now)"
 		if ((repeat || statusNotPassed(STATUS_TURN)) && atd.isTurnStateActive(speed, dist, STATE_TURN_NOW)) {
 			if (nextNextInfo != null && !atd.isTurnStateNotPassed(0, nextNextInfo.distanceTo, STATE_TURN_IN)) {
-				playMakeTurn(currentSegment, next, nextNextInfo);
+				playMakeTurn(currentSegment, next, nextNextInfo, speed);
 			} else {
-				playMakeTurn(currentSegment, next, null);
+				playMakeTurn(currentSegment, next, null, speed);
 			}
 			if (!next.getTurnType().goAhead() && isTargetPoint(nextNextInfo) && nextNextInfo != null) {
 				// !goAhead() avoids isolated "and arrive.." prompt, as goAhead() is not pronounced
@@ -588,6 +588,38 @@ public class VoiceRouter {
 		}
 		play(p);
 	}
+
+	/**
+	 * Drops the parts of a turn-now street name that cannot be spoken before the junction.
+	 *
+	 * <p>Reads the turn-now trigger distance from {@link AnnounceTimeDistances} rather than from a
+	 * constant, so it stays correct if the profile's lead time changes - the same source the
+	 * trigger predicate itself uses, which is what keeps the two from disagreeing.
+	 *
+	 * <p>A speed of zero, no route, or a disabled feature all leave the name untouched: the window
+	 * is a time computed from a speed, and there is no window to compute when the car is not
+	 * moving. Failing to the full sentence is the safe direction - it is what upstream says.
+	 */
+	private StreetName briefForTurnNow(StreetName name, float speed) {
+		try {
+			if (speed <= 0) {
+				return name;
+			}
+			double triggerM = atd.getTurnNowTriggerDistance(speed);
+			// The manoeuvre word itself - "turn right" - is spoken whatever this decides, so it is
+			// charged against the window rather than ignored. A rough constant is right here: the
+			// point is not to mis-size the window by a whole clause, and the clause lengths this
+			// chooses between differ by seconds, not by tenths.
+			return net.osmand.plus.cairodrive.CairoDriveTurnBrevity.trim(
+					name, speed, triggerM, TURN_WORD_MS);
+		} catch (Throwable t) {
+			// A voice prompt is never allowed to be the thing that breaks navigation.
+			return name;
+		}
+	}
+
+	/** Estimated duration of "turn right" / "انعطف يمينًا" - the part brevity cannot shorten. */
+	private static final long TURN_WORD_MS = 1200;
 
 	private StreetName getSpeakableStreetName(RouteSegmentResult currentSegment, RouteDirectionInfo i, boolean includeDest) {
 		Map<String, String> result = new HashMap<>();
@@ -942,23 +974,32 @@ public class VoiceRouter {
 		}
 	}
 
-	private void playMakeTurn(RouteSegmentResult currentSegment, RouteDirectionInfo next, NextDirectionInfo nextNextInfo) {
+	private void playMakeTurn(RouteSegmentResult currentSegment, RouteDirectionInfo next, NextDirectionInfo nextNextInfo, float speed) {
 		CommandBuilder p = getNewCommandPlayerToPlay();
 		if (p != null && router.getSettings().TURN_BY_TURN_DIRECTIONS.get()) {
 			String tParam = getTurnType(next.getTurnType());
 			ExitInfo exitInfo = next.getExitInfo();
 			boolean isplay = true;
+			// N7's second half. This is the TURN-NOW prompt - the one with roughly 6.7 s of travel
+			// left - and a long Cairo street name plus a destination clause does not fit in it.
+			// The trigger cannot be moved earlier (each rung of the status ladder fires once, so
+			// moving it deletes the only warning there is), so the sentence is shortened instead:
+			// the road being left goes first, then the destination clause, then the ref, and the
+			// street name is never dropped. Turn-in is untouched and keeps the full text - see
+			// CairoDriveTurnBrevity.
 			if (tParam != null) {
 				if (exitInfo != null && !Algorithms.isEmpty(exitInfo.getRef()) && settings.SPEAK_EXIT_NUMBER_NAMES.get()) {
 					String stringRef = getSpeakableExitRef(exitInfo.getRef());
-					p.takeExit(tParam, stringRef, getIntRef(exitInfo.getRef()), getSpeakableExitName(next, exitInfo, !suppressDest));
+					p.takeExit(tParam, stringRef, getIntRef(exitInfo.getRef()),
+							briefForTurnNow(getSpeakableExitName(next, exitInfo, !suppressDest), speed));
 				} else {
-					p.turn(tParam, getSpeakableStreetName(currentSegment, next, !suppressDest));
+					p.turn(tParam, briefForTurnNow(getSpeakableStreetName(currentSegment, next, !suppressDest), speed));
 				}
 			} else if (next.getTurnType().isRoundAbout()) {
-				p.roundAbout(next.getTurnType().getTurnAngle(), next.getTurnType().getExitOut(), getSpeakableStreetName(currentSegment, next, !suppressDest));
+				p.roundAbout(next.getTurnType().getTurnAngle(), next.getTurnType().getExitOut(),
+						briefForTurnNow(getSpeakableStreetName(currentSegment, next, !suppressDest), speed));
 			} else if (next.getTurnType().getValue() == TurnType.TU || next.getTurnType().getValue() == TurnType.TRU) {
-				p.makeUT(getSpeakableStreetName(currentSegment, next, !suppressDest));
+				p.makeUT(briefForTurnNow(getSpeakableStreetName(currentSegment, next, !suppressDest), speed));
 				// Do not announce goAheads
 				//} else if (next.getTurnType().getValue() == TurnType.C)) {
 				//	play.goAhead();
