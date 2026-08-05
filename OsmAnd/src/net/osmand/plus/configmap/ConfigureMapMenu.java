@@ -270,6 +270,22 @@ public class ConfigureMapMenu {
 				.setDescription(activity.getString(R.string.cairo_api_status_desc))
 				.setIcon(R.drawable.ic_action_info_dark)
 				.setListener((uiAdapter, view, item, isChecked) -> {
+					// LocationIQ is the only provider here that will state its own remaining
+					// quota, so ask it - every other row's budget line is this app's own counter,
+					// which is wrong the moment anything else uses the same key. Off the UI thread
+					// and not awaited: the dialog shows what is known now, and the real number
+					// lands in the drive log and in the next open.
+					new Thread(() -> {
+						android.os.Process.setThreadPriority(
+								android.os.Process.THREAD_PRIORITY_BACKGROUND);
+						try {
+							net.osmand.plus.cairodrive.providers.LocationIqProvider
+									.remainingToday(app);
+						} catch (Throwable ignored) {
+							// Telemetry only. It must never be able to break opening the screen
+							// whose entire job is to explain what is broken.
+						}
+					}, "cairo-quota-check").start();
 					new androidx.appcompat.app.AlertDialog.Builder(activity)
 							.setTitle(R.string.cairo_api_status)
 							.setMessage(net.osmand.plus.cairodrive.providers.ApiHealth.summary())
