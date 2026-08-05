@@ -667,7 +667,7 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 			Thread worker = new Thread(() -> {
 				try {
 					Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND);
-					poll(app, lat, lon, remaining, generation, pollIncidents, pollFlow);
+					poll(app, lat, lon, remaining, generation, pollIncidents, pollFlow, following);
 				} catch (Throwable t) {
 					CairoDriveLogger.getInstance().log(TRACE_TAG, "poll failed", t);
 				} finally {
@@ -712,14 +712,20 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 
 	private static void poll(@NonNull OsmandApplication app, double lat, double lon,
 	                         @NonNull List<Location> remaining, int generation,
-	                         boolean pollIncidents, boolean pollFlow) {
+	                         boolean pollIncidents, boolean pollFlow, boolean following) {
 		// The corridor is traced once and shared. Both endpoints describe the same stretch of road
 		// ahead, and tracing it twice could give them different answers if the walk changed.
 		List<Location> corridor = corridorAhead(remaining);
-		if (corridor.isEmpty()) {
+		if (!following && corridor.isEmpty()) {
 			// FREE DRIVING. Two opposite corners of a box centred on the car; fetchIncidents takes
 			// the min/max of whatever it is given, so this produces exactly that box with no
 			// special case inside it.
+			//
+			// Gated on !following, NOT on the corridor being empty. corridorAhead also returns
+			// empty while NAVIGATING once the remaining route is shorter than MIN_REMAINING_M -
+			// i.e. as the destination comes into range. Treating that as free driving would hand
+			// fetchFlow two opposite corners of an 11 km box and have it sample points along the
+			// DIAGONAL, spending flow points on locations nowhere near any road being driven.
 			Location sw = new Location("cd-freedrive");
 			sw.setLatitude(lat - FREE_DRIVE_RADIUS_DEG);
 			sw.setLongitude(lon - FREE_DRIVE_RADIUS_DEG);
