@@ -158,9 +158,9 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	 * minute {@link CairoDriveProviders#INCIDENTS_TTL_MS} so three or four polls can be lost in an
 	 * underpass before the data expires.
 	 */
-	private static final long INCIDENT_INTERVAL_MS = 150 * 1000L;
-	/** 5 minutes, and each tick costs {@value #FLOW_SAMPLE_POINTS} requests. See the class note. */
-	private static final long FLOW_INTERVAL_MS = 3 * 60 * 1000L;
+	private static final long INCIDENT_INTERVAL_MS = 60 * 1000L;
+	/** Matches TomTom's own 1-minute data refresh; each tick costs {@value #FLOW_SAMPLE_POINTS} requests. */
+	private static final long FLOW_INTERVAL_MS = 60 * 1000L;
 
 	/**
 	 * A recalculated route should be scored soon but not instantly. Without this the GPS churn
@@ -184,7 +184,7 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	private static final double MIN_REMAINING_M = 1500;
 
 	/** 6 - the middle of the 5-8 the corridor can carry without the spacing becoming meaningless. */
-	private static final int FLOW_SAMPLE_POINTS = 6;
+	private static final int FLOW_SAMPLE_POINTS = 12;
 	/**
 	 * A sweep of one point is not a sample of a corridor, it is a single reading presented as one.
 	 * If the budget cannot cover at least this many, the poll is skipped whole and the previous
@@ -193,15 +193,17 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	private static final int FLOW_MIN_POINTS = 3;
 
 	/**
-	 * 120 incident requests a day - about five hours of continuous driving at the 2.5 minute
-	 * cadence, against roughly one hour of actual daily use.
+	 * 400 incident requests a day - about six and a half hours of continuous driving at the
+	 * 1-minute cadence, against roughly 45 minutes of actual daily use. Sized as a CEILING for a
+	 * long day, not as a brake on a normal one: with flow's cap it totals 2200, inside TomTom's
+	 * 2500-per-DAY free tier with room left over.
 	 */
-	private static final int INCIDENT_DAILY_CAP = 120;
+	private static final int INCIDENT_DAILY_CAP = 400;
 	/**
-	 * 300 flow POINTS a day, not polls: 50 sweeps of {@value #FLOW_SAMPLE_POINTS}, so a little over
-	 * four hours of driving. Counted in points because points are what the vendor bills.
+	 * 1800 flow POINTS a day, not polls: 150 sweeps of {@value #FLOW_SAMPLE_POINTS}, so two and a
+	 * half hours of driving. Counted in points because points are what the vendor bills.
 	 */
-	private static final int FLOW_DAILY_CAP = 500;
+	private static final int FLOW_DAILY_CAP = 1800;
 
 	private static final int CONNECT_TIMEOUT_MS = 8000;
 	private static final int READ_TIMEOUT_MS = 12000;

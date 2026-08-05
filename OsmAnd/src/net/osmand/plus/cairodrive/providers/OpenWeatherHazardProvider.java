@@ -165,7 +165,7 @@ public final class OpenWeatherHazardProvider implements CairoDriveProviders.Prov
 	// ------------------------------------------------------------------ polling and budget
 
 	/** Dust is a weather-front timescale phenomenon; polling faster would buy nothing. */
-	private static final long POLL_INTERVAL_MS = 20 * 60 * 1000L;
+	private static final long POLL_INTERVAL_MS = 10 * 60 * 1000L;
 
 	/**
 	 * Polls per UTC day, each spending at most two requests (weather + air quality).
@@ -177,7 +177,7 @@ public final class OpenWeatherHazardProvider implements CairoDriveProviders.Prov
 	 * throttle to zero, and "poll once at trip start" then means once per launch. The persisted
 	 * last-poll time below is the first line of defence and this is the backstop behind it.
 	 */
-	private static final int POLL_DAILY_CAP = 72;
+	private static final int POLL_DAILY_CAP = 150;
 
 	private static final int CONNECT_TIMEOUT_MS = 8000;
 	private static final int READ_TIMEOUT_MS = 12000;

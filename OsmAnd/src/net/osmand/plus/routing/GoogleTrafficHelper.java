@@ -92,7 +92,19 @@ public class GoogleTrafficHelper {
 	/** Pro SKU: durations only. Must NOT mention the polyline or travelAdvisory. */
 	private static final String FIELD_MASK_DELAY = "routes.duration,routes.staticDuration";
 
-	private static final long CHECK_INTERVAL_MS = 3 * 60 * 1000L;
+	private static final long CHECK_INTERVAL_MS = 60 * 1000L;
+
+	/**
+	 * Floor between two SPANS polls - the Enterprise SKU, 1000/month.
+	 *
+	 * <p>Google's traffic layer refreshes every 5-10 minutes on high-traffic roads, so this is the
+	 * point past which extra requests buy identical bytes at the highest per-request price in the
+	 * app. Five minutes sits at the fast end of that window: fresh as the data allows, and no
+	 * faster.
+	 */
+	private static final long SPANS_MIN_INTERVAL_MS = 5 * 60 * 1000L;
+
+	private static volatile long lastSpansAtMs;
 	private static final long REROUTE_DEBOUNCE_MS = 60 * 1000L;
 	/** How long spans stay paintable. Public so the layer applies the same rule. */
 	public static final long SNAPSHOT_TTL_MS = 10 * 60 * 1000L;
@@ -170,7 +182,6 @@ public class GoogleTrafficHelper {
 	private static volatile long lastToast;
 	private static volatile boolean inFlight;
 	private static volatile int generation;
-	private static volatile boolean lastPollWasSpans;
 	private static volatile boolean budgetExhaustedLogged;
 	private static int versionCounter;
 	private static volatile String signingCert;
@@ -279,16 +290,25 @@ public class GoogleTrafficHelper {
 		int delayUsed = settings.GOOGLE_TRAFFIC_DELAY_REQUEST_COUNT.get();
 
 		boolean delayPoolGone = delayUsed >= DELAY_DAILY_CAP;
-		// !lastPollWasSpans is the every-other-poll interleave. The "or the cheap pool is gone"
-		// clause means leftover span budget gets spent rather than wasted once delay polls stop.
-		if (spansUsed < SPANS_DAILY_CAP && (!lastPollWasSpans || delayPoolGone)) {
+		// Spans get their OWN interval rather than an every-other-poll interleave.
+		//
+		// The interleave tied the two tiers together: making delay polls faster automatically made
+		// span polls faster, and spans are the Enterprise SKU with a 1000/month allowance. At a
+		// 60 s base check the interleave would have spent the whole daily span budget in 32
+		// minutes of driving, and spent it re-fetching a layer that only refreshes every 5-10
+		// minutes - paying the most expensive SKU in the app for identical bytes.
+		//
+		// Decoupled: delay runs at the base interval because its data moves on a 1-5 minute
+		// cadence, spans run at their own because theirs moves on a 5-10 minute one.
+		long sinceSpans = System.currentTimeMillis() - lastSpansAtMs;
+		boolean spansDue = sinceSpans >= SPANS_MIN_INTERVAL_MS;
+		if (spansUsed < SPANS_DAILY_CAP && (spansDue || delayPoolGone)) {
+			lastSpansAtMs = System.currentTimeMillis();
 			settings.GOOGLE_TRAFFIC_REQUEST_COUNT.set(spansUsed + 1);
-			lastPollWasSpans = true;
 			return TIER_SPANS;
 		}
 		if (!delayPoolGone) {
 			settings.GOOGLE_TRAFFIC_DELAY_REQUEST_COUNT.set(delayUsed + 1);
-			lastPollWasSpans = false;
 			return TIER_DELAY;
 		}
 		if (!budgetExhaustedLogged) {
@@ -317,7 +337,6 @@ public class GoogleTrafficHelper {
 		synchronized (GoogleTrafficHelper.class) {
 			generation++;
 			snapshot = null;
-			lastPollWasSpans = false;
 		}
 		lastCheck = 0;
 		lastToast = 0;

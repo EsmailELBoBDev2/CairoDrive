@@ -108,17 +108,17 @@ public final class CairoDriveProviders {
 	 * something a quarter of an hour old. Same figure as GoogleTrafficHelper.SNAPSHOT_TTL_MS, for
 	 * the same reason.
 	 */
-	public static final long INCIDENTS_TTL_MS = 8 * 60 * 1000L;
+	public static final long INCIDENTS_TTL_MS = 4 * 60 * 1000L;
 	/**
 	 * Flow only adjusts an ETA, so stale flow shows a wrong number rather than driving down a
 	 * wrong street. PROVIDERS.md 3.2 samples every 5 minutes; 15 covers two missed samples.
 	 */
-	public static final long FLOW_TTL_MS = 8 * 60 * 1000L;
+	public static final long FLOW_TTL_MS = 4 * 60 * 1000L;
 	/**
 	 * Dust does not clear in ten minutes and the weather endpoints are polled every 30 (3.5), so
 	 * a short window here would blank the banner between refreshes for no gain.
 	 */
-	public static final long HAZARD_TTL_MS = 60 * 60 * 1000L;
+	public static final long HAZARD_TTL_MS = 40 * 60 * 1000L;
 
 	private CairoDriveProviders() {
 	}
