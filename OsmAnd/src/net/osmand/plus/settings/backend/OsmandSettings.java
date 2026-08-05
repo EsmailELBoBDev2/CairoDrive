@@ -3430,6 +3430,14 @@ public class OsmandSettings {
 	// With it off, ANIMATE_MY_LOCATION still animates smoothly, but only ever TO the current fix,
 	// so the arrow is permanently about one fix behind reality. See CairoDriveFeatures for why
 	// this, and not the GNSS fix rate, is what N4 actually turned out to be.
+	// BestTime venue ids, as one small JSON object of cacheKey -> venue_id.
+	//
+	// Persisted for a cost reason, not a performance one: a POST to /forecasts GENERATES a
+	// forecast and burns a credit, a GET by venue_id re-reads it for nothing. The in-memory cache
+	// dies with the process, so without this every cold start would re-generate - and re-bill -
+	// forecasts that already exist on the account. See BestTimeProvider.
+	public final OsmandPreference<String> BESTTIME_VENUE_IDS = new StringPreference(this, "cairodrive_besttime_venue_ids", "").makeGlobal();
+
 	// OSM write-back for the CD_NARROW signal. OFF by default and deliberately so: it publishes a
 	// coordinate the owner drove to a public database under their own OSM identity, and nothing
 	// about that should happen because a default was left alone. See CairoDriveOsmFeedback.

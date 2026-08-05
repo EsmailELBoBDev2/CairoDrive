@@ -285,6 +285,19 @@ def main():
             print("  ! cannot read %s: %s" % (path, exc))
             continue
         rel = os.path.relpath(path, ROOT)
+
+        # A control byte in a source file makes every text tool treat it as binary and SKIP it -
+        # grep, and therefore the build-flag audit, which then reported three flags as "never
+        # read" when their only reader was the unreadable file. That is a silent hole in the
+        # tooling, not a style problem, so it is an error rather than a warning.
+        control = [i for i, ch in enumerate(raw)
+                   if ord(ch) < 9 or 13 < ord(ch) < 32]
+        if control:
+            line = raw.count("\n", 0, control[0]) + 1
+            print("%s:%d: control byte 0x%02X in source - makes the file binary to grep"
+                  % (rel, line, ord(raw[control[0]])))
+            bad_refs += 1
+
         text = strip_comments_and_strings(raw)
 
         for match in R_REF.finditer(text):
