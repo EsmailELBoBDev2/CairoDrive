@@ -277,6 +277,12 @@ public class RoutingHelper {
 		net.osmand.plus.cairodrive.providers.CairoDriveProviders.resetRouteState();
 		net.osmand.plus.cairodrive.providers.TrafficAwareRouting.onRouteCleared(app);
 		net.osmand.plus.cairodrive.providers.SunGlareProvider.reset(app);
+		// TomTomTrafficProvider is DELIBERATELY absent from this list. Its published data is
+		// already dropped by resetRouteState() above; the only thing it could additionally clear is
+		// its poll cadence, and clearing that would make the next poll immediately due. Ending and
+		// restarting navigation would then buy an off-ladder request every time - the same waste
+		// TomTomTrafficProvider.seedCadence() exists to stop across process restarts. The cadence
+		// is budget state, not route state, so it survives on purpose.
 		routeWasFinished = false; // Prevent stale "arrived" state from leaking into the next navigation session
 		route = new RouteCalculationResult("");
 		isDeviatedFromRoute = false;

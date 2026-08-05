@@ -677,18 +677,6 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 		}
 	}
 
-	/**
-	 * Navigation stopped. Clears only this provider's cadence state - the published data is owned
-	 * by {@link CairoDriveProviders#resetRouteState()}, which the caller is expected to invoke at
-	 * the same site, and which is also what orphans any fetch still in flight.
-	 *
-	 * <p>{@link #keyRejected} deliberately survives: a key the server refused an hour ago is still
-	 * refused, and re-arming it here would put the retry loop back.
-	 */
-	public static void reset() {
-		lastIncidentPoll = 0;
-		lastFlowPoll = 0;
-	}
 
 	// ------------------------------------------------------------------ polling
 
