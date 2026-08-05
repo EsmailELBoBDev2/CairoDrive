@@ -2069,11 +2069,19 @@ public class OsmandSettings {
 
 	public final CommonPreference<String> MAP_OVERLAY_PREVIOUS = new StringPreference(this, "map_overlay_previous", null).makeGlobal().cache();
 
-	// Live traffic on the navigated route (Google Routes API). Deliberate opt-in: every poll is a
-	// billed request and it discloses position to Google whenever the map is open, so it defaults
-	// OFF and is switched on from Configure map. Profile-scoped: traffic matters when driving, not
-	// when hiking. Also gates the free-drive poller, so OFF means zero network from this feature.
-	public final OsmandPreference<Boolean> GOOGLE_TRAFFIC_ON_ROUTE = new BooleanPreference(this, "google_traffic_on_route", false).makeProfile().cache();
+	// Live traffic on the navigated route (Google Routes API). ON for the CAR profile, OFF for
+	// every other one (owner decision: congestion on the route is the point of a driving app, but
+	// a walking profile must not spend the day's request budget). Requests are hard-capped at the
+	// free tier - 32 Enterprise + 160 Pro per day, each claimed BEFORE the request leaves and
+	// never refunded - so ON cannot become a bill. Two costs, stated plainly because they are why
+	// this was opt-in upstream of here: position is disclosed to Google whenever the map is open,
+	// and the poller runs while navigating. Switching it off in Configure map returns the feature
+	// to zero network - the same flag gates the free-drive poller.
+	public final CommonPreference<Boolean> GOOGLE_TRAFFIC_ON_ROUTE = new BooleanPreference(this, "google_traffic_on_route", false).makeProfile().cache();
+
+	{
+		GOOGLE_TRAFFIC_ON_ROUTE.setModeDefaultValue(ApplicationMode.CAR, true);
+	}
 
 	// Live road closures (TomTom/HERE) held as impassable roads. Defaults OFF because a provider
 	// key is not a user-facing off switch: resolving one refresh issues up to 45 road-segment

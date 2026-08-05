@@ -51,9 +51,10 @@ import java.util.Locale;
  * snapped to roads by Google's own router - so congestion colors appear around you just like the
  * TomTom/HERE ambient overlays, only fresher and road-accurate.
  *
- * Fully opt-in and offline-safe: needs BOTH a google_routes_api_key in the build AND the
- * Configure map toggle switched on (GOOGLE_TRAFFIC_ON_ROUTE, default off) - otherwise zero network
- * calls. Any failure degrades silently - navigation is never affected.
+ * Offline-safe and key-gated: needs BOTH a google_routes_api_key in the build AND
+ * GOOGLE_TRAFFIC_ON_ROUTE, which defaults ON for the CAR profile and OFF for every other one, and
+ * is switched from Configure map. Without either, zero network calls. Any failure degrades
+ * silently - navigation is never affected.
  *
  * Cost model (post-March-2025 Google pricing, free allowance is per SKU per calendar month):
  * TRAFFIC_ON_POLYLINE bills "Compute Routes Enterprise" (1,000 free, $15/1000 after) while a plain
