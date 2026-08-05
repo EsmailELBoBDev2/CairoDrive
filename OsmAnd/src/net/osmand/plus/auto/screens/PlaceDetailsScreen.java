@@ -30,6 +30,8 @@ import net.osmand.plus.search.listitems.QuickSearchListItem;
 import net.osmand.plus.utils.OsmAndFormatter;
 import net.osmand.search.core.ObjectType;
 import net.osmand.search.core.SearchResult;
+import net.osmand.plus.cairodrive.search.GooglePlacesDetailsApi;
+import net.osmand.plus.cairodrive.search.GooglePlacesSearchApi;
 import net.osmand.util.Algorithms;
 import net.osmand.util.MapUtils;
 
@@ -532,19 +534,103 @@ public final class PlaceDetailsScreen extends BaseAndroidAutoScreen {
 	//
 	// Suggested row shapes, so the first one to land does not have to redesign the pane:
 	//   hours   title = "Open until 22:00" / "Closed",   text = weekday line
-	//   phone   title = the number,                      text = R.string.shared_string_call
+	//   phone   title = the number,                      text = R.string.cairodrive_place_call
 	//   rating  title = "4.4",                           text = "(1,207 reviews)"
 	// -----------------------------------------------------------------------------------------
 
+	/** Set once a fetch has been kicked off, so getTemplate() cannot start a billed request per rebuild. */
+	private boolean detailsRequested;
+
 	/**
-	 * Adds the deferred Places rows. Returns how many were added - always 0 today.
+	 * Adds the deferred Places rows, following the six rules written above rather than replacing
+	 * them.
 	 *
-	 * @param rowsSoFar rows already in the pane, so an implementation can respect
-	 *                  {@link #getContentLimit()} without recounting.
+	 * <p>Renders from cache only. The first call kicks off exactly one background fetch and
+	 * returns nothing; when that lands it calls {@code invalidate()} and the host rebuilds the
+	 * template, at which point the cache is warm and the rows appear. That satisfies rule 1 - this
+	 * runs inside {@code getTemplate()}, a host callback, and must never block on a network call.
+	 *
+	 * <p>{@link #detailsRequested} is the important guard: {@code getTemplate()} can be called
+	 * repeatedly by the host for reasons of its own, and without it every rebuild would spend
+	 * another billed {@code GetPlace}.
 	 */
-	@SuppressWarnings("unused")
 	private int addDeferredPlacesRows(@NonNull Pane.Builder paneBuilder, int rowsSoFar) {
-		return 0;
+		String placeId = googlePlaceId();
+		if (placeId == null || !GooglePlacesDetailsApi.detailsEnabled()) {
+			return 0;
+		}
+		GooglePlacesDetailsApi.PlaceDetails details =
+				GooglePlacesDetailsApi.cachedDetails(placeId);
+		if (details == null) {
+			if (!detailsRequested) {
+				detailsRequested = true;
+				new GooglePlacesDetailsApi(getApp()).detailsAsync(placeId, fetched ->
+						// Back onto the car thread; invalidate() is not safe off it.
+						getCarContext().getMainExecutor().execute(this::invalidate));
+			}
+			return 0;
+		}
+
+		int added = 0;
+		int budget = getContentLimit() - rowsSoFar;
+
+		// Hours first: it is the one field that changes whether the driver goes at all.
+		if (added < budget && details.hoursToday != null) {
+			String title = details.openNow == null
+					? details.hoursToday
+					: getApp().getString(details.openNow
+					? R.string.cairodrive_place_open : R.string.cairodrive_place_closed);
+			Row.Builder row = new Row.Builder().setTitle(title);
+			if (details.openNow != null) {
+				row.addText(details.hoursToday);
+			}
+			paneBuilder.addRow(row.build());
+			added++;
+		}
+		// Rating, composed through the RTL-safe resource - rule 4. "4.4 (1,207)" concatenated in
+		// Java reads backwards in Arabic.
+		if (added < budget && details.rating != null) {
+			String rating = String.format(java.util.Locale.getDefault(), "%.1f", details.rating);
+			Row.Builder row = new Row.Builder().setTitle(rating);
+			if (details.ratingCount != null) {
+				row.addText(getApp().getString(R.string.ltr_or_rtl_combine_via_bold_point,
+						rating, String.valueOf(details.ratingCount)));
+			}
+			paneBuilder.addRow(row.build());
+			added++;
+		}
+		if (added < budget && details.phone != null) {
+			paneBuilder.addRow(new Row.Builder()
+					.setTitle(details.phone)
+					.addText(getApp().getString(R.string.shared_string_call))
+					.build());
+			added++;
+		}
+		if (added < budget && details.summary != null) {
+			paneBuilder.addRow(new Row.Builder().setTitle(details.summary).build());
+			added++;
+		}
+		// Reviews last: longest text, least actionable at 60 km/h, first to be dropped by the
+		// content limit - which is the correct order for it to be dropped in.
+		if (added < budget && GooglePlacesDetailsApi.reviewsEnabled() && !details.reviews.isEmpty()) {
+			paneBuilder.addRow(new Row.Builder()
+					.setTitle(getApp().getString(R.string.cairodrive_place_reviews))
+					.addText(details.reviews.get(0))
+					.build());
+			added++;
+		}
+		return added;
+	}
+
+	/** The raw Google place id carried on the Amenity, or null for an OSM result. */
+	@Nullable
+	private String googlePlaceId() {
+		Object object = searchResult.object;
+		if (object instanceof net.osmand.data.Amenity amenity) {
+			String id = amenity.getAdditionalInfo(GooglePlacesSearchApi.PLACE_ID_TAG);
+			return Algorithms.isEmpty(id) ? null : id;
+		}
+		return null;
 	}
 
 	/**

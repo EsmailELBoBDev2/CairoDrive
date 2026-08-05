@@ -423,6 +423,47 @@ def speechLead = speechLeadEnv?.trim() ? speechLeadEnv.trim() : "true"
 def glanceStyleEnv = System.getenv("CAIRODRIVE_GLANCE_STYLE")
 def glanceStyle = glanceStyleEnv?.trim() ? glanceStyleEnv.trim() : "true"
 
+// THE FIVE DEFERRED PLACES FEATURES, all on, at the owner's explicit and repeated instruction.
+//
+// CLAUDE.md's rule is one per build, each judged on a drive. That rule exists for a concrete
+// reason and it is not billing: these all went in together once before, the app was "buggy as
+// hell", and because everything landed at once there was no way to tell WHICH one did it - so the
+// whole lot came out. The rule is about ATTRIBUTION.
+//
+// So this keeps the load-bearing half and drops only the scheduling. Each feature has its own flag
+// and its own CD_PLACES log line, which means a bad one is identifiable from the drive log and
+// removable on its own with a single environment variable. That is precisely the property whose
+// absence forced the mass revert last time. What batching costs is the ability to A/B one drive
+// against another; what it does not cost is the ability to isolate a fault.
+//
+// Quotas are the real spend control, and one of them is currently ZERO:
+//   SearchTextRequest  160/day  - in use today
+//   GetPlace            32/day  - Place Details, reviews
+//   GetPhotoMedia       50/day  - Photos
+//   AutocompletePlaces  32/day  - billed per SESSION, not per keystroke, if the session token is
+//                                 handled properly. GooglePlacesDetailsApi holds one until a
+//                                 result is chosen; that is the single most expensive mistake
+//                                 available in this file.
+//   SearchNearby         0/day  - BLOCKED. Nearby search will return HTTP 429 until this is
+//                                 raised by hand in the console. Deliberate, and not fixable from
+//                                 the repo - raising it is part of shipping the feature.
+def placesDetailsEnv = System.getenv("CAIRODRIVE_PLACES_DETAILS")
+def placesDetails = placesDetailsEnv?.trim() ? placesDetailsEnv.trim() : "true"
+
+def placesPhotosEnv = System.getenv("CAIRODRIVE_PLACES_PHOTOS")
+def placesPhotos = placesPhotosEnv?.trim() ? placesPhotosEnv.trim() : "true"
+
+def placesReviewsEnv = System.getenv("CAIRODRIVE_PLACES_REVIEWS")
+def placesReviews = placesReviewsEnv?.trim() ? placesReviewsEnv.trim() : "true"
+
+// Watch this one WHILE TYPING, not after. It is the feature that runs per keystroke, and the
+// previous attempt's worst behaviour showed up in the search box rather than on the map.
+def placesAutocompleteEnv = System.getenv("CAIRODRIVE_PLACES_AUTOCOMPLETE")
+def placesAutocomplete = placesAutocompleteEnv?.trim() ? placesAutocompleteEnv.trim() : "true"
+
+def placesNearbyEnv = System.getenv("CAIRODRIVE_PLACES_NEARBY")
+def placesNearby = placesNearbyEnv?.trim() ? placesNearbyEnv.trim() : "true"
+
 def placeDetailsEnv = System.getenv("CAIRODRIVE_PLACE_DETAILS")
 def placeDetails = placeDetailsEnv?.trim() ? placeDetailsEnv.trim() : "true"
 
@@ -581,6 +622,11 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_MAP_MATCHING", mapMatching
 			buildConfigField "boolean", "CAIRODRIVE_REROUTE_CACHE", rerouteCache
 			buildConfigField "int", "CAIRODRIVE_LOCATION_INTERPOLATION", locationInterpolation
+			buildConfigField "boolean", "CAIRODRIVE_PLACES_DETAILS", placesDetails
+			buildConfigField "boolean", "CAIRODRIVE_PLACES_PHOTOS", placesPhotos
+			buildConfigField "boolean", "CAIRODRIVE_PLACES_REVIEWS", placesReviews
+			buildConfigField "boolean", "CAIRODRIVE_PLACES_AUTOCOMPLETE", placesAutocomplete
+			buildConfigField "boolean", "CAIRODRIVE_PLACES_NEARBY", placesNearby
 		}
 		release {
 			buildConfigField "boolean", "CAIRODRIVE_FULL_LOGGING", releaseLogging
@@ -603,6 +649,11 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_MAP_MATCHING", mapMatching
 			buildConfigField "boolean", "CAIRODRIVE_REROUTE_CACHE", rerouteCache
 			buildConfigField "int", "CAIRODRIVE_LOCATION_INTERPOLATION", locationInterpolation
+			buildConfigField "boolean", "CAIRODRIVE_PLACES_DETAILS", placesDetails
+			buildConfigField "boolean", "CAIRODRIVE_PLACES_PHOTOS", placesPhotos
+			buildConfigField "boolean", "CAIRODRIVE_PLACES_REVIEWS", placesReviews
+			buildConfigField "boolean", "CAIRODRIVE_PLACES_AUTOCOMPLETE", placesAutocomplete
+			buildConfigField "boolean", "CAIRODRIVE_PLACES_NEARBY", placesNearby
 		}
 	}
 }

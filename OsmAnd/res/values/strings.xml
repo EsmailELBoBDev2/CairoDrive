@@ -25,6 +25,10 @@
 	<string name="auto_place_details_navigate">Navigate</string>
 	<string name="auto_place_details_no_address">Address unavailable</string>
 	<string name="cairodrive_metered_download_title">Download over mobile data?</string>
+	<string name="cairodrive_place_open">Open now</string>
+	<string name="cairodrive_place_closed">Closed</string>
+	<string name="cairodrive_place_call">Call</string>
+	<string name="cairodrive_place_reviews">Reviews</string>
 	<string name="cairodrive_metered_download_message">This download is %1$s and you are on a metered connection. It will use your mobile data allowance.</string>
     <string name="release_5_4">
         • New spatial search — find places and search around a place\n\n

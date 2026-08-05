@@ -115,6 +115,12 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 	 */
 	private static final String TRACE_TAG = "CD_SEARCH";
 
+	/**
+	 * Additional-info key holding the raw Google place id on an Amenity built from a Places
+	 * result. Namespaced so it cannot collide with an OSM tag of the same name.
+	 */
+	public static final String PLACE_ID_TAG = "cairodrive_google_place_id";
+
 	private static final String TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText";
 	/**
 	 * Google bills by the fields requested, so this asks for the cheapest set that still
@@ -212,9 +218,18 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 
 	private final OsmandApplication app;
 	private final SearchProviderGate gate;
-	/** Empty once computed and unavailable, null while still unknown. */
+	/**
+	 * The app's signing fingerprint, computed once for the process.
+	 *
+	 * <p>Empty string once computed and unavailable, null while still unknown - the two are
+	 * different states and collapsing them would re-run the PackageManager lookup forever on a
+	 * device where it legitimately returns nothing.
+	 *
+	 * <p>Static because the signing certificate cannot change while the app is running, and both
+	 * Places API classes need it.
+	 */
 	@Nullable
-	private volatile String signingCertificate;
+	private static volatile String sharedSigningCertificate;
 
 	public GooglePlacesSearchApi(@NonNull OsmandApplication app, @NonNull SearchProviderGate gate) {
 		super(ObjectType.POI);
@@ -390,7 +405,18 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 	 */
 	@Nullable
 	private String signingCertificateSha1() {
-		String cached = signingCertificate;
+		return signingCertificateSha1(app);
+	}
+
+	/**
+	 * Shared with {@link GooglePlacesDetailsApi}, which has to send the same two headers on
+	 * every one of its endpoints. Exposed rather than duplicated: a second copy of this that
+	 * drifted would fail with API_KEY_ANDROID_APP_BLOCKED on some calls and not others, which
+	 * is a miserable thing to debug from a drive log.
+	 */
+	@Nullable
+	static String signingCertificateSha1(@NonNull OsmandApplication app) {
+		String cached = sharedSigningCertificate;
 		if (cached != null) {
 			return cached.isEmpty() ? null : cached;
 		}
@@ -419,7 +445,7 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 			LOG.warn(TRACE_TAG + " could not read the signing certificate, "
 					+ "an Android-restricted Places key will be rejected", e);
 		}
-		signingCertificate = computed;
+		sharedSigningCertificate = computed;
 		return computed.isEmpty() ? null : computed;
 	}
 
@@ -561,6 +587,13 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 		applyPoiType(amenity, place, poiTypes);
 		if (!Algorithms.isEmpty(address)) {
 			amenity.setAdditionalInfo("description", address);
+		}
+		// Keep the ORIGINAL Google place id alongside the synthetic numeric one. The synthetic id
+		// is a hash and is one-way, so without this the id needed by every Place Details, Photo
+		// and Review call is destroyed the moment a search result is built. See
+		// GooglePlacesDetailsApi and PLACE_ID_TAG.
+		if (!Algorithms.isEmpty(placeId)) {
+			amenity.setAdditionalInfo(PLACE_ID_TAG, placeId);
 		}
 
 		SearchResult result = new SearchResult(phrase);
