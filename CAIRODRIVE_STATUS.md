@@ -108,7 +108,11 @@ instead of using `ltr_or_rtl_combine_via_bold_point`, which exists in both `valu
 place still assembling a two-part label itself; `PlaceDetailsScreen`, written later, already did
 it correctly.
 
-**`D2` is NOT done, and this line previously claimed it was.** See "Not done, and why".
+**`D2` is now done too** — a confirmation, not a refusal. D3/D4/D6 gate transfers nobody asked
+for and can decline silently; a map download is a button the user pressed, so the fix was to
+supply the one missing fact (the size) and let them choose. Fails open in every uncertain case,
+including an explicit main-looper check, because a prompt that cannot be shown must never become
+a download that cannot start.
 
 ---
 
@@ -117,7 +121,7 @@ it correctly.
 | Item | Reason |
 |---|---|
 | **N7**: the long sentence still overrunning the junction | Structurally forced, not a choice. A phrase that takes longer to say than the driver has cannot be fixed by saying it earlier — only by saying less, which is a different feature |
-| **D2** — per-download metered prompt | **Genuinely not done, and the "Done" list claimed otherwise until this audit.** There is no metered check anywhere under `plus/download/`. It is not a copy of D3/D4/D6 either: those gate *automatic* transfers and can simply refuse, whereas a map download is something the user explicitly asked for, so the right shape is a confirmation with the size — refusing it silently would read as a broken app. That needs a dialog and three new strings, which is why it is a task rather than a one-line gate |
+| **N4** — raising the GNSS fix rate | Not a change, because there is nothing to raise: both helpers already ask for more than the hardware gives. What N4 turned out to be — position prediction — *is* done |
 | **Popular times / "best time to visit"** | Not a Places API field at all. Only reachable by scraping Maps through a third party — separate provider, separate bill, breaks on any markup change, and it is scraped Google data on a Play-listed app |
 
 ### Moved out of this table since it was written
