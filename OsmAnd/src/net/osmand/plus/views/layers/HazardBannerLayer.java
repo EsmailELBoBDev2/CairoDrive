@@ -15,6 +15,7 @@ import androidx.annotation.StringRes;
 import net.osmand.data.RotatedTileBox;
 import net.osmand.Location;
 import net.osmand.plus.OsmandApplication;
+import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.R;
 import net.osmand.plus.activities.MapActivity;
 import net.osmand.plus.auto.NavigationSession;
@@ -130,6 +131,15 @@ public class HazardBannerLayer extends OsmandMapLayer {
 	private long lastDelayComputedMs;
 	private String lastIncidentText;
 	private long lastIncidentComputedMs;
+	/**
+	 * What was last LOGGED, so the line is written on change rather than every recompute.
+	 *
+	 * <p>The chip had no logging at all, which meant a drive could not answer "did the closure
+	 * warning ever appear" - the one question this feature exists to be judged on. Logged on
+	 * transition only: at one line per two seconds it would otherwise be the noisiest tag in the
+	 * file and say nothing.
+	 */
+	private String loggedIncidentText;
 	private String cachedIncidentText;
 	private float cachedIncidentWidth;
 
@@ -294,6 +304,7 @@ public class HazardBannerLayer extends OsmandMapLayer {
 		lastIncidentText = null;
 		Location here = app.getLocationProvider().getLastKnownLocation();
 		if (here == null) {
+			logIncidentChange(app, null, 0);
 			return null;
 		}
 		double bestM = Double.MAX_VALUE;
@@ -313,6 +324,7 @@ public class HazardBannerLayer extends OsmandMapLayer {
 			}
 		}
 		if (best == null || bestM > INCIDENT_MAX_M) {
+			logIncidentChange(app, null, 0);
 			return null;
 		}
 		// Rounded UP, and never to zero: "0 km away" reads as a bug, and rounding a 600 m closure
@@ -321,7 +333,30 @@ public class HazardBannerLayer extends OsmandMapLayer {
 		lastIncidentText = app.getString(
 				best.closure ? R.string.cairo_incident_closure : R.string.cairo_incident_flooding,
 				km);
+		logIncidentChange(app, best, km);
 		return lastIncidentText;
+	}
+
+	/**
+	 * One line when the chip appears, changes or clears. Never per frame, never per recompute.
+	 *
+	 * <p>Deliberately logs the DISTANCE and the KIND rather than the rendered string: the string is
+	 * localised, and a log that changes language with the phone is a log that cannot be compared
+	 * across drives.
+	 */
+	private void logIncidentChange(@NonNull OsmandApplication app,
+	                               @Nullable CairoDriveProviders.TrafficIncident best, int km) {
+		String now = best == null ? "" : (best.closure ? "closure" : "flooding") + "@" + km + "km";
+		if (now.equals(loggedIncidentText == null ? "" : loggedIncidentText)) {
+			return;
+		}
+		loggedIncidentText = now;
+		if (!CairoDriveLogger.isEnabled()) {
+			return;
+		}
+		CairoDriveLogger.getInstance().log("CD_INCIDENT_CHIP",
+				now.isEmpty() ? "cleared" : "shown " + now
+						+ " nav=" + app.getRoutingHelper().isFollowingMode());
 	}
 
 	/**

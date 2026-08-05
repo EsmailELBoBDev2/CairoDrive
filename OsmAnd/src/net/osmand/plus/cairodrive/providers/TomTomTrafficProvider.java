@@ -740,7 +740,7 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 			return;
 		}
 		if (pollIncidents) {
-			fetchIncidents(app, corridor, generation);
+			fetchIncidents(app, corridor, generation, following);
 		}
 		if (pollFlow) {
 			fetchFlow(app, lat, lon, corridor, generation);
@@ -776,7 +776,8 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	// ------------------------------------------------------------------ incidents
 
 	private static void fetchIncidents(@NonNull OsmandApplication app,
-	                                   @NonNull List<Location> corridor, int generation) {
+	                                   @NonNull List<Location> corridor, int generation,
+	                                   boolean following) {
 		double minLat = Double.MAX_VALUE;
 		double maxLat = -Double.MAX_VALUE;
 		double minLon = Double.MAX_VALUE;
@@ -830,6 +831,7 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 			// Note what is NOT logged: the URL. It carries the key in a query parameter, and the
 			// redaction in CairoDriveLogger only filters the logcat pump, not direct log() calls.
 			CairoDriveLogger.getInstance().log(TRACE_TAG, "incidents http=" + response.code
+					+ " mode=" + (following ? "nav" : "free")
 					+ " ms=" + elapsed + " bbox=" + bbox + " lang=" + language
 					+ " budget=" + used(app, PREF_INCIDENT_COUNT) + "/" + INCIDENT_DAILY_CAP
 					+ (Algorithms.isEmpty(response.body) ? "" : " body=" + trim(response.body, 200)));
@@ -880,6 +882,10 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 
 		CairoDriveProviders.publishIncidents(generation, incidents);
 		CairoDriveLogger.getInstance().log(TRACE_TAG, "incidents http=200 ms=" + elapsed
+				// The MODE, because the two are otherwise only distinguishable by reverse-engineering
+				// the bbox - and "did free driving reach this provider at all" is the single question
+				// the next drive log has to answer, after three stacked gates silently stopped it.
+				+ " mode=" + (following ? "nav" : "free")
 				+ " bbox=" + bbox + " lang=" + language
 				+ " n=" + incidents.size() + " closures=" + closures
 				+ " laneClosed=" + laneClosed + " flooding=" + flooding
