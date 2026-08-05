@@ -147,7 +147,38 @@ public class NotificationHelper {
 		}
 	}
 
+	/**
+	 * D7. Coalesced, because the caller is on the per-fix path.
+	 *
+	 * <p>{@code SavingTrackHelper.updateLocation} calls this for {@link NotificationType#GPX}
+	 * after EVERY recorded point - roughly once a second while recording, and more when the
+	 * logging interval is tightened. Each call rebuilds a NotificationCompat.Builder and crosses
+	 * the binder to NotificationManager, for a notification whose text a driver is not reading
+	 * while the phone is projecting to the car.
+	 *
+	 * <p>This was previously written off as not reproducing, on the basis that SavingTrackHelper
+	 * did not call it. It does - one line, right after insertData. The throttle already existed on
+	 * {@link #refreshNotifications()}, the plural sweep, and simply had not been applied to the
+	 * singular form, which is the one on the hot path.
+	 *
+	 * <p>Throttled PER TYPE, not globally: a rate-limited GPX refresh must not delay a navigation
+	 * notification arriving in the same window. The trailing call is what makes it safe to drop
+	 * the intermediate ones - the final state is always delivered, just once.
+	 */
 	public void refreshNotification(NotificationType notificationType) {
+		long now = android.os.SystemClock.elapsedRealtime();
+		Long last = lastTypeRefreshMs.get(notificationType);
+		long since = last == null ? Long.MAX_VALUE : now - last;
+		if (since < REFRESH_MIN_INTERVAL_MS) {
+			if (pendingTypes.add(notificationType)) {
+				app.runInUIThread(() -> {
+					pendingTypes.remove(notificationType);
+					refreshNotification(notificationType);
+				}, REFRESH_MIN_INTERVAL_MS - since);
+			}
+			return;
+		}
+		lastTypeRefreshMs.put(notificationType, now);
 		for (OsmandNotification notification : all) {
 			if (notification.getType() == notificationType) {
 				notification.refreshNotification();
@@ -155,6 +186,12 @@ public class NotificationHelper {
 			}
 		}
 	}
+
+	/** Main-thread only, like every other caller here, so plain collections are correct. */
+	private final java.util.Map<NotificationType, Long> lastTypeRefreshMs =
+			new java.util.EnumMap<>(NotificationType.class);
+	private final java.util.Set<NotificationType> pendingTypes =
+			java.util.EnumSet.noneOf(NotificationType.class);
 
 	public void onNotificationDismissed(NotificationType notificationType) {
 		for (OsmandNotification notification : all) {
