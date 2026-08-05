@@ -373,13 +373,89 @@ public class TripHelper {
 	}
 
 	@NonNull
+	/**
+	 * P11/1. Two-slot cache over the manoeuvre arrows.
+	 *
+	 * <p>This ran on every fix and allocated a {@code TurnDrawable} plus a full {@code Bitmap}
+	 * each time, for both the current and the next manoeuvre - the largest repeated allocation on
+	 * the Android Auto path. Between fixes the answer is almost always identical: the arrow only
+	 * changes when the manoeuvre changes, when the imminence bucket steps, or when day/night
+	 * flips. On a long straight it was redrawing the same picture once a second.
+	 *
+	 * <p>Two slots because there are exactly two call sites - current turn and next turn - with
+	 * different content and sometimes different sizes. One slot would thrash between them and
+	 * cache nothing.
+	 *
+	 * <p>Keyed on {@code TurnType} by IDENTITY, deliberately. {@code TurnType} does not define
+	 * equals, and the route holds one instance per manoeuvre, so identity is exactly the question
+	 * being asked: is this the same manoeuvre object the route gave us last time. A reroute builds
+	 * new objects and correctly misses.
+	 *
+	 * <p>Like the rest of P11 this is allocation pressure, not frame time - it will show up in
+	 * {@code maxMs} as fewer GC pauses if it shows up at all, not in {@code avgMs}.
+	 */
+	private final TurnBitmapSlot[] turnBitmapCache = {new TurnBitmapSlot(), new TurnBitmapSlot()};
+
+	private static final class TurnBitmapSlot {
+		private TurnType turnType;
+		private boolean deviated;
+		private int imminent;
+		private int width;
+		private int height;
+		private boolean night;
+		private Bitmap bitmap;
+		private long lastUsed;
+
+		boolean matches(TurnType t, boolean d, int i, int w, int h, boolean n) {
+			return bitmap != null && turnType == t && deviated == d && imminent == i
+					&& width == w && height == h && night == n;
+		}
+
+		void store(TurnType t, boolean d, int i, int w, int h, boolean n, Bitmap b, long tick) {
+			turnType = t;
+			deviated = d;
+			imminent = i;
+			width = w;
+			height = h;
+			night = n;
+			bitmap = b;
+			lastUsed = tick;
+		}
+	}
+
+	/** Monotonic, only ever compared between the two slots, so overflow is not a concern. */
+	private long turnBitmapTick;
+
 	private Bitmap createTurnBitmap(@NonNull TurnType turnType, boolean deviatedFromRoute, int imminent, int width, int height) {
+		boolean night = app.getDaynightHelper().isNightMode(ThemeUsageContext.MAP);
+		long tick = ++turnBitmapTick;
+		for (TurnBitmapSlot slot : turnBitmapCache) {
+			if (slot.matches(turnType, deviatedFromRoute, imminent, width, height, night)) {
+				slot.lastUsed = tick;
+				return slot.bitmap;
+			}
+		}
 		TurnDrawable drawable = new TurnDrawable(app, false);
 		drawable.setBounds(0, 0, width, height);
 		drawable.setTurnType(turnType);
 		drawable.setTurnImminent(imminent, deviatedFromRoute);
-		drawable.updateColors(app.getDaynightHelper().isNightMode(ThemeUsageContext.MAP));
-		return drawableToBitmap(drawable, width, height);
+		drawable.updateColors(night);
+		Bitmap bitmap = drawableToBitmap(drawable, width, height);
+		// Least-recently-used, not "the second slot". The two call sites alternate every fix, so
+		// a fixed victim would evict the one that is about to be asked for again and cache
+		// nothing - the failure mode that makes a cache look like it works while it never hits.
+		TurnBitmapSlot victim = turnBitmapCache[0];
+		for (TurnBitmapSlot slot : turnBitmapCache) {
+			if (slot.bitmap == null) {
+				victim = slot;
+				break;
+			}
+			if (slot.lastUsed < victim.lastUsed) {
+				victim = slot;
+			}
+		}
+		victim.store(turnType, deviatedFromRoute, imminent, width, height, night, bitmap, tick);
+		return bitmap;
 	}
 
 	private void updateDestination(@NonNull Builder builder) {

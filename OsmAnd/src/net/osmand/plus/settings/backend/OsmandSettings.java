@@ -961,7 +961,10 @@ public class OsmandSettings {
 	public final CommonPreference<RadiusRulerMode> RADIUS_RULER_MODE = new EnumStringPreference<>(this, "ruler_mode", RadiusRulerMode.FIRST, RadiusRulerMode.values()).makeProfile();
 	public final OsmandPreference<Boolean> SHOW_COMPASS_ON_RADIUS_RULER = new BooleanPreference(this, "show_compass_ruler", true).makeProfile();
 
-	public final OsmandPreference<Boolean> SHOW_DISTANCE_RULER = new BooleanPreference(this, "show_distance_ruler", false).makeProfile();
+	// P11/3+8. Read once per frame by DistanceRulerControlLayer for a ruler that is off, so every
+	// read walked the profile map to return false. .cache() invalidates on set, and profile+cache
+	// is the established pattern here (DO_NOT_USE_ANIMATIONS, MAP_DENSITY).
+	public final OsmandPreference<Boolean> SHOW_DISTANCE_RULER = new BooleanPreference(this, "show_distance_ruler", false).makeProfile().cache();
 
 	public final CommonPreference<SpeedLimitWarningState> SHOW_SPEED_LIMIT_WARNING = new EnumStringPreference<>(this, "show_speed_limit_warning", WHEN_EXCEEDED, SpeedLimitWarningState.values()).makeProfile();
 
@@ -3562,7 +3565,7 @@ public class OsmandSettings {
 			new BooleanPreference(this, "show_borders_of_downloaded_maps", true).makeProfile();
 
 	public final CommonPreference<Boolean> SHOW_COORDINATES_GRID =
-			new BooleanPreference(this, "show_coordinates_grid", false).makeProfile();
+			new BooleanPreference(this, "show_coordinates_grid", false).makeProfile().cache();
 
 	public final OsmandPreference<GridFormat> COORDINATE_GRID_FORMAT =
 			new EnumStringPreference<>(this, "coordinates_grid_format", GridFormat.DIGITAL, GridFormat.values()).makeProfile();

@@ -1096,6 +1096,28 @@ public abstract class OsmandMapLayer implements MapRendererViewListener {
 			return Arrays.hashCode(o);
 		}
 
+		/**
+		 * P11/4. The only hot caller of the varargs form above, unrolled.
+		 *
+		 * <p>{@code calculateHash(rrs, isNight, density)} looks free and is not: varargs allocates
+		 * an {@code Object[3]}, then boxes the boolean and the float into it, on every call.
+		 * RouteLayer alone reaches {@code updatePaints} eight times a frame, so this was ~8
+		 * arrays plus 16 boxes per frame purely to compute a cache key that is almost always
+		 * unchanged.
+		 *
+		 * <p>Produces exactly the same value as {@code Arrays.hashCode(new Object[]{rrs, isNight,
+		 * density})} - same seed of 1, same multiplier of 31, and the same per-element hashes
+		 * ({@code Boolean} is 1231/1237, {@code Float} is {@code floatToIntBits}). Bit-identical
+		 * rather than merely equivalent, because a hash that collided differently would silently
+		 * change how often the expensive rendering-attribute search below re-runs - which is a
+		 * behaviour change disguised as an allocation fix.
+		 */
+		private int calculateHash(RenderingRulesStorage rrs, boolean isNight, float density) {
+			int result = 31 + (rrs == null ? 0 : rrs.hashCode());
+			result = 31 * result + (isNight ? 1231 : 1237);
+			return 31 * result + Float.floatToIntBits(density);
+		}
+
 		public void drawPath(Canvas canvas, Path path) {
 			if (isPaint_1) {
 				canvas.drawPath(path, paint_1);

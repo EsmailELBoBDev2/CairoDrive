@@ -1360,24 +1360,42 @@ public class OsmandMapTileView implements IMapDownloaderCallback {
 		}
 	}
 
+	/**
+	 * P11/9. Writes into the existing QuadPoint instead of replacing it every frame.
+	 *
+	 * <p>This ran once per frame and allocated unconditionally: a {@code new QuadPoint()} even on
+	 * the phone where the body is skipped entirely, plus a second one for the canvas centre and a
+	 * third for the result on the car path. {@code QuadPoint} is mutable and has {@code set}, and
+	 * the object never escapes - {@code getAACanvasOffset()} hands out the same reference that is
+	 * already being replaced under callers each frame, so reusing it changes nothing observable.
+	 *
+	 * <p>Honest about the size: this is bytes per frame, not milliseconds. It is here because it
+	 * is free and provably safe, not because it will show up in CD_FRAME.
+	 */
 	private void updateAACanvasOffset() {
-		cachedAACanvasOffset = new QuadPoint();
-		QuadPoint center = getRotatedTileBox().getCenterPixelPoint();
-		if (app.getOsmandMap().getMapView().isCarView()) {
-			NavigationSession navigationSession = app.getCarNavigationSession();
-			if (navigationSession != null) {
-				SurfaceRenderer surfaceRenderer = navigationSession.getNavigationCarSurface();
-				if (surfaceRenderer != null) {
-					Rect visibleArea = surfaceRenderer.getVisibleArea();
-					if (visibleArea != null) {
-
-						QuadPoint canvasCenter = new QuadPoint(visibleArea.left + (visibleArea.right - visibleArea.left) / 2f, (visibleArea.top + (visibleArea.bottom - visibleArea.top)) * surfaceRenderer.getCachedRatioY());
-						cachedAACanvasOffset = new QuadPoint(canvasCenter.x - center.x,
-								canvasCenter.y - center.y);
-					}
-				}
-			}
+		cachedAACanvasOffset.set(0, 0);
+		if (!app.getOsmandMap().getMapView().isCarView()) {
+			return;
 		}
+		NavigationSession navigationSession = app.getCarNavigationSession();
+		if (navigationSession == null) {
+			return;
+		}
+		SurfaceRenderer surfaceRenderer = navigationSession.getNavigationCarSurface();
+		if (surfaceRenderer == null) {
+			return;
+		}
+		Rect visibleArea = surfaceRenderer.getVisibleArea();
+		if (visibleArea == null) {
+			return;
+		}
+		// getCenterPixelPoint() is only reached on the car path now - the phone used to pay for it
+		// every frame and then discard the result.
+		QuadPoint center = getRotatedTileBox().getCenterPixelPoint();
+		float canvasCenterX = visibleArea.left + (visibleArea.right - visibleArea.left) / 2f;
+		float canvasCenterY = (visibleArea.top + (visibleArea.bottom - visibleArea.top))
+				* surfaceRenderer.getCachedRatioY();
+		cachedAACanvasOffset.set(canvasCenterX - center.x, canvasCenterY - center.y);
 	}
 
 	public QuadPoint getAACanvasOffset() {
