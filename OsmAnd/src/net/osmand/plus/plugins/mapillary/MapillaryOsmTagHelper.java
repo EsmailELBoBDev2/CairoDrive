@@ -1,6 +1,5 @@
 package net.osmand.plus.plugins.mapillary;
 
-import static net.osmand.map.TileSourceManager.MAPILLARY_ACCESS_TOKEN;
 import static net.osmand.plus.plugins.mapillary.MapillaryImageDialog.MAPILLARY_VIEWER_URL_TEMPLATE;
 import static net.osmand.plus.plugins.mapillary.MapillaryPlugin.TYPE_MAPILLARY_PHOTO;
 
@@ -20,7 +19,14 @@ import org.json.JSONObject;
 public class MapillaryOsmTagHelper {
 
 	private static final String GRAPH_URL_ENDPOINT = "https://graph.mapillary.com/";
-	private static final String PARAM_ACCESS_TOKEN = "access_token=" + MAPILLARY_ACCESS_TOKEN;
+	/**
+	 * Built per call, not captured into a constant: the token is injected at startup and a
+	 * constant initialised at class-load would freeze whichever value happened to be current then.
+	 * One string concatenation against a network round trip is not a cost worth optimising.
+	 */
+	private static String accessTokenParam() {
+		return "access_token=" + net.osmand.map.TileSourceManager.getMapillaryAccessToken();
+	}
 	private static final String PARAM_FIELDS = "fields=id,geometry,compass_angle,captured_at,camera_type,thumb_256_url,thumb_1024_url";
 
 	private static final String ID = "id";
@@ -36,7 +42,7 @@ public class MapillaryOsmTagHelper {
 
 	@Nullable
 	public static JSONObject getImageByKey(String key) {
-		String url = GRAPH_URL_ENDPOINT + key + '?' + PARAM_ACCESS_TOKEN + '&' + PARAM_FIELDS;
+		String url = GRAPH_URL_ENDPOINT + key + '?' + accessTokenParam() + '&' + PARAM_FIELDS;
 		JSONObject response = request(url);
 		return response != null ? parseResponse(response) : null;
 	}

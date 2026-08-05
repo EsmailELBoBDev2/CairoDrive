@@ -17,6 +17,7 @@ import com.github.scribejava.core.model.Verb;
 
 import net.osmand.PlatformUtil;
 import net.osmand.osm.oauth.OsmOAuthAuthorizationClient;
+import net.osmand.plus.BuildConfig;
 import net.osmand.plus.OsmAndTaskManager;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
@@ -59,6 +60,27 @@ public class OsmOAuthAuthorizationAdapter {
 			secret = app.getString(R.string.osm_oauth2_client_secret);
 		}
 		String redirectUri = app.getString(R.string.oauth2_redirect_uri);
+
+		// This fork's own OSM OAuth2 application, when the build carries one.
+		//
+		// The inherited values in no_translate.xml are upstream OsmAnd's, committed in a public
+		// repository WITH THE CLIENT SECRET IN PLAINTEXT. Anyone can therefore mint tokens that
+		// present as OsmAnd, and every edit this app uploads is attributed to upstream's OAuth
+		// application rather than to this one. Overriding all three together fixes both.
+		//
+		// All three or none: a client id from one application with a secret from another is a
+		// guaranteed invalid_client at the token endpoint, and a redirect URI that is not
+		// registered against the id in use fails before the user even sees a consent page. So a
+		// partial override is treated as no override at all rather than as a half-configured build
+		// that fails at the least convenient moment - the point of sign-in.
+		if (!plugin.OSM_USE_DEV_URL.get()
+				&& !Algorithms.isEmpty(BuildConfig.CAIRODRIVE_OSM_OAUTH_ID)
+				&& !Algorithms.isEmpty(BuildConfig.CAIRODRIVE_OSM_OAUTH_SECRET)
+				&& !Algorithms.isEmpty(BuildConfig.CAIRODRIVE_OSM_OAUTH_REDIRECT)) {
+			key = BuildConfig.CAIRODRIVE_OSM_OAUTH_ID;
+			secret = BuildConfig.CAIRODRIVE_OSM_OAUTH_SECRET;
+			redirectUri = BuildConfig.CAIRODRIVE_OSM_OAUTH_REDIRECT;
+		}
 		String scope = app.getString(R.string.oauth2_scope);
 		client = new OsmOAuthAuthorizationClient(key, secret, api20, redirectUri, scope);
 		restoreToken();

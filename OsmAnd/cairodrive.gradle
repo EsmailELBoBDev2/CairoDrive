@@ -478,6 +478,36 @@ def tomtomKey = tomtomKeyEnv?.trim() ? tomtomKeyEnv.trim() : ""
 def openWeatherKeyEnv = System.getenv("CAIRODRIVE_OPENWEATHER_KEY")
 def openWeatherKey = openWeatherKeyEnv?.trim() ? openWeatherKeyEnv.trim() : ""
 
+// This fork's own Mapillary app token. Unset is FINE and is the default: TileSourceManager then
+// keeps upstream OsmAnd's inherited token, which is committed in a public repo and therefore
+// shared with every clone of it - working, but rate-limited against all of them at once and not
+// revocable by us. Setting this replaces it for both the vector tiles and the Graph API.
+def mapillaryTokenEnv = System.getenv("CAIRODRIVE_MAPILLARY_TOKEN")
+def mapillaryToken = mapillaryTokenEnv?.trim() ? mapillaryTokenEnv.trim() : ""
+
+// This fork's own OSM OAuth2 application. Unset is the default and keeps upstream OsmAnd's, whose
+// CLIENT SECRET is committed in plaintext in no_translate.xml - so anyone can mint tokens that
+// present as OsmAnd, and every edit uploaded from here is attributed to upstream's application.
+//
+// Register at https://www.openstreetmap.org/oauth2/applications with the scopes in
+// R.string.oauth2_scope (read_prefs write_api write_gpx write_notes) and set the redirect URI to
+// the value of CAIRODRIVE_OSM_OAUTH_REDIRECT below. All three are required together - the adapter
+// ignores a partial override rather than failing at the sign-in screen.
+def osmOauthIdEnv = System.getenv("CAIRODRIVE_OSM_OAUTH_ID")
+def osmOauthId = osmOauthIdEnv?.trim() ? osmOauthIdEnv.trim() : ""
+
+def osmOauthSecretEnv = System.getenv("CAIRODRIVE_OSM_OAUTH_SECRET")
+def osmOauthSecret = osmOauthSecretEnv?.trim() ? osmOauthSecretEnv.trim() : ""
+
+// Defaults to the app's own custom scheme, which the manifest already claims and IntentHelper
+// already parses - so the callback needs NO web server. Upstream's default routes through
+// osmand.net, which this fork does not control and which would keep a third party in the middle of
+// an authorisation this app owns. Only defaulted when an id was supplied, so an unconfigured build
+// gets an empty string and the adapter's all-three-or-none test correctly declines the override.
+def osmOauthRedirectEnv = System.getenv("CAIRODRIVE_OSM_OAUTH_REDIRECT")
+def osmOauthRedirect = osmOauthRedirectEnv?.trim() ? osmOauthRedirectEnv.trim()
+		: (osmOauthId ? "cairodrive-oauth://oauth_callback" : "")
+
 def tomtomTrafficEnv = System.getenv("CAIRODRIVE_TOMTOM_TRAFFIC")
 def tomtomTraffic = tomtomTrafficEnv?.trim() ? tomtomTrafficEnv.trim() : "true"
 
@@ -689,6 +719,10 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_NEARBY", placesNearby
 			buildConfigField "String", "CAIRODRIVE_TOMTOM_KEY", "\"" + tomtomKey + "\""
 			buildConfigField "String", "CAIRODRIVE_OPENWEATHER_KEY", "\"" + openWeatherKey + "\""
+			buildConfigField "String", "CAIRODRIVE_MAPILLARY_TOKEN", "\"" + mapillaryToken + "\""
+			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_ID", "\"" + osmOauthId + "\""
+			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_SECRET", "\"" + osmOauthSecret + "\""
+			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_REDIRECT", "\"" + osmOauthRedirect + "\""
 			buildConfigField "boolean", "CAIRODRIVE_TOMTOM_TRAFFIC", tomtomTraffic
 			buildConfigField "boolean", "CAIRODRIVE_WEATHER_HAZARD", weatherHazard
 			buildConfigField "boolean", "CAIRODRIVE_SUN_GLARE", sunGlare
@@ -723,6 +757,10 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_NEARBY", placesNearby
 			buildConfigField "String", "CAIRODRIVE_TOMTOM_KEY", "\"" + tomtomKey + "\""
 			buildConfigField "String", "CAIRODRIVE_OPENWEATHER_KEY", "\"" + openWeatherKey + "\""
+			buildConfigField "String", "CAIRODRIVE_MAPILLARY_TOKEN", "\"" + mapillaryToken + "\""
+			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_ID", "\"" + osmOauthId + "\""
+			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_SECRET", "\"" + osmOauthSecret + "\""
+			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_REDIRECT", "\"" + osmOauthRedirect + "\""
 			buildConfigField "boolean", "CAIRODRIVE_TOMTOM_TRAFFIC", tomtomTraffic
 			buildConfigField "boolean", "CAIRODRIVE_WEATHER_HAZARD", weatherHazard
 			buildConfigField "boolean", "CAIRODRIVE_SUN_GLARE", sunGlare

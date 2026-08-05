@@ -842,7 +842,12 @@ public class IntentHelper {
 		Intent intent = mapActivity.getIntent();
 		if (intent != null && intent.getData() != null) {
 			Uri uri = intent.getData();
-			if (uri.toString().startsWith("osmand-oauth")) {
+			// Both schemes, because both can arrive: `cairodrive-oauth` when the build carries this
+			// fork's own OSM OAuth application, `osmand-oauth` when it falls back to the inherited
+			// upstream one. Accepting only the new scheme would silently break sign-in on every
+			// build without CAIRODRIVE_OSM_OAUTH_ID, which is the default build.
+			String uriString = uri.toString();
+			if (uriString.startsWith("osmand-oauth") || uriString.startsWith("cairodrive-oauth")) {
 				String code = uri.getQueryParameter("code");
 				if (code != null) {
 					app.getOsmOAuthHelper().addListener(getOnAuthorizeListener());

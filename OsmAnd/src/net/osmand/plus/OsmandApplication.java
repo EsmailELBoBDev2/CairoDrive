@@ -255,6 +255,19 @@ public class OsmandApplication extends MultiDexApplication {
 		// initialisation itself. No-op unless BuildConfig.CAIRODRIVE_FULL_LOGGING is set.
 		CairoDriveLogger.getInstance().init(this);
 
+		// This fork's own Mapillary token, if the build carries one. Must run before anything asks
+		// for a Mapillary tile or a Graph API image, which is why it sits here rather than in the
+		// plugin: the plugin initialises lazily and the first tile request can beat it.
+		//
+		// No token compiled in is a no-op - the inherited upstream token stays, and Mapillary keeps
+		// working exactly as it does upstream. See TileSourceManager.setMapillaryAccessToken.
+		try {
+			net.osmand.map.TileSourceManager.setMapillaryAccessToken(
+					net.osmand.plus.BuildConfig.CAIRODRIVE_MAPILLARY_TOKEN);
+		} catch (Throwable t) {
+			CairoDriveLogger.getInstance().log("CD_MAPILLARY", "token injection failed", t);
+		}
+
 		// The provider stack. Registration is side-effect free and safe this early; install()
 		// arbitrates one provider per capability and writes the CD_PROVIDERS line saying which
 		// won - which is what lets a drive log answer "who actually served this".

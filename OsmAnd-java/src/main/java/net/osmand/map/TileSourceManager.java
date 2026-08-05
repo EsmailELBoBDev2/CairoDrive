@@ -37,15 +37,34 @@ public class TileSourceManager {
 
 	public static final String RULE_YANDEX_TRAFFIC = "yandex_traffic";
 	public static final String MAPILLARY_VECTOR_TILE_EXT = ".pbf";
-	public static final String MAPILLARY_ACCESS_TOKEN = "MLY|4444816185556934|29475a355616c979409a5adc377a00fa";
+	/**
+	 * Upstream OsmAnd's own Mapillary app token, inherited with the fork.
+	 *
+	 * <p>It is committed in a public repository and therefore exists in thousands of clones, which
+	 * makes it exactly as trustworthy as {@code keystores/debug.keystore}: shared, unrevocable by
+	 * us, and rate-limited against everybody who ever cloned OsmAnd at once. Kept only as the
+	 * fallback so a build with no token of its own still shows imagery rather than silently
+	 * failing every tile - see {@link #setMapillaryAccessToken}.
+	 */
+	private static final String DEFAULT_MAPILLARY_ACCESS_TOKEN = "MLY|4444816185556934|29475a355616c979409a5adc377a00fa";
+
+	/**
+	 * Read through {@link #getMapillaryAccessToken()}, never captured into a constant.
+	 *
+	 * <p>Not final and not baked into the URL literals below: the app injects this fork's own token
+	 * at startup, which happens after this class initialises.
+	 */
+	private static volatile String mapillaryAccessToken = DEFAULT_MAPILLARY_ACCESS_TOKEN;
 
 	private static final String RULE_WMS = "wms_tile";
 	private static final String RULE_TEMPLATE_1 = "template:1";
 	private static final String RND_ALG_WIKIMAPIA = "wikimapia";
 
 	private static final String MAPNIK_URL = "https://tile.osmand.net/hd/{0}/{1}/{2}.png";
-	private static final String MAPILLARY_VECTOR_URL = "https://tiles.mapillary.com/maps/vtp/mly1_public/2/{0}/{1}/{2}/?access_token="
-			+ MAPILLARY_ACCESS_TOKEN;
+	private static final String MAPILLARY_VECTOR_URL_PREFIX =
+			"https://tiles.mapillary.com/maps/vtp/mly1_public/2/{0}/{1}/{2}/?access_token=";
+	private static final String MAPILLARY_VECTOR_URL =
+			MAPILLARY_VECTOR_URL_PREFIX + DEFAULT_MAPILLARY_ACCESS_TOKEN;
 
 	private static final TileSourceTemplate MAPNIK_SOURCE =
 			new TileSourceTemplate("OsmAnd (online tiles)", MAPNIK_URL, ".png", 19,
@@ -56,6 +75,31 @@ public class TileSourceManager {
 	private static final TileSourceTemplate MAPILLARY_CACHE_SOURCE =
 			new TileSourceTemplate("Mapillary (raster tiles)", "", ".png", 22, 13,
 					256, 32, 18000);
+
+	/**
+	 * This fork's own Mapillary token, if the build carries one.
+	 *
+	 * <p>Call once at startup. Rewrites the vector-tile URL in place because the tile source is a
+	 * static template built at class-init - long before any Android BuildConfig can be read - so
+	 * setting the field alone would change the Graph API calls and leave every tile request still
+	 * carrying the inherited token.
+	 *
+	 * <p>An empty or null token is a no-op that leaves {@link #DEFAULT_MAPILLARY_ACCESS_TOKEN} in
+	 * place. That is the right failure: a build with no token of its own keeps working exactly as
+	 * upstream does, rather than losing Mapillary entirely.
+	 */
+	public static void setMapillaryAccessToken(String token) {
+		if (token == null || token.trim().isEmpty()) {
+			return;
+		}
+		String trimmed = token.trim();
+		mapillaryAccessToken = trimmed;
+		MAPILLARY_VECTOR_SOURCE.setUrlToLoad(MAPILLARY_VECTOR_URL_PREFIX + trimmed);
+	}
+
+	public static String getMapillaryAccessToken() {
+		return mapillaryAccessToken;
+	}
 
 	static {
 		int oneDayMinutes = 60 * 24;

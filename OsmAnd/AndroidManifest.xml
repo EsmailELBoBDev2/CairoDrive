@@ -574,6 +574,15 @@
 				<category android:name="android.intent.category.DEFAULT" />
 				<category android:name="android.intent.category.BROWSABLE" />
 				<data android:scheme="osmand-oauth" />
+				<!--
+				  Fork-specific alias for the same callback. `osmand-oauth` is claimed by every
+				  OsmAnd install on the device, so an OAuth redirect onto it opens a chooser - or
+				  the wrong app - whenever upstream OsmAnd is also installed. This scheme is ours
+				  alone, and it is what CAIRODRIVE_OSM_OAUTH_REDIRECT defaults to. Both are kept:
+				  a build using the inherited upstream OAuth application still redirects to the
+				  upstream scheme and must keep working.
+				-->
+				<data android:scheme="cairodrive-oauth" />
 			</intent-filter>
 
 			<intent-filter>
