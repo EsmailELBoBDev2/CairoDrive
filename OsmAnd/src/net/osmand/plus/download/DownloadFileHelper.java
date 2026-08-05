@@ -401,14 +401,24 @@ public class DownloadFileHelper {
 	private static final String RAW_PART_EXT = ".zipart";
 
 	/**
-	 * Multiplier on the compressed size used as the free-space requirement for phase two.
+	 * Fallback multiplier, used ONLY when the server did not send an extracted size.
 	 *
-	 * <p>An {@code .obf} compresses to very roughly a third, so the decompressed file plus the
-	 * retained compressed one is about four times the download. Four is therefore not padding, it
-	 * is the actual peak - and being wrong in the optimistic direction means filling the device
-	 * mid-extract, which is a worse outcome than not resuming.
+	 * <p>This used to be the primary mechanism, at 4, on the reasoning that an {@code .obf}
+	 * compresses to about a third. That premise was wrong by roughly 2x - measured against
+	 * OsmAnd's own figures for Austria (466 MB download, 747 MB extracted) the expansion is 1.6x,
+	 * and upstream's own issue tracker puts the range at 1.5-2.0x. Nothing supports 3x.
+	 *
+	 * <p>Being wrong in this direction is not harmless. Demanding 4x when 2.6x is needed refuses
+	 * the two-phase path on precisely the big-map, tight-space, flaky-network case the resume
+	 * exists for, and silently drops the driver onto the non-resumable path.
+	 *
+	 * <p>3 covers expansion up to 2.0x, above every figure found, and is only reached when
+	 * {@code contentSize} is missing from the index.
 	 */
-	private static final long TWO_PHASE_SPACE_FACTOR = 4;
+	private static final long TWO_PHASE_SPACE_FALLBACK = 3;
+
+	/** Slack over the computed requirement, so a filesystem that rounds up does not fail mid-write. */
+	private static final long TWO_PHASE_MARGIN_BYTES = 16L * 1024 * 1024;
 
 	/**
 	 * Whether this entry can use download-then-decompress.
@@ -468,7 +478,20 @@ public class DownloadFileHelper {
 				log.info("Server ignored Range on " + part.getName() + ", restarting from 0");
 			}
 
-			long needed = fullSize * TWO_PHASE_SPACE_FACTOR;
+			// What is ACTUALLY needed, rather than a guess scaled off the download size.
+			//
+			// Two corrections over the first version. The extracted size is not inferred from a
+			// compression ratio at all - `de.sizeMB` carries the server's own contentSize, the
+			// same number upstream's own space validation uses, so it is exact per file and per
+			// type. And only the bytes still to FETCH count against free space: on a resume the
+			// part file is already on disk, so charging for the whole download meant a resume at
+			// 90% demanded more headroom than one at 10% - the closer to finishing, the more
+			// likely it was refused, which is precisely backwards.
+			long extracted = de.sizeMB > 0
+					? (long) (de.sizeMB * 1024 * 1024)
+					: fullSize * TWO_PHASE_SPACE_FALLBACK;
+			long remainingToFetch = Math.max(0, fullSize - (append ? already : 0));
+			long needed = remainingToFetch + extracted + TWO_PHASE_MARGIN_BYTES;
 			long free = part.getParentFile().getUsableSpace();
 			if (free > 0 && free < needed) {
 				log.info("Two-phase download declined: need ~" + (needed >> 20) + " MB, have "
