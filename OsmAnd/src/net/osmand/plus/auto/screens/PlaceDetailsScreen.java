@@ -2,6 +2,8 @@ package net.osmand.plus.auto.screens;
 
 import static android.text.Spanned.SPAN_INCLUSIVE_INCLUSIVE;
 
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.text.SpannableString;
 
 import androidx.annotation.NonNull;
@@ -10,7 +12,9 @@ import androidx.car.app.CarContext;
 import androidx.car.app.constraints.ConstraintManager;
 import androidx.car.app.model.Action;
 import androidx.car.app.model.ActionStrip;
+import androidx.car.app.model.CarIcon;
 import androidx.car.app.model.DistanceSpan;
+import androidx.core.graphics.drawable.IconCompat;
 import androidx.car.app.model.Header;
 import androidx.car.app.model.Pane;
 import androidx.car.app.model.PaneTemplate;
@@ -103,6 +107,9 @@ public final class PlaceDetailsScreen extends BaseAndroidAutoScreen {
 
 	/** Build-time kill switch: CAIRODRIVE_PLACE_DETAILS=false restores the direct-to-preview path. */
 	private static final boolean PLACE_DETAILS_ENABLED = BuildConfig.CAIRODRIVE_PLACE_DETAILS;
+
+	/** See {@link #requestPhoto} - sized for the head unit, not for the source image. */
+	private static final int PHOTO_MAX_WIDTH_PX = 640;
 
 	/**
 	 * What the host allows a single task to spend, from the Car App Library's template
@@ -542,6 +549,19 @@ public final class PlaceDetailsScreen extends BaseAndroidAutoScreen {
 	private boolean detailsRequested;
 
 	/**
+	 * Rule 5 of the six above, made structural.
+	 *
+	 * <p>The CarIcon is built ONCE and held. {@code getTemplate()} is a host callback that fires
+	 * on every refresh, and a CarIcon carries a bitmap across the binder each time it is attached
+	 * to a template - rebuilding it per call would push a full-size image over IPC several times a
+	 * second while the pane is open. The photo bytes are fetched exactly once for the same reason
+	 * {@link #detailsRequested} exists: GetPhotoMedia is a separate billed endpoint.
+	 */
+	@Nullable
+	private CarIcon photoIcon;
+	private boolean photoRequested;
+
+	/**
 	 * Adds the deferred Places rows, following the six rules written above rather than replacing
 	 * them.
 	 *
@@ -573,6 +593,33 @@ public final class PlaceDetailsScreen extends BaseAndroidAutoScreen {
 
 		int added = 0;
 		int budget = getContentLimit() - rowsSoFar;
+
+		// Photo, on the pane itself rather than in a row - Pane.setImage is the only place the
+		// template will render one, and it costs no row against the content limit. Kicked off
+		// once, rendered on the rebuild that follows, exactly like the details fetch above.
+		if (GooglePlacesDetailsApi.photosEnabled() && !details.photoNames.isEmpty()) {
+			if (photoIcon != null) {
+				paneBuilder.setImage(photoIcon);
+			} else if (!photoRequested) {
+				photoRequested = true;
+				requestPhoto(details.photoNames.get(0));
+			}
+		}
+
+		// Popular times, from BestTime - the one thing Google's Places API will not expose. Read
+		// from cache only; the provider does its own network work off this thread and its own
+		// credit accounting. Placed above hours because "busy right now" is the thing that changes
+		// a decision already made, where hours change whether the decision is possible at all.
+		if (added < budget) {
+			String popular = BestTimeProvider.cachedSummary(getApp(), details.name, details.address);
+			if (popular != null) {
+				paneBuilder.addRow(new Row.Builder()
+						.setTitle(getApp().getString(R.string.cairodrive_place_popular_times))
+						.addText(popular)
+						.build());
+				added++;
+			}
+		}
 
 		// Hours first: it is the one field that changes whether the driver goes at all.
 		if (added < budget && details.hoursToday != null) {
@@ -620,6 +667,37 @@ public final class PlaceDetailsScreen extends BaseAndroidAutoScreen {
 			added++;
 		}
 		return added;
+	}
+
+	/**
+	 * Fetches one photo off the car thread and turns it into a CarIcon exactly once.
+	 *
+	 * <p>{@code maxWidthPx} is deliberately small. The head unit is roughly 800 px across and the
+	 * pane image occupies a fraction of that, so a full-resolution photo is bandwidth and heap
+	 * spent on pixels that are then thrown away by the scaler - and a large bitmap crossing the
+	 * binder is the shape that shows up as a GC pause in {@code CD_FRAME maxMs} rather than in the
+	 * average, which is why it would look fine in a summary and bad in the car.
+	 *
+	 * <p>Failure is silent by design: no photo is a pane without an image, which is exactly what
+	 * the pane looked like before this existed.
+	 */
+	private void requestPhoto(@NonNull String photoName) {
+		OsmandApplication app = getApp();
+		new Thread(() -> {
+			byte[] bytes = new GooglePlacesDetailsApi(app).photo(photoName, PHOTO_MAX_WIDTH_PX);
+			if (bytes == null || bytes.length == 0) {
+				return;
+			}
+			Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+			if (bitmap == null) {
+				return;
+			}
+			CarIcon icon = new CarIcon.Builder(IconCompat.createWithBitmap(bitmap)).build();
+			getCarContext().getMainExecutor().execute(() -> {
+				photoIcon = icon;
+				invalidate();
+			});
+		}, "cd-place-photo").start();
 	}
 
 	/** The raw Google place id carried on the Amenity, or null for an OSM result. */

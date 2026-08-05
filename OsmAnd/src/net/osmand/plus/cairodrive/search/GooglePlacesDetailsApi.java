@@ -169,6 +169,15 @@ public class GooglePlacesDetailsApi {
 		public Boolean openNow;
 		public String hoursToday;
 		public String summary;
+		/**
+		 * Where the place is, or null.
+		 *
+		 * <p>{@code location} was in both field masks from the start - and therefore paid for on
+		 * every call - but nothing parsed it, so a Nearby result arrived with a name and no
+		 * coordinates. That makes it unroutable and unplottable: the entire point of a nearby
+		 * search is somewhere to drive to.
+		 */
+		public LatLon location;
 		public final List<String> reviews = new ArrayList<>();
 		public final List<String> photoNames = new ArrayList<>();
 
@@ -285,6 +294,14 @@ public class GooglePlacesDetailsApi {
 		}
 		d.priceLevel = o.optString("priceLevel", null);
 		d.businessStatus = o.optString("businessStatus", null);
+
+		// Guarded on has() rather than on optDouble's default: 0.0 is a real coordinate in the
+		// Gulf of Guinea, so a missing field defaulting to zero would place every unlocated result
+		// at Null Island and route the driver towards the Atlantic.
+		JSONObject location = o.optJSONObject("location");
+		if (location != null && location.has("latitude") && location.has("longitude")) {
+			d.location = new LatLon(location.optDouble("latitude"), location.optDouble("longitude"));
+		}
 
 		JSONObject hours = o.optJSONObject("currentOpeningHours");
 		if (hours == null) {

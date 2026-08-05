@@ -18,6 +18,13 @@
     <string name="cairodrive_place_call">اتصل</string>
     <string name="cairodrive_place_reviews">التقييمات</string>
     <string name="cairo_traffic_delay">زحمة: +%1$d دقيقة على طريقك</string>
+    <string name="cairodrive_place_popular_times">أوقات الزحمة</string>
+    <string name="cairodrive_popular_quiet">فاضي دلوقتي</string>
+    <string name="cairodrive_popular_steady">عادي دلوقتي</string>
+    <string name="cairodrive_popular_busy">زحمة دلوقتي</string>
+    <string name="cairodrive_popular_very_busy">زحمة جدًا دلوقتي</string>
+    <string name="cairodrive_ev_charging">شحن كهربائي</string>
+    <string name="cairodrive_ev_membership">ممكن تحتاج عضوية</string>
     <string name="cairo_google_traffic_on_route">الزحمة المباشرة على الطريق (جوجل)</string>
     <string name="cairo_tomtom_traffic">الزحمة المباشرة (تومتوم)</string>
     <string name="cairo_weather_hazard">تحذيرات الأتربة وجودة الهواء</string>

@@ -24,6 +24,7 @@ import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.auto.SearchHelper;
 import net.osmand.plus.auto.SearchHelper.SearchHelperListener;
+import net.osmand.plus.cairodrive.search.GooglePlacesDetailsApi;
 import net.osmand.plus.search.history.SearchHistoryHelper;
 import net.osmand.plus.helpers.TargetPointsHelper;
 import net.osmand.plus.helpers.TargetPoint;
@@ -82,6 +83,9 @@ public final class SearchScreen extends BaseSearchScreen implements DefaultLifec
 		// against a destroyed screen 350 ms later. The other two removals here exist for the same
 		// reason; this is the third.
 		cancelPendingSearch();
+		// The search is over, however it ended. Leaving the token alive would carry one billed
+		// autocomplete session into the next unrelated search.
+		endAutocompleteSession();
 		getApp().getAppInitializer().removeListener(this);
 		getLifecycle().removeObserver(this);
 		destroyed = true;
@@ -132,8 +136,9 @@ public final class SearchScreen extends BaseSearchScreen implements DefaultLifec
 			builder.setLoading(true);
 		} else {
 			builder.setLoading(false);
-			if (itemList != null) {
-				builder.setItemList(itemList);
+			ItemList merged = withSuggestions(itemList);
+			if (merged != null) {
+				builder.setItemList(merged);
 			}
 		}
 
@@ -178,9 +183,102 @@ public final class SearchScreen extends BaseSearchScreen implements DefaultLifec
 		Runnable task = () -> {
 			pendingSearch = null;
 			doSearch(searchText);
+			requestAutocomplete(searchText);
 		};
 		pendingSearch = task;
 		searchHandler.postDelayed(task, SEARCH_DEBOUNCE_MS);
+	}
+
+	/**
+	 * Google autocomplete, on the debounced tick and never on the keystroke.
+	 *
+	 * <p><b>This is the most expensive call in the app and the only one billed per SESSION.</b> A
+	 * session is "the keystrokes leading to one selection", so it is charged once if the token is
+	 * held across the whole word and once PER CHARACTER if it is not. Three things keep that from
+	 * happening, and all three have to hold together:
+	 * <ul>
+	 *   <li>it hangs off {@link #scheduleSearch}'s existing 350 ms debounce, so "مصر الجديدة"
+	 *       is one request rather than eleven;</li>
+	 *   <li>{@code GooglePlacesDetailsApi} holds the session token itself and only clears it on
+	 *       {@code endAutocompleteSession()}, which is called below on selection and on destroy -
+	 *       the two ways a session can actually end;</li>
+	 *   <li>a query shorter than {@link #AUTOCOMPLETE_MIN_CHARS} is not sent at all. One or two
+	 *       characters cannot produce a useful suggestion in a city of this size, and they are
+	 *       exactly the characters a driver types on the way to something longer.</li>
+	 * </ul>
+	 *
+	 * <p>CLAUDE.md is explicit that this feature has to be judged while TYPING rather than after,
+	 * because that is where the previous attempt went wrong. {@code CD_SEARCH} carries the request
+	 * count for exactly that reading.
+	 */
+	private void requestAutocomplete(@NonNull String searchText) {
+		if (!GooglePlacesDetailsApi.autocompleteEnabled()
+				|| searchText.length() < AUTOCOMPLETE_MIN_CHARS) {
+			return;
+		}
+		String query = searchText;
+		LatLon around = getSearchLocation();
+		GooglePlacesDetailsApi api = placesApi();
+		new Thread(() -> {
+			List<GooglePlacesDetailsApi.Suggestion> found = api.autocomplete(query, around);
+			getCarContext().getMainExecutor().execute(() -> {
+				// The driver has typed on since this was sent. Dropping a stale answer is the
+				// whole reason the query is compared rather than just assigned - otherwise a slow
+				// response overwrites the suggestions for the word actually in the box.
+				if (destroyed || !query.equals(searchText)) {
+					return;
+				}
+				suggestions = found;
+				invalidate();
+			});
+		}, "cd-autocomplete").start();
+	}
+
+	/** Below this, a suggestion cannot be useful and the session would be paid for nothing. */
+	private static final int AUTOCOMPLETE_MIN_CHARS = 3;
+
+	@Nullable
+	private List<GooglePlacesDetailsApi.Suggestion> suggestions;
+
+	/** Where to bias suggestions, or null if there is no fix yet. */
+	@Nullable
+	private LatLon getSearchLocation() {
+		net.osmand.Location location = getApp().getLocationProvider().getLastKnownLocation();
+		return location == null ? null : new LatLon(location.getLatitude(), location.getLongitude());
+	}
+
+	/**
+	 * Ends the billed autocomplete session.
+	 *
+	 * <p>Called on selection and on destroy - the two ways a session genuinely ends. Missing
+	 * either one does not fail visibly; it silently keeps one token alive across unrelated
+	 * searches, which is the failure mode that only shows up on the invoice.
+	 */
+	private void endAutocompleteSession() {
+		if (placesApi != null) {
+			placesApi.endAutocompleteSession();
+		}
+		suggestions = null;
+	}
+
+	/**
+	 * ONE instance for the life of this screen, and that is a billing requirement, not tidiness.
+	 *
+	 * <p>The autocomplete session token is an INSTANCE field on {@code GooglePlacesDetailsApi}.
+	 * Constructing a new API object per request would therefore start a new billed session on
+	 * every keystroke-group, and calling {@code endAutocompleteSession()} on a second instance
+	 * would clear a token that was never used - producing exactly the per-keystroke charge the
+	 * token exists to prevent, while looking correct in the code.
+	 */
+	@Nullable
+	private GooglePlacesDetailsApi placesApi;
+
+	@NonNull
+	private GooglePlacesDetailsApi placesApi() {
+		if (placesApi == null) {
+			placesApi = new GooglePlacesDetailsApi(getApp());
+		}
+		return placesApi;
 	}
 
 	private void cancelPendingSearch() {
@@ -203,6 +301,9 @@ public final class SearchScreen extends BaseSearchScreen implements DefaultLifec
 	}
 
 	public void onClickSearchResult(@NonNull SearchResult sr) {
+		// A selection is what CLOSES an autocomplete session, in Google's billing sense. This is
+		// the one call that turns a word's worth of keystrokes into a single charge.
+		endAutocompleteSession();
 		if (sr.objectType == ObjectType.POI
 				|| sr.objectType == ObjectType.LOCATION
 				|| sr.objectType == ObjectType.HOUSE
@@ -260,6 +361,59 @@ public final class SearchScreen extends BaseSearchScreen implements DefaultLifec
 			invalidate();
 		}
 	}
+
+	/**
+	 * The offline results, then Google's suggestions beneath them.
+	 *
+	 * <p>Offline first, deliberately. The {@code .obf} answers instantly and without a network,
+	 * and it is what the driver gets on the Ring Road with no signal; suggestions are an addition
+	 * to that list, not a replacement for it. Putting them on top would make the common case feel
+	 * slower - the list would visibly reshuffle 300 ms after it had already settled.
+	 *
+	 * <p>Capped at {@link #MAX_SUGGESTIONS}: the host's content limit rejects rows past its own
+	 * cap outright, and a search list a driver has to scroll is not a search list they can use.
+	 *
+	 * <p>Tapping a suggestion re-runs the OFFLINE search against that text rather than fetching
+	 * the place. That keeps this to the one billed endpoint it already pays for - a Place Details
+	 * call per tapped suggestion would be a second SKU on a path a driver taps repeatedly - and
+	 * the offline index resolves a completed name well even when it could not complete a prefix.
+	 */
+	@Nullable
+	private ItemList withSuggestions(@Nullable ItemList base) {
+		List<GooglePlacesDetailsApi.Suggestion> current = suggestions;
+		if (current == null || current.isEmpty()) {
+			return base;
+		}
+		ItemList.Builder builder = withNoResults(new ItemList.Builder());
+		if (base != null) {
+			for (androidx.car.app.model.Item item : base.getItems()) {
+				builder.addItem(item);
+			}
+		}
+		int added = 0;
+		for (GooglePlacesDetailsApi.Suggestion suggestion : current) {
+			if (added >= MAX_SUGGESTIONS) {
+				break;
+			}
+			if (Algorithms.isEmpty(suggestion.text)) {
+				continue;
+			}
+			String text = suggestion.text;
+			builder.addItem(new androidx.car.app.model.Row.Builder()
+					.setTitle(text)
+					.setBrowsable(true)
+					.setOnClickListener(() -> {
+						searchText = text;
+						cancelPendingSearch();
+						doSearch(text);
+					})
+					.build());
+			added++;
+		}
+		return builder.build();
+	}
+
+	private static final int MAX_SUGGESTIONS = 3;
 
 	@NonNull
 	private ItemList.Builder withNoResults(@NonNull ItemList.Builder builder) {

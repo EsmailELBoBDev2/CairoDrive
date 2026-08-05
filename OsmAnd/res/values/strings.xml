@@ -30,6 +30,13 @@
 	<string name="cairodrive_place_call">Call</string>
 	<string name="cairodrive_place_reviews">Reviews</string>
 	<string name="cairo_traffic_delay">Traffic: +%1$d min on your route</string>
+	<string name="cairodrive_place_popular_times">Popular times</string>
+	<string name="cairodrive_popular_quiet">Quiet right now</string>
+	<string name="cairodrive_popular_steady">Steady right now</string>
+	<string name="cairodrive_popular_busy">Busy right now</string>
+	<string name="cairodrive_popular_very_busy">Very busy right now</string>
+	<string name="cairodrive_ev_charging">EV charging</string>
+	<string name="cairodrive_ev_membership">Membership may be required</string>
 	<string name="cairo_google_traffic_on_route">Live traffic on route (Google)</string>
 	<string name="cairo_tomtom_traffic">Live traffic (TomTom)</string>
 	<string name="cairo_weather_hazard">Dust and air quality warnings</string>

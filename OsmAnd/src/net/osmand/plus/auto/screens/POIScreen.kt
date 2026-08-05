@@ -23,6 +23,8 @@ import net.osmand.data.LatLon
 import net.osmand.data.QuadRect
 import net.osmand.plus.R
 import net.osmand.plus.auto.TripUtils
+import net.osmand.plus.cairodrive.search.GooglePlaceTypes
+import net.osmand.plus.cairodrive.search.GooglePlacesDetailsApi
 import net.osmand.plus.search.listitems.QuickSearchListItem
 import net.osmand.plus.settings.enums.CompassMode
 import net.osmand.plus.utils.AndroidUtils
@@ -61,7 +63,7 @@ class POIScreen(
             templateBuilder.setLoading(true)
         } else {
             templateBuilder.setLoading(false)
-            templateBuilder.setItemList(itemList)
+            templateBuilder.setItemList(withNearby(itemList))
         }
         var title = QuickSearchListItem.getName(app, categoryResult)
         if (Algorithms.isEmpty(title)) {
@@ -78,6 +80,81 @@ class POIScreen(
 
     private fun withNoResults(builder: ItemList.Builder): ItemList.Builder {
         return builder.setNoItemsMessage(carContext.getString(R.string.no_poi_for_category))
+    }
+
+    /**
+     * The offline list with Google's nearby results appended.
+     *
+     * Appended, never merged or reordered: the offline entries are the ones that work with no
+     * signal and that the map layer is already showing pins for, so they stay where they are and
+     * in the order the index produced. A result with no coordinates is dropped rather than shown -
+     * it cannot be routed to, and a row that does nothing when tapped is worse than no row.
+     *
+     * The whole list is still capped by [contentLimit]; the host rejects a template whose list
+     * exceeds it, which would blank the screen rather than truncate it.
+     */
+    private fun withNearby(base: ItemList): ItemList {
+        val extra = nearbyResults
+        if (extra.isEmpty()) {
+            return base
+        }
+        val builder = ItemList.Builder()
+        var count = 0
+        for (item in base.items) {
+            if (count >= contentLimit) break
+            builder.addItem(item)
+            count++
+        }
+        val location = app.mapViewTrackingUtilities.defaultLocation
+        for (place in extra) {
+            if (count >= contentLimit) break
+            val where = place.location ?: continue
+            val name = place.name ?: continue
+            val rowBuilder = Row.Builder().setTitle(name)
+            if (location != null) {
+                val dist = MapUtils.getDistance(
+                    where.latitude, where.longitude, location.latitude, location.longitude)
+                val address = SpannableString(" ")
+                address.setSpan(
+                    DistanceSpan.create(TripUtils.getDistance(app, dist)), 0, 1,
+                    Spanned.SPAN_INCLUSIVE_INCLUSIVE)
+                rowBuilder.addText(address)
+            } else if (!Algorithms.isEmpty(place.address)) {
+                rowBuilder.addText(place.address)
+            }
+            rowBuilder.setMetadata(
+                Metadata.Builder().setPlace(
+                    Place.Builder(
+                        CarLocation.create(where.latitude, where.longitude)).build()).build())
+            rowBuilder.setOnClickListener { openRoutePreview(settingsAction, asGoogleResult(place, where)) }
+            builder.addItem(rowBuilder.build())
+            count++
+        }
+        return builder.build()
+    }
+
+    /**
+     * A Google nearby hit as the plain destination the rest of the car flow consumes.
+     *
+     * [categoryResult]'s phrase is carried over for the same reason [asDestination] carries it:
+     * `SearchResult()` installs an empty phrase whose `settings` is null, and the POI branch of
+     * `QuickSearchListItem.getName` dereferences it without a null check.
+     *
+     * Straight to route preview rather than through the detail pane, unlike a tapped offline POI.
+     * This flow is already Landing -> POICategories -> POIScreen, and the host caps a task at five
+     * templates - the pane would make route preview the fifth with nothing left for
+     * MissingMapsScreen or PrivateAccessScreen, which is how a task runs out of quota and the host
+     * closes the app. See [PlaceDetailsScreen.Origin].
+     */
+    private fun asGoogleResult(
+        place: GooglePlacesDetailsApi.PlaceDetails, where: LatLon): SearchResult {
+        val result = SearchResult(categoryResult.requiredSearchPhrase)
+        result.location = LatLon(where.latitude, where.longitude)
+        result.objectType = ObjectType.LOCATION
+        result.localeName = place.name
+        result.addressName = place.address
+        result.preferredZoom = categoryResult.preferredZoom
+        return result
     }
 
     override fun onClickSearchMore() {
@@ -101,8 +178,60 @@ class POIScreen(
                 setupPOI(builder, searchResults)
                 this.itemList = builder.build()
             }
+            // Google Nearby, but ONLY when the offline index came up thin. The .obf answers
+            // instantly, offline, and is the right answer for a category like "petrol" in a city
+            // it maps well; paying a SearchNearby call to append to a full list would be spending
+            // the most restricted quota in the account to duplicate what is already on screen.
+            maybeRequestNearby(resultsCount)
             invalidate()
         }
+    }
+
+    /**
+     * Fills a thin category result from Google, once per screen.
+     *
+     * The gate is the offline result COUNT, not the category: this is about coverage, and Cairo's
+     * .obf covers some categories well and others barely at all. Below [NEARBY_THIN_RESULTS] the
+     * driver is looking at a list that does not answer their question, which is the only situation
+     * where a billed call buys anything.
+     *
+     * Note the quota reality recorded in CLAUDE.md: SearchNearby is deliberately capped at 0/day
+     * in the console until the owner raises it. Until then this logs a refusal and changes
+     * nothing on screen - which is the correct behaviour for a feature whose quota is the switch.
+     */
+    private fun maybeRequestNearby(offlineCount: Int) {
+        if (nearbyRequested
+            || offlineCount >= NEARBY_THIN_RESULTS
+            || !GooglePlacesDetailsApi.nearbyEnabled()) {
+            return
+        }
+        val types = GooglePlaceTypes.forCategory(categoryResult, app)
+        if (types.isEmpty()) {
+            return
+        }
+        nearbyRequested = true
+        val around = app.mapViewTrackingUtilities.defaultLocation ?: return
+        val centre = LatLon(around.latitude, around.longitude)
+        Thread({
+            val found = GooglePlacesDetailsApi(app)
+                .nearby(centre, types, NEARBY_MAX_RESULTS, NEARBY_RADIUS_M)
+            carContext.mainExecutor.execute {
+                if (found.isNotEmpty()) {
+                    nearbyResults = found
+                    invalidate()
+                }
+            }
+        }, "cd-nearby").start()
+    }
+
+    private var nearbyRequested = false
+    private var nearbyResults: List<GooglePlacesDetailsApi.PlaceDetails> = emptyList()
+
+    private companion object {
+        /** At or above this many offline hits, the list already answers the question. */
+        const val NEARBY_THIN_RESULTS = 3
+        const val NEARBY_MAX_RESULTS = 10
+        const val NEARBY_RADIUS_M = 5000.0
     }
 
     private fun setupPOI(listBuilder: ItemList.Builder, searchResults: List<SearchResult>?) {

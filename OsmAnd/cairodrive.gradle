@@ -485,6 +485,29 @@ def openWeatherKey = openWeatherKeyEnv?.trim() ? openWeatherKeyEnv.trim() : ""
 def mapillaryTokenEnv = System.getenv("CAIRODRIVE_MAPILLARY_TOKEN")
 def mapillaryToken = mapillaryTokenEnv?.trim() ? mapillaryTokenEnv.trim() : ""
 
+// BestTime.app - popular times / "how busy right now". The one field the owner asked for that
+// Google's Places API does not expose at any price.
+//
+// TWO keys, and the distinction is the entire cost model: the PRIVATE key is used on the POST that
+// GENERATES a forecast and burns credits, the PUBLIC key on the GETs that re-read an already
+// generated one for free. BestTimeProvider generates a venue at most once and reads it back
+// thereafter; a POST per tap would be the exact blow-up the Places rules already guard against.
+def bestTimePrivateEnv = System.getenv("CAIRODRIVE_BESTTIME_PRIVATE_KEY")
+def bestTimePrivate = bestTimePrivateEnv?.trim() ? bestTimePrivateEnv.trim() : ""
+
+def bestTimePublicEnv = System.getenv("CAIRODRIVE_BESTTIME_PUBLIC_KEY")
+def bestTimePublic = bestTimePublicEnv?.trim() ? bestTimePublicEnv.trim() : ""
+
+def bestTimeEnv = System.getenv("CAIRODRIVE_BESTTIME")
+def bestTime = bestTimeEnv?.trim() ? bestTimeEnv.trim() : "true"
+
+// Open Charge Map, bundled rather than called. Egypt's ENTIRE EV charging dataset is 492 records,
+// small enough to ship inside the APK - which means no key, no quota, no rate limit and full
+// function with the data saver on and no signal. That is a better fit for this app than any live
+// API, and it is why there is no CAIRODRIVE_OCM_KEY here to set.
+def openChargeMapEnv = System.getenv("CAIRODRIVE_OPEN_CHARGE_MAP")
+def openChargeMap = openChargeMapEnv?.trim() ? openChargeMapEnv.trim() : "true"
+
 // This fork's own OSM OAuth2 application. Unset is the default and keeps upstream OsmAnd's, whose
 // CLIENT SECRET is committed in plaintext in no_translate.xml - so anyone can mint tokens that
 // present as OsmAnd, and every edit uploaded from here is attributed to upstream's application.
@@ -720,6 +743,10 @@ android {
 			buildConfigField "String", "CAIRODRIVE_TOMTOM_KEY", "\"" + tomtomKey + "\""
 			buildConfigField "String", "CAIRODRIVE_OPENWEATHER_KEY", "\"" + openWeatherKey + "\""
 			buildConfigField "String", "CAIRODRIVE_MAPILLARY_TOKEN", "\"" + mapillaryToken + "\""
+			buildConfigField "String", "CAIRODRIVE_BESTTIME_PRIVATE_KEY", "\"" + bestTimePrivate + "\""
+			buildConfigField "String", "CAIRODRIVE_BESTTIME_PUBLIC_KEY", "\"" + bestTimePublic + "\""
+			buildConfigField "boolean", "CAIRODRIVE_BESTTIME", bestTime
+			buildConfigField "boolean", "CAIRODRIVE_OPEN_CHARGE_MAP", openChargeMap
 			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_ID", "\"" + osmOauthId + "\""
 			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_SECRET", "\"" + osmOauthSecret + "\""
 			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_REDIRECT", "\"" + osmOauthRedirect + "\""
@@ -758,6 +785,10 @@ android {
 			buildConfigField "String", "CAIRODRIVE_TOMTOM_KEY", "\"" + tomtomKey + "\""
 			buildConfigField "String", "CAIRODRIVE_OPENWEATHER_KEY", "\"" + openWeatherKey + "\""
 			buildConfigField "String", "CAIRODRIVE_MAPILLARY_TOKEN", "\"" + mapillaryToken + "\""
+			buildConfigField "String", "CAIRODRIVE_BESTTIME_PRIVATE_KEY", "\"" + bestTimePrivate + "\""
+			buildConfigField "String", "CAIRODRIVE_BESTTIME_PUBLIC_KEY", "\"" + bestTimePublic + "\""
+			buildConfigField "boolean", "CAIRODRIVE_BESTTIME", bestTime
+			buildConfigField "boolean", "CAIRODRIVE_OPEN_CHARGE_MAP", openChargeMap
 			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_ID", "\"" + osmOauthId + "\""
 			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_SECRET", "\"" + osmOauthSecret + "\""
 			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_REDIRECT", "\"" + osmOauthRedirect + "\""
