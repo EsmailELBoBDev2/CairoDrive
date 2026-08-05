@@ -228,13 +228,24 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	 * satisfies "one hour or twelve hours, I'm covered in both".
 	 *
 	 * <p>Five rungs do. Solved so the integral of (budget slice / points per sweep) x interval
-	 * comes to <b>28.0 hours</b> while spending exactly 645 points. Tier one runs at TomTom's own
-	 * 1-minute data cadence with a full 10-point sweep and lasts 13 minutes of driving; a
-	 * 45-minute commute never gets past tier two. Only a drive long enough to consume the budget
-	 * ever sees the cheap end.
+	 * comes to <b>27.9 hours</b> while spending exactly 645 points. Tier one runs at TomTom's own
+	 * 1-minute data cadence and lasts 9 minutes of driving; a 45-minute commute sits in tiers one
+	 * and two. Only a drive long enough to consume the budget ever sees the cheap end.
+	 *
+	 * <h3>Why tier one asks for 14 points</h3>
+	 *
+	 * That is what the free tier actually affords. 20,000 points a month against 30 days x 45
+	 * minutes of driving is 14.8 points per driving minute. At 10 the month ended at 68% of the
+	 * allowance with the rest simply expiring; at 14 it lands at 94%.
+	 *
+	 * <p>Flow is the ONLY stream where spare budget converts into information. Incidents, delay and
+	 * spans are all affordable faster than their data changes, so their leftover can only buy
+	 * duplicate bytes - 27-54% is their true ceiling and no cap change moves it. Flow scales
+	 * SPATIALLY: 14 samples along the corridor is a genuinely better picture than 10, not a
+	 * re-fetch of the same one.
 	 */
 	private static final BudgetPacer.Tier[] FLOW_LADDER = {
-			new BudgetPacer.Tier(0.20, 10, 60),
+			new BudgetPacer.Tier(0.20, 14, 60),
 			new BudgetPacer.Tier(0.20, 8, 120),
 			new BudgetPacer.Tier(0.20, 6, 240),
 			new BudgetPacer.Tier(0.20, 4, 480),
