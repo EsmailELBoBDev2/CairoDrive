@@ -16,6 +16,7 @@ import net.osmand.osm.io.NetworkUtils;
 import net.osmand.plus.BuildConfig;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
+import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.Version;
 import net.osmand.plus.settings.backend.ApplicationMode;
 import net.osmand.plus.settings.backend.OsmandSettings;

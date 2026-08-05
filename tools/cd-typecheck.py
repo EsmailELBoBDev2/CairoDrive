@@ -227,6 +227,17 @@ def check(path, pkgs):
 
     # Type positions: `Foo bar =`, `new Foo(`, `Foo.class`, `extends Foo`, `implements Foo`,
     # `catch (Foo`, `instanceof Foo`, `(Foo)` casts, `<Foo>`.
+    #
+    # The last pattern is a STATIC RECEIVER - `Foo.bar()`, `Foo.CONSTANT`. It is not a type position
+    # in the usual sense and was missing, which is why a file using CairoDriveLogger only through
+    # `CairoDriveLogger.isEnabled()` and `CairoDriveLogger.getInstance()`, with no import at all,
+    # passed this checker clean and then failed the build with four `cannot find symbol` errors.
+    # A class used purely for its statics never appears in a declaration, so nothing else here
+    # would ever see it.
+    #
+    # The leading `(?<![.\w$])` is what keeps it honest: it refuses to match the tail of a
+    # qualified name, so `net.osmand.plus.Version.getFullVersion()` and `a.b.C.d()` do not report
+    # `Version` or `C`. The receiver must genuinely start the expression.
     pats = [
         r"\bnew\s+([A-Z]\w*)\s*[(<\[]",
         r"^\s*(?:public|private|protected|static|final|abstract|synchronized|volatile|transient|\s)*\b([A-Z]\w*)(?:<[^;={]*>)?(?:\[\])?\s+\w+\s*[;=)]",
@@ -236,13 +247,28 @@ def check(path, pkgs):
         r"\binstanceof\s+([A-Z]\w*)",
         r"\b([A-Z]\w*)\.class\b",
         r"\bthrows\s+([A-Z]\w*)",
+        r"(?<![.\w$])([A-Z]\w*)\s*\.\s*[a-zA-Z_]\w*\s*[(.,;)=]",
     ]
+    # CONSTANTS are receivers too - `LOG.info(...)`, `CACHE.get(...)` - and they are fields, not
+    # types, so the static-receiver pattern must not report them. Two filters, because either alone
+    # leaks: the declaration sweep misses constants inherited from a superclass, and the naming
+    # convention misses a lowercase-named field. A single capital is left checkable on purpose so
+    # `R.string.x` is still verified; type PARAMETERS of that shape are already in `local`.
+    declared_fields = set(re.findall(
+        r"(?:static|final|private|public|protected|volatile|transient)\s+"
+        r"[\w.<>\[\], ?]+?\s+([A-Za-z_]\w*)\s*(?:=|;)", src))
+
+    def is_constant(name):
+        return len(name) > 1 and name.upper() == name
+
     hits = {}
     for i, line in enumerate(src.split("\n"), 1):
         for p in pats:
             for mm in re.finditer(p, line, re.M):
                 name = mm.group(1)
                 if name in available or name in hits:
+                    continue
+                if name in declared_fields or is_constant(name):
                     continue
                 hits[name] = i
     return {n: l for n, l in hits.items()}

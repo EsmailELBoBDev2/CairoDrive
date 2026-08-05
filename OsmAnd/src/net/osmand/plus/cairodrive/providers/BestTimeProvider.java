@@ -261,6 +261,80 @@ public final class BestTimeProvider {
 		return week[slot];
 	}
 
+	/**
+	 * Flattens the whole 7x24 week out of a forecast response and persists it under {@code key}.
+	 *
+	 * <h3>Why the whole week and not just the hour that was asked for</h3>
+	 *
+	 * BestTime bills the by-name POST at 2 credits and the by-id GET at 1, and there is no free
+	 * read of either. But a single POST already returns the complete week - so storing all 168
+	 * hours makes every later question about that venue, on any day, cost nothing at all. Keeping
+	 * only the current hour would have meant paying again tomorrow for data already in hand.
+	 *
+	 * <p>Stored as a flat 168-int array indexed {@code dayInt * 24 + (hour - 6)}, matching
+	 * {@link #intensityFromWeek}. Hours the response does not cover are stored as -1 and read back
+	 * as unknown, so a partial week is kept rather than discarded - the missing hours simply fall
+	 * through to a fresh fetch while the present ones stay free.
+	 *
+	 * <p>Failures are swallowed. This is a cache write: losing it costs 2 credits next time, while
+	 * throwing here would fail a lookup that has already succeeded.
+	 */
+	private static void rememberWeek(@NonNull OsmandApplication app, @NonNull String key,
+	                                 @NonNull JSONObject root) {
+		try {
+			JSONObject analysisHolder = root.optJSONObject("analysis");
+			JSONArray analysis = analysisHolder != null
+					? analysisHolder.optJSONArray("week_raw") : root.optJSONArray("analysis");
+			if (analysis == null) {
+				return;
+			}
+			JSONArray week = new JSONArray();
+			for (int i = 0; i < 168; i++) {
+				week.put(-1);
+			}
+			boolean any = false;
+			for (int i = 0; i < analysis.length(); i++) {
+				JSONObject day = analysis.optJSONObject(i);
+				if (day == null) {
+					continue;
+				}
+				JSONObject info = day.optJSONObject("day_info");
+				int dayInt = info != null ? info.optInt("day_int", -1) : day.optInt("day_int", -1);
+				JSONArray raw = day.optJSONArray("day_raw");
+				if (dayInt < 0 || dayInt > 6 || raw == null) {
+					continue;
+				}
+				for (int hour = 0; hour < 24 && hour < raw.length(); hour++) {
+					int value = raw.optInt(hour, -1);
+					if (value >= 0) {
+						week.put(dayInt * 24 + hour, value);
+						any = true;
+					}
+				}
+			}
+			if (!any) {
+				return;
+			}
+
+			String raw = app.getSettings().BESTTIME_VENUE_IDS.get();
+			JSONObject store = Algorithms.isEmpty(raw) ? new JSONObject() : new JSONObject(raw);
+			// Bounded so a long-lived install cannot grow this preference without limit. Oldest
+			// first: JSONObject preserves insertion order for keys read back from a string, so
+			// dropping from the front evicts the least recently fetched venue.
+			while (store.length() >= MAX_VENUE_IDS) {
+				java.util.Iterator<String> keys = store.keys();
+				if (!keys.hasNext()) {
+					break;
+				}
+				store.remove(keys.next());
+			}
+			store.put(key, week);
+			app.getSettings().BESTTIME_VENUE_IDS.set(store.toString());
+		} catch (Exception e) {
+			log("weekStoreFailed " + e.getClass().getSimpleName());
+		}
+	}
+
 	@Nullable
 	private static int[] storedWeek(@NonNull OsmandApplication app, @NonNull String key) {
 		String raw = app.getSettings().BESTTIME_VENUE_IDS.get();
