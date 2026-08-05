@@ -108,7 +108,7 @@ the font manifest · `CD_LAYER` per-layer timing · metered tile gate with `CD_D
 | Item | Reason |
 |---|---|
 | **N7**: the long sentence still overrunning the junction | Structurally forced, not a choice. A phrase that takes longer to say than the driver has cannot be fixed by saying it earlier — only by saying less, which is a different feature |
-| **D4** — catalogue gating | Current state never confirmed. Not claimed either way |
+| **N4** — raise the GNSS fix rate | Deliberately not changed. `CD_FIXRATE` measures it instead, because the premise — that the fix rate is what makes the arrow stutter — is unproven, and requesting a faster rate costs battery on a claim no log supports yet |
 | **Popular times / "best time to visit"** | Not a Places API field at all. Only reachable by scraping Maps through a third party — separate provider, separate bill, breaks on any markup change, and it is scraped Google data on a Play-listed app |
 
 ### Moved out of this table since it was written
@@ -123,6 +123,7 @@ because the *reasons* they were held are the useful part.
 | **N6** — local-graph cache, speed term | "Optimisations, not gaps" | Both in. Cache keyed on road identity, hit rate in `CD_MATCH graphCache=`. Speed term applied only *above* the limit — the "fast car ⇒ fast road" form stays rejected, because Cairo flyovers jam |
 | **N7** — roundabouts, arrival clause | Roundabouts excluded as "not safe to say twice"; arrival clause "under-fires, which is the safe direction" | Nothing says it twice — the cue is timed, never spoken. Roundabouts are the worst case for late guidance, and the final manoeuvre is the one a driver can least recover from |
 | **D5** — help-article gating | Current state never confirmed | Confirmed and done |
+| **D4** — catalogue gating | "Current state never confirmed. Not claimed either way" | Checked, and it was **already done**. `AppInitializer.checkMapUpdates` gates the startup catalogue fetch on `blocksBulkTransfer`, alongside the `* 1000L` fix — without it the two-day throttle was 172800 ms, under three minutes, so the worldwide index could be pulled several times a day on mobile data. The other ten `runReloadIndexFiles()` callers are all screens the user opened, and are deliberately NOT gated: an explicit request is not a bulk transfer |
 
 ## Pre-existing, found not caused
 
