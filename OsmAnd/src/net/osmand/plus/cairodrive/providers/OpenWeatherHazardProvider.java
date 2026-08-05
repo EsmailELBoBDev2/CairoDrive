@@ -237,7 +237,8 @@ public final class OpenWeatherHazardProvider implements CairoDriveProviders.Prov
 	public boolean isAvailable(@NonNull OsmandApplication app) {
 		try {
 			return BuildConfig.CAIRODRIVE_WEATHER_HAZARD
-					&& !Algorithms.isEmpty(BuildConfig.CAIRODRIVE_OPENWEATHER_KEY);
+					&& !Algorithms.isEmpty(BuildConfig.CAIRODRIVE_OPENWEATHER_KEY)
+					&& app.getSettings().WEATHER_HAZARD_ON.get();
 		} catch (Throwable t) {
 			// The contract says a thrower is treated as unavailable; say so rather than letting it
 			// look like a deliberately disabled feature in the log.

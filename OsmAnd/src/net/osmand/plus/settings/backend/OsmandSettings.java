@@ -3430,6 +3430,16 @@ public class OsmandSettings {
 	// With it off, ANIMATE_MY_LOCATION still animates smoothly, but only ever TO the current fix,
 	// so the arrow is permanently about one fix behind reality. See CairoDriveFeatures for why
 	// this, and not the GNSS fix rate, is what N4 actually turned out to be.
+	// Runtime switches for the provider stack, bound to the Configure map toggles.
+	//
+	// Separate from the BuildConfig flags on purpose, and BOTH are checked: the build flag decides
+	// whether the code is reachable at all, the preference decides whether the driver currently
+	// wants it. That is what lets a misbehaving provider be switched off at 60 km/h instead of at
+	// the next build - which is the whole reason the one-feature-per-drive rule is survivable.
+	public final OsmandPreference<Boolean> TOMTOM_TRAFFIC_ON = new BooleanPreference(this, "cairodrive_tomtom_traffic_on", true).makeGlobal().makeShared().cache();
+	public final OsmandPreference<Boolean> WEATHER_HAZARD_ON = new BooleanPreference(this, "cairodrive_weather_hazard_on", true).makeGlobal().makeShared().cache();
+	public final OsmandPreference<Boolean> SUN_GLARE_ON = new BooleanPreference(this, "cairodrive_sun_glare_on", true).makeGlobal().makeShared().cache();
+
 	// Live traffic on the active route, from Google's Routes API. OFF by default and gated a
 	// second time on a compiled-in key, so a build without the key makes zero network calls no
 	// matter what this says. See GoogleTrafficHelper.

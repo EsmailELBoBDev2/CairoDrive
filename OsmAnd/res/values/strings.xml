@@ -31,6 +31,12 @@
 	<string name="cairodrive_place_reviews">Reviews</string>
 	<string name="cairo_traffic_delay">Traffic: +%1$d min on your route</string>
 	<string name="cairo_google_traffic_on_route">Live traffic on route (Google)</string>
+	<string name="cairo_tomtom_traffic">Live traffic (TomTom)</string>
+	<string name="cairo_weather_hazard">Dust and air quality warnings</string>
+	<string name="cairo_sun_glare">Sun glare warning</string>
+	<string name="cairo_hazard_dust">Dust — reduced visibility</string>
+	<string name="cairo_hazard_low_visibility">Low visibility — fog or haze</string>
+	<string name="cairo_hazard_sun_glare">Sun glare ahead</string>
 	<string name="cairodrive_metered_download_message">This download is %1$s and you are on a metered connection. It will use your mobile data allowance.</string>
     <string name="release_5_4">
         • New spatial search — find places and search around a place\n\n

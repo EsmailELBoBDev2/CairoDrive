@@ -979,6 +979,19 @@ public class RoutingHelper {
 	public int getLeftTime() {
 		int staticSeconds = route.getLeftTime(lastFixedLocation);
 		int corrected = etaCalibrator.correct(staticSeconds);
+		// Live traffic on top of the learned correction, in that order and not the other way.
+		//
+		// The calibrator learns THIS DRIVER on THESE roads over many drives - it is a long-run
+		// personal bias. Traffic is a right-now condition on the road ahead. Applying traffic to
+		// the already-personalised number is the composition that makes sense: "the time this
+		// driver normally takes, given the road is currently this congested". Feeding traffic in
+		// first would have the calibrator slowly learn away the very congestion the traffic feed
+		// is reporting, and the two corrections would fight.
+		//
+		// Returns its input unchanged when no flow is fresh, no provider is serving, or every
+		// sample failed the confidence gate - so this is a no-op on a default build.
+		corrected = (int) net.osmand.plus.cairodrive.providers.TrafficAwareRouting
+				.adjustedSeconds(corrected);
 		// Logged unconditionally, not only when the value changed. Before warm-up the two are equal
 		// by construction, so a drive where the calibrator never warmed up produced ZERO CD_ETA
 		// lines - indistinguishable in the log from the feature not being compiled in.

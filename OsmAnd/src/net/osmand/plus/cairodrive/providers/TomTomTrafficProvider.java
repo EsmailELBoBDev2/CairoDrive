@@ -299,8 +299,11 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	 */
 	@Override
 	public boolean isAvailable(@NonNull OsmandApplication app) {
+		// Build flag AND key AND the live preference. The preference is last because it is the
+		// only one that can change while driving.
 		return BuildConfig.CAIRODRIVE_TOMTOM_TRAFFIC
-				&& !Algorithms.isEmpty(BuildConfig.CAIRODRIVE_TOMTOM_KEY);
+				&& !Algorithms.isEmpty(BuildConfig.CAIRODRIVE_TOMTOM_KEY)
+				&& app.getSettings().TOMTOM_TRAFFIC_ON.get();
 	}
 
 	@NonNull

@@ -170,6 +170,24 @@ public class ConfigureMapMenu {
 					}));
 		}
 
+		// The provider stack's runtime switches. One per capability, each shown only when its key
+		// was compiled in - a switch that cannot do anything is worse than no switch, because the
+		// driver toggles it, nothing happens, and the conclusion is that the app is broken rather
+		// than that the build lacks a key.
+		//
+		// These bind BuildConfig-gated features to a live preference, so flipping one mid-drive
+		// takes effect on the next poll without a rebuild. That is deliberate: it is how a bad
+		// provider gets switched off at 60 km/h rather than at the next build.
+		addProviderToggle(adapter, activity, app, settings.TOMTOM_TRAFFIC_ON,
+				R.string.cairo_tomtom_traffic, R.drawable.ic_action_road_works_dark,
+				!Algorithms.isEmpty(net.osmand.plus.BuildConfig.CAIRODRIVE_TOMTOM_KEY));
+		addProviderToggle(adapter, activity, app, settings.WEATHER_HAZARD_ON,
+				R.string.cairo_weather_hazard, R.drawable.ic_action_umbrella,
+				!Algorithms.isEmpty(net.osmand.plus.BuildConfig.CAIRODRIVE_OPENWEATHER_KEY));
+		// No key at all - it is pure arithmetic, so it is always offerable.
+		addProviderToggle(adapter, activity, app, settings.SUN_GLARE_ON,
+				R.string.cairo_sun_glare, R.drawable.ic_action_sun, true);
+
 		ResourceManager resourceManager = app.getResourceManager();
 		boolean hasPoiData = !Algorithms.isEmpty(resourceManager.getAmenityRepositories())
 				|| resourceManager.hasTravelRepositories();
@@ -676,5 +694,41 @@ public class ConfigureMapMenu {
 					}
 					return false;
 				});
+	}
+
+	/**
+	 * One Configure-map switch bound to a boolean preference.
+	 *
+	 * <p>Shared by the provider toggles rather than repeated three times, and it takes its own
+	 * inline listener instead of MapLayerMenuListener for the reason noted on the traffic toggle:
+	 * that listener switches over a fixed set of upstream item ids and adding fork-only cases to
+	 * it is a merge conflict on every upstream sync.
+	 *
+	 * @param available false when the feature's key is absent, in which case no row is added at all
+	 */
+	private void addProviderToggle(@NonNull ContextMenuAdapter adapter, @NonNull MapActivity activity,
+	                               @NonNull OsmandApplication app,
+	                               @NonNull net.osmand.plus.settings.backend.preferences.OsmandPreference<Boolean> pref,
+	                               int titleId, int iconId, boolean available) {
+		if (!available) {
+			return;
+		}
+		boolean selected = pref.get();
+		adapter.addItem(new ContextMenuItem(null)
+				.setTitleId(titleId, activity)
+				.setSelected(selected)
+				.setColor(app, selected ? R.color.osmand_orange : INVALID_ID)
+				.setIcon(iconId)
+				.setItemDeleteAction(pref)
+				.setListener((uiAdapter, view, item, isChecked) -> {
+					pref.set(isChecked);
+					item.setSelected(isChecked);
+					item.setColor(app, isChecked ? R.color.osmand_orange : INVALID_ID);
+					if (uiAdapter != null) {
+						uiAdapter.onDataSetChanged();
+					}
+					activity.refreshMap();
+					return false;
+				}));
 	}
 }

@@ -243,8 +243,29 @@ public final class TrafficAwareRouting {
 	 * @param baseSeconds the offline engine's estimate; returned unchanged if not positive
 	 */
 	public static long adjustedSeconds(long baseSeconds) {
-		if (baseSeconds <= 0 || !BuildConfig.CAIRODRIVE_TRAFFIC_ROUTING) {
+		if (baseSeconds <= 0) {
 			return baseSeconds;
+		}
+		double stretch = stretchFactor();
+		return stretch <= 1.0 ? baseSeconds : Math.round(baseSeconds * stretch);
+	}
+
+	/**
+	 * The multiplier {@link #adjustedSeconds} applies, exposed so the UI can say HOW MUCH traffic
+	 * is costing rather than only showing an ETA that has silently moved.
+	 *
+	 * <p>Split out of {@code adjustedSeconds} rather than duplicated: a banner that disagrees with
+	 * the arrival time next to it is worse than no banner, and two copies of this arithmetic would
+	 * eventually disagree. The clamp to {@link #MAX_ETA_STRETCH} therefore also bounds the number
+	 * on screen, which is the point - an unbounded stretch from one bad flow sample would render
+	 * as an absurd delay and destroy trust in the whole feature.
+	 *
+	 * @return 1.0 when there is nothing trustworthy to say, otherwise a value in
+	 * (1.0, {@link #MAX_ETA_STRETCH}]
+	 */
+	public static double stretchFactor() {
+		if (!BuildConfig.CAIRODRIVE_TRAFFIC_ROUTING) {
+			return 1.0;
 		}
 		try {
 			List<CairoDriveProviders.FlowSample> flow = CairoDriveProviders.getFlow();
@@ -262,18 +283,40 @@ public final class TrafficAwareRouting {
 				counted++;
 			}
 			if (counted < MIN_FLOW_SAMPLES) {
-				return baseSeconds;
+				return 1.0;
 			}
 			// delayRatio() is a SPEED ratio - 1.0 free-flowing, 0.25 crawling - so a leg takes
 			// LONGER by dividing, not by multiplying. Inverting this by accident turns a jam into an
 			// improved ETA, which is the one arithmetic mistake here that looks plausible on screen.
 			double mean = ratioSum / counted;
 			double stretch = Math.min(MAX_ETA_STRETCH, 1.0 / mean);
-			return stretch <= 1.0 ? baseSeconds : Math.round(baseSeconds * stretch);
+			return stretch > 1.0 ? stretch : 1.0;
 		} catch (Throwable t) {
 			// An ETA is not allowed to be the thing that breaks navigation.
-			return baseSeconds;
+			return 1.0;
 		}
+	}
+
+	/**
+	 * How many of the seconds already on screen are traffic.
+	 *
+	 * <p>Takes the ALREADY-ADJUSTED remaining time, because that is the only number the UI has:
+	 * {@code RoutingHelper.getLeftTime()} applies {@link #adjustedSeconds} before anyone sees it.
+	 * Subtracting a freshly computed base from it would double-count. So invert instead -
+	 * {@code adjusted = base * stretch}, hence {@code delay = adjusted * (1 - 1/stretch)} - which
+	 * is exact for the same snapshot and stays consistent with the ETA beside it by construction.
+	 *
+	 * @return 0 when there is no delay worth reporting
+	 */
+	public static long delayFromAdjustedSeconds(long adjustedSeconds) {
+		if (adjustedSeconds <= 0) {
+			return 0;
+		}
+		double stretch = stretchFactor();
+		if (stretch <= 1.0) {
+			return 0;
+		}
+		return Math.round(adjustedSeconds * (1.0 - 1.0 / stretch));
 	}
 
 	// ------------------------------------------------------------------ closure avoidance

@@ -224,7 +224,7 @@ public final class SunGlareProvider implements CairoDriveProviders.Provider {
 	@Override
 	public boolean isAvailable(@NonNull OsmandApplication app) {
 		try {
-			return BuildConfig.CAIRODRIVE_SUN_GLARE;
+			return BuildConfig.CAIRODRIVE_SUN_GLARE && app.getSettings().SUN_GLARE_ON.get();
 		} catch (Throwable t) {
 			// The contract treats a thrower as unavailable. Log it so a missing feature is
 			// distinguishable from a deliberately disabled one when reading the drive log later.

@@ -76,6 +76,7 @@ public class MapLayers {
 	private GPXLayer gpxLayer;
 	private RouteLayer routeLayer;
 	private GoogleTrafficLayer googleTrafficLayer;
+	private HazardBannerLayer hazardBannerLayer;
 	private PreviewRouteLineLayer previewRouteLineLayer;
 	private POIMapLayer poiMapLayer;
 	private FavouritesLayer mFavouritesLayer;
@@ -201,6 +202,11 @@ public class MapLayers {
 		mapQuickActionLayer = new MapQuickActionLayer(app);
 		mapView.addLayer(mapQuickActionLayer, 12);
 		contextMenuLayer.setMapQuickActionLayer(mapQuickActionLayer);
+		// 13. Provider hazard and traffic-delay chips. Last, because a dust or glare warning is the
+		// one thing on the map that must not end up underneath something else - and because on the
+		// Android Auto surface, which shares this layer list, none of layers 9-12 draw anything.
+		hazardBannerLayer = new HazardBannerLayer(app);
+		mapView.addLayer(hazardBannerLayer, 13);
 
 		transparencyListener = change -> app.runInUIThread(() -> {
 			mapTileLayer.setAlpha(change);
