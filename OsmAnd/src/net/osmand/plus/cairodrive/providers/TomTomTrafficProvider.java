@@ -219,34 +219,52 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	private static final int FLOW_DAILY_CAP = 645;
 
 	/**
-	 * Fraction of the daily budget after which the sweep thins instead of stopping.
+	 * Flow ladder: 645 points across a 24-hour drive, spending 100% of the cap.
 	 *
-	 * <h3>The failure this replaces</h3>
+	 * <h3>What this replaces</h3>
 	 *
-	 * A hard cap fails at the worst possible moment. Spending the budget at full rate and then
-	 * going silent for the rest of the UTC day means traffic disappears two and a half hours into
-	 * a drive - and a drive that long is exactly the one where it is worth having. Raising the
-	 * number does not fix that shape; it moves the cliff twenty minutes later.
+	 * A two-state thin (full rate, then half) reached 5.3 hours and then stopped. A hard cap is
+	 * worse still - it goes silent partway through the drive where the data is most wanted. Neither
+	 * satisfies "one hour or twelve hours, I'm covered in both".
 	 *
-	 * <p>So past this fraction the sweep degrades: fewer points per pass and a longer interval,
-	 * which trades spatial and temporal resolution for reach. Half resolution on hour four is
-	 * worth more than full resolution for two hours and nothing after.
+	 * <p>Five rungs do. Solved so the integral of (budget slice / points per sweep) x interval
+	 * comes to <b>28.0 hours</b> while spending exactly 645 points. Tier one runs at TomTom's own
+	 * 1-minute data cadence with a full 10-point sweep and lasts 13 minutes of driving; a
+	 * 45-minute commute never gets past tier two. Only a drive long enough to consume the budget
+	 * ever sees the cheap end.
 	 */
-	private static final double BUDGET_THIN_FRACTION = 0.70;
-
-	/** Points per sweep once past {@link #BUDGET_THIN_FRACTION}. */
-	private static final int FLOW_SAMPLE_POINTS_THIN = 5;
-
-	/** Multiplier on the poll interval once past {@link #BUDGET_THIN_FRACTION}. */
-	private static final int THIN_INTERVAL_FACTOR = 2;
+	private static final BudgetPacer.Tier[] FLOW_LADDER = {
+			new BudgetPacer.Tier(0.20, 10, 60),
+			new BudgetPacer.Tier(0.20, 8, 120),
+			new BudgetPacer.Tier(0.20, 6, 240),
+			new BudgetPacer.Tier(0.20, 4, 480),
+			new BudgetPacer.Tier(0.20, 2, 1200),
+	};
 
 	/**
-	 * How many points this sweep should ask for, given what is left.
+	 * Incident ladder: 80 requests, 27.1 hours of coverage, one request per call at every rung.
 	 *
-	 * <p>Reads the budget rather than a timer, so it degrades on ACTUAL consumption - a day with
-	 * two long drives thins at the same point as one continuous drive of the same total length.
+	 * <p>Degrades on interval alone because an incident poll has no resolution to trade - a bbox
+	 * request either covers the city or it does not. Closures also persist for hours, so a 70-minute
+	 * interval deep into a long drive still catches them; that is why this ladder can afford a much
+	 * longer tail than flow's.
 	 */
-	/** Flow points already spent today. Cheap: one preference read, no network, no lock. */
+	private static final BudgetPacer.Tier[] INCIDENT_LADDER = {
+			new BudgetPacer.Tier(0.20, 1, 90),
+			new BudgetPacer.Tier(0.20, 1, 180),
+			new BudgetPacer.Tier(0.20, 1, 420),
+			new BudgetPacer.Tier(0.20, 1, 1200),
+			new BudgetPacer.Tier(0.20, 1, 4200),
+	};
+
+	/**
+	 * Flow points already spent today. Cheap: one preference read, no network, no lock.
+	 *
+	 * <p>Budget consumed is the state variable rather than elapsed time, because a timer would have
+	 * to guess the drive length and would be wrong at both ends. It also survives a restart - the
+	 * counters are persisted - and treats two long drives the same as one continuous drive of the
+	 * same total, which is right for a cap that resets daily rather than per trip.
+	 */
 	private static int usedFlowPoints(@NonNull OsmandApplication app) {
 		try {
 			return used(app, PREF_FLOW_COUNT);
@@ -257,17 +275,25 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 		}
 	}
 
-	private static int samplePointsForBudget(int flowUsed) {
-		return flowUsed >= FLOW_DAILY_CAP * BUDGET_THIN_FRACTION
-				? FLOW_SAMPLE_POINTS_THIN
-				: FLOW_SAMPLE_POINTS;
+	/** Incident requests already spent today. Same contract as {@link #usedFlowPoints}. */
+	private static int usedIncidents(@NonNull OsmandApplication app) {
+		try {
+			return used(app, PREF_INCIDENT_COUNT);
+		} catch (Throwable t) {
+			return INCIDENT_DAILY_CAP;
+		}
 	}
 
-	/** The poll floor for this sweep, stretched once the budget is mostly spent. */
+	private static int samplePointsForBudget(int flowUsed) {
+		return BudgetPacer.tierFor(flowUsed, FLOW_DAILY_CAP, FLOW_LADDER).unitsPerCall;
+	}
+
 	private static long flowIntervalForBudget(int flowUsed) {
-		return flowUsed >= FLOW_DAILY_CAP * BUDGET_THIN_FRACTION
-				? FLOW_INTERVAL_MS * THIN_INTERVAL_FACTOR
-				: FLOW_INTERVAL_MS;
+		return BudgetPacer.tierFor(flowUsed, FLOW_DAILY_CAP, FLOW_LADDER).intervalMs;
+	}
+
+	private static long incidentIntervalForBudget(int incidentUsed) {
+		return BudgetPacer.tierFor(incidentUsed, INCIDENT_DAILY_CAP, INCIDENT_LADDER).intervalMs;
 	}
 
 	private static final int CONNECT_TIMEOUT_MS = 8000;
@@ -437,7 +463,8 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 			if (inFlight) {
 				return;
 			}
-			boolean incidentsDue = serveIncidents && now - lastIncidentPoll >= INCIDENT_INTERVAL_MS;
+			boolean incidentsDue = serveIncidents
+					&& now - lastIncidentPoll >= incidentIntervalForBudget(usedIncidents(app));
 			// Budget-aware cadence: past BUDGET_THIN_FRACTION this interval doubles, so the feature
 			// stretches across a long day instead of stopping dead partway through it.
 			long flowInterval = flowIntervalForBudget(usedFlowPoints(app));
@@ -474,7 +501,8 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 				if (inFlight) {
 					return;
 				}
-				incidentsDue = serveIncidents && now - lastIncidentPoll >= INCIDENT_INTERVAL_MS;
+				incidentsDue = serveIncidents
+						&& now - lastIncidentPoll >= incidentIntervalForBudget(usedIncidents(app));
 				flowDue = serveFlow && now - lastFlowPoll >= flowIntervalForBudget(usedFlowPoints(app));
 				if (!incidentsDue && !flowDue) {
 					return;

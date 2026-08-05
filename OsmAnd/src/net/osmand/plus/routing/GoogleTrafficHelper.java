@@ -95,14 +95,36 @@ public class GoogleTrafficHelper {
 	private static final long CHECK_INTERVAL_MS = 60 * 1000L;
 
 	/**
-	 * Floor between two SPANS polls - the Enterprise SKU, 1000/month.
+	 * Spans ladder - the Enterprise SKU, 1000/month, 32/day.
 	 *
-	 * <p>Google's traffic layer refreshes every 5-10 minutes on high-traffic roads, so this is the
-	 * point past which extra requests buy identical bytes at the highest per-request price in the
-	 * app. Five minutes sits at the fast end of that window: fresh as the data allows, and no
-	 * faster.
+	 * <p>Rung one is 5 minutes, the fast end of Google's own 5-10 minute traffic-layer refresh:
+	 * fresh as the data allows and no faster, because past that these are the most expensive
+	 * requests in the app buying identical bytes. Solved to cover <b>24.5 hours</b> of driving on a
+	 * full day's budget - a 45-minute drive stays inside the first two rungs.
 	 */
-	private static final long SPANS_MIN_INTERVAL_MS = 5 * 60 * 1000L;
+	private static final net.osmand.plus.cairodrive.providers.BudgetPacer.Tier[] SPANS_LADDER = {
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.20, 1, 300),
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.20, 1, 900),
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.20, 1, 1800),
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.20, 1, 3600),
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.20, 1, 7200),
+	};
+
+	/**
+	 * Delay ladder - the Pro SKU, 5000/month, 161/day. Covers 25.8 hours.
+	 *
+	 * <p>Rung one is 1 minute, matching the 1-5 minute cadence Google's delay figure moves on.
+	 * This is the cheap tier, so it carries the freshness while spans carry the detail.
+	 */
+	private static final net.osmand.plus.cairodrive.providers.BudgetPacer.Tier[] DELAY_LADDER = {
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.20, 1, 60),
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.20, 1, 120),
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.20, 1, 300),
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.20, 1, 600),
+			new net.osmand.plus.cairodrive.providers.BudgetPacer.Tier(0.20, 1, 1800),
+	};
+
+	private static volatile long lastDelayAtMs;
 
 	private static volatile long lastSpansAtMs;
 	private static final long REROUTE_DEBOUNCE_MS = 60 * 1000L;
@@ -300,24 +322,52 @@ public class GoogleTrafficHelper {
 		//
 		// Decoupled: delay runs at the base interval because its data moves on a 1-5 minute
 		// cadence, spans run at their own because theirs moves on a 5-10 minute one.
-		long sinceSpans = System.currentTimeMillis() - lastSpansAtMs;
-		boolean spansDue = sinceSpans >= SPANS_MIN_INTERVAL_MS;
+		//
+		// Both intervals now come from a BudgetPacer ladder rather than a constant, so each tier
+		// stretches as its own pool is consumed and the day's budget lasts a 24-hour drive instead
+		// of running out partway through one. A 45-minute drive never leaves the first two rungs of
+		// either ladder, so the common case is unchanged.
+		long now = System.currentTimeMillis();
+		long spansInterval = net.osmand.plus.cairodrive.providers.BudgetPacer
+				.tierFor(spansUsed, SPANS_DAILY_CAP, SPANS_LADDER).intervalMs;
+		boolean spansDue = now - lastSpansAtMs >= spansInterval;
 		if (spansUsed < SPANS_DAILY_CAP && (spansDue || delayPoolGone)) {
 			lastSpansAtMs = System.currentTimeMillis();
 			settings.GOOGLE_TRAFFIC_REQUEST_COUNT.set(spansUsed + 1);
 			return TIER_SPANS;
 		}
-		if (!delayPoolGone) {
+		long delayInterval = net.osmand.plus.cairodrive.providers.BudgetPacer
+				.tierFor(delayUsed, DELAY_DAILY_CAP, DELAY_LADDER).intervalMs;
+		if (!delayPoolGone && now - lastDelayAtMs >= delayInterval) {
+			lastDelayAtMs = now;
 			settings.GOOGLE_TRAFFIC_DELAY_REQUEST_COUNT.set(delayUsed + 1);
+			if (CairoDriveLogger.isEnabled()) {
+				CairoDriveLogger.getInstance().log(TRACE_TAG, "pace delay "
+						+ net.osmand.plus.cairodrive.providers.BudgetPacer
+						.describe(delayUsed, DELAY_DAILY_CAP, DELAY_LADDER)
+						+ " spans " + net.osmand.plus.cairodrive.providers.BudgetPacer
+						.describe(spansUsed, SPANS_DAILY_CAP, SPANS_LADDER));
+			}
 			return TIER_DELAY;
 		}
-		if (!budgetExhaustedLogged) {
+		// Only EXHAUSTION gets the loud line. Reaching here now has two quite different causes:
+		// the day's budget is gone, or a ladder interval simply has not elapsed - and since the
+		// pacer stretches those intervals to hours late in a long drive, "not due yet" is the
+		// common case. Logging it as "budget spent" would report the feature dead every minute
+		// while it was working exactly as designed.
+		boolean exhausted = spansUsed >= SPANS_DAILY_CAP && delayPoolGone;
+		if (exhausted && !budgetExhaustedLogged) {
 			budgetExhaustedLogged = true;
 			LOG.info(TRACE_TAG + " daily budget spent (spans=" + spansUsed
 					+ "/" + SPANS_DAILY_CAP + " delay=" + delayUsed + "/" + DELAY_DAILY_CAP
 					+ ") - no further polls until the UTC day rolls");
+			if (CairoDriveLogger.isEnabled()) {
+				CairoDriveLogger.getInstance().log(TRACE_TAG, "budgetSpent"
+						+ " spans=" + spansUsed + "/" + SPANS_DAILY_CAP
+						+ " delay=" + delayUsed + "/" + DELAY_DAILY_CAP);
+			}
 		}
-		// lastCheck was already advanced, so this simply retries on the next 3-minute tick.
+		// lastCheck was already advanced, so this retries on the next CHECK_INTERVAL_MS tick.
 		return TIER_NONE;
 	}
 
