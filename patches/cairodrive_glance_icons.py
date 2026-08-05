@@ -89,6 +89,18 @@ KEEP = (
 )
 
 
+class Unsupported(ValueError):
+    """A PNG this script cannot process, but which is not damaged.
+
+    Kept distinct from a plain ValueError on purpose. A truncated chunk or a bad zlib stream means
+    the resources checkout is broken and the build should stop. An interlaced or 16-bit-per-channel
+    icon means only that upstream authored one file differently - and killing a whole build, on a
+    1000-icon set, over one unusual file would be the wrong trade every single time.
+
+    So: damage fails the build, an unsupported variant is skipped and counted loudly.
+    """
+
+
 def fail(msg):
     sys.stderr.write("cairodrive_glance_icons: %s\n" % msg)
     sys.exit(1)
@@ -180,9 +192,9 @@ def desaturate(data):
         raise ValueError("no IHDR")
     width, height, depth, colour, comp, filt, interlace = struct.unpack(">IIBBBBB", ihdr[:13])
     if depth != 8:
-        raise ValueError("bit depth %d is not supported" % depth)
+        raise Unsupported("bit depth %d is not supported" % depth)
     if interlace != 0:
-        raise ValueError("interlaced PNG is not supported")
+        raise Unsupported("interlaced PNG is not supported")
 
     out = []
     if colour == 3:
@@ -275,12 +287,17 @@ def main():
     # languages on it, and unlike the XML patches there is no re-checkout-free way back.
     pending = {}
     skipped = 0
+    unsupported = []
     for name in targets:
         path = os.path.join(icon_dir, name)
         try:
             with open(path, "rb") as fh:
                 data = fh.read()
             result = desaturate(data)
+        except Unsupported as exc:
+            # Not damage - see the Unsupported docstring. Left in colour and reported.
+            unsupported.append("%s (%s)" % (name, exc))
+            continue
         except (OSError, ValueError, zlib.error) as exc:
             fail("%s could not be converted (%s). Refusing to write ANY icon, so the set stays "
                  "consistent - fix or re-checkout the resources tree." % (name, exc))
@@ -289,10 +306,26 @@ def main():
         else:
             pending[path] = result
 
+    if unsupported:
+        # Printed in full rather than counted. A handful is upstream authoring quirk; a sudden
+        # large number means the icon set changed format and this script needs revisiting, and
+        # that is only visible if the names are in the log.
+        print("cairodrive_glance_icons: %d icon(s) left in COLOUR - unsupported PNG variant:"
+              % len(unsupported))
+        for u in unsupported:
+            print("cairodrive_glance_icons:   %s" % u)
+
     if not pending:
-        print("cairodrive_glance_icons: already applied to all %d icons, nothing to do"
-              % len(targets))
-        return
+        if skipped:
+            print("cairodrive_glance_icons: already applied to all %d icons, nothing to do"
+                  % skipped)
+            return
+        # Nothing converted AND nothing was already done means every match failed the variant
+        # check - that is a format change, not a no-op, and saying "nothing to do" would report
+        # success for a build whose icons are entirely untouched.
+        fail("matched %d icons and converted none of them - every one hit an unsupported PNG "
+             "variant. The icon set's format has changed; re-check this script rather than "
+             "shipping a build whose icons are all still in colour." % len(targets))
 
     for path, blob in pending.items():
         with open(path, "wb") as fh:

@@ -164,10 +164,32 @@ jobs:
           # survives - it is the only font in the manifest covering Arabic script, so losing it
           # would turn every Cairo street label into empty boxes.
           python3 android/patches/cairodrive_trim_assets.py resources
-          # B3. Injects the glance style, gated on a rendering property that is OFF by default -
-          # so this runs unconditionally and changes nothing until the switch is turned on in
-          # Configure map. Applying it always keeps the two CI jobs producing identical styles.
+          # B3. Injects the glance style, gated on a rendering property - so this runs
+          # unconditionally and does nothing until `cairodriveDriving` is on. That property now
+          # DEFAULTS on, and can still be flipped in Configure map mid-drive without a rebuild.
+          # Applying it always keeps the two CI jobs producing identical styles.
           python3 android/patches/cairodrive_driving_style.py resources/rendering_styles/default.render.xml
+          # B3, icons. Desaturates the POI icons the glance style still draws, keeping shape and
+          # alpha and dropping only hue, so they stop competing with the route line and the arrow.
+          #
+          # READ THIS BEFORE ASSUMING IT BEHAVES LIKE THE LINE ABOVE. That one edits XML behind a
+          # runtime switch; this one edits BITMAPS. Turning the glance style off in Configure map
+          # does NOT bring the colour back - only a build without this step does. It is
+          # unconditional for the same reason the style patch is: two jobs, identical output.
+          #
+          # Fuel, charging, hazard, traffic, speed, railway, barrier, emergency, hospital,
+          # pharmacy, police and toll keep their colour - those are the ones where colour IS the
+          # information a driver acts on.
+          #
+          # The script REFUSES to match zero icons rather than reporting success and changing
+          # nothing, so an upstream rename fails the build here instead of shipping a silently
+          # unchanged icon set. The listing below turns that failure into a one-cycle diagnosis
+          # rather than a guess at what upstream renamed.
+          python3 android/patches/cairodrive_glance_icons.py resources || {
+            echo "::error::glance icon desaturation failed - actual resources layout follows"
+            find resources -maxdepth 3 -type d -name '*icon*' -print
+            exit 1
+          }
 
       # Checked out for EVERY core flavor, not just legacy. The OpenGL flavor takes its
       # *rendering* core from a prebuilt AAR, but the native *routing* library
@@ -557,10 +579,32 @@ jobs:
           # survives - it is the only font in the manifest covering Arabic script, so losing it
           # would turn every Cairo street label into empty boxes.
           python3 android/patches/cairodrive_trim_assets.py resources
-          # B3. Injects the glance style, gated on a rendering property that is OFF by default -
-          # so this runs unconditionally and changes nothing until the switch is turned on in
-          # Configure map. Applying it always keeps the two CI jobs producing identical styles.
+          # B3. Injects the glance style, gated on a rendering property - so this runs
+          # unconditionally and does nothing until `cairodriveDriving` is on. That property now
+          # DEFAULTS on, and can still be flipped in Configure map mid-drive without a rebuild.
+          # Applying it always keeps the two CI jobs producing identical styles.
           python3 android/patches/cairodrive_driving_style.py resources/rendering_styles/default.render.xml
+          # B3, icons. Desaturates the POI icons the glance style still draws, keeping shape and
+          # alpha and dropping only hue, so they stop competing with the route line and the arrow.
+          #
+          # READ THIS BEFORE ASSUMING IT BEHAVES LIKE THE LINE ABOVE. That one edits XML behind a
+          # runtime switch; this one edits BITMAPS. Turning the glance style off in Configure map
+          # does NOT bring the colour back - only a build without this step does. It is
+          # unconditional for the same reason the style patch is: two jobs, identical output.
+          #
+          # Fuel, charging, hazard, traffic, speed, railway, barrier, emergency, hospital,
+          # pharmacy, police and toll keep their colour - those are the ones where colour IS the
+          # information a driver acts on.
+          #
+          # The script REFUSES to match zero icons rather than reporting success and changing
+          # nothing, so an upstream rename fails the build here instead of shipping a silently
+          # unchanged icon set. The listing below turns that failure into a one-cycle diagnosis
+          # rather than a guess at what upstream renamed.
+          python3 android/patches/cairodrive_glance_icons.py resources || {
+            echo "::error::glance icon desaturation failed - actual resources layout follows"
+            find resources -maxdepth 3 -type d -name '*icon*' -print
+            exit 1
+          }
 
       # Checked out for EVERY core flavor, not just legacy. The OpenGL flavor takes its
       # *rendering* core from a prebuilt AAR, but the native *routing* library

@@ -393,14 +393,35 @@ def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim
 def rerouteCacheEnv = System.getenv("CAIRODRIVE_REROUTE_CACHE")
 def rerouteCache = rerouteCacheEnv?.trim() ? rerouteCacheEnv.trim() : "true"
 
+// N6. ON for a measurement drive, at the owner's explicit request.
+//
+// It was off because one flag gates both halves: with it off nothing is constructed, no thread
+// starts and NO CD_MATCH line is written, so a drive produced zero evidence about it. There is no
+// observe-only mode to hide behind - measuring it means letting it move the displayed position.
+//
+// What bounds the risk is where it stands down rather than how confident it is. It returns the
+// raw fix untouched whenever RoutingHelper is already following a route, so under navigation -
+// the case that matters - it is inert. It acts only while free-driving, and only for DISPLAY;
+// nothing routed is computed from a matched position.
+//
+// Build with CAIRODRIVE_MAP_MATCHING=false to put it back.
 def mapMatchingEnv = System.getenv("CAIRODRIVE_MAP_MATCHING")
-def mapMatching = mapMatchingEnv?.trim() ? mapMatchingEnv.trim() : "false"
+def mapMatching = mapMatchingEnv?.trim() ? mapMatchingEnv.trim() : "true"
 
 def speechLeadEnv = System.getenv("CAIRODRIVE_SPEECH_LEAD")
 def speechLead = speechLeadEnv?.trim() ? speechLeadEnv.trim() : "true"
 
+// B3. ON by default now, at the owner's request, so the drive starts with it applied.
+//
+// This one is only a DEFAULT: the style is gated on the `cairodriveDriving` rendering property,
+// read live in SurfaceRenderer.glanceStyleOn(), so it can be flipped in Configure map mid-drive
+// without a rebuild. That makes it the one item here that gives a clean A/B inside a single
+// drive - toggle it while watching CD_FRAME avgOver.
+//
+// Note the asymmetry with the ICONS, which are desaturated at build time by
+// patches/cairodrive_glance_icons.py: turning this switch off does NOT bring their colour back.
 def glanceStyleEnv = System.getenv("CAIRODRIVE_GLANCE_STYLE")
-def glanceStyle = glanceStyleEnv?.trim() ? glanceStyleEnv.trim() : "false"
+def glanceStyle = glanceStyleEnv?.trim() ? glanceStyleEnv.trim() : "true"
 
 def placeDetailsEnv = System.getenv("CAIRODRIVE_PLACE_DETAILS")
 def placeDetails = placeDetailsEnv?.trim() ? placeDetailsEnv.trim() : "true"
