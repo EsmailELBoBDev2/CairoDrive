@@ -198,12 +198,64 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	 * long day, not as a brake on a normal one: with flow's cap it totals 2200, inside TomTom's
 	 * 2500-per-DAY free tier with room left over.
 	 */
-	private static final int INCIDENT_DAILY_CAP = 400;
+	private static final int INCIDENT_DAILY_CAP = 450;
 	/**
 	 * 1800 flow POINTS a day, not polls: 150 sweeps of {@value #FLOW_SAMPLE_POINTS}, so two and a
 	 * half hours of driving. Counted in points because points are what the vendor bills.
 	 */
-	private static final int FLOW_DAILY_CAP = 1800;
+	private static final int FLOW_DAILY_CAP = 1950;
+
+	/**
+	 * Fraction of the daily budget after which the sweep thins instead of stopping.
+	 *
+	 * <h3>The failure this replaces</h3>
+	 *
+	 * A hard cap fails at the worst possible moment. Spending the budget at full rate and then
+	 * going silent for the rest of the UTC day means traffic disappears two and a half hours into
+	 * a drive - and a drive that long is exactly the one where it is worth having. Raising the
+	 * number does not fix that shape; it moves the cliff twenty minutes later.
+	 *
+	 * <p>So past this fraction the sweep degrades: fewer points per pass and a longer interval,
+	 * which trades spatial and temporal resolution for reach. Half resolution on hour four is
+	 * worth more than full resolution for two hours and nothing after.
+	 */
+	private static final double BUDGET_THIN_FRACTION = 0.70;
+
+	/** Points per sweep once past {@link #BUDGET_THIN_FRACTION}. */
+	private static final int FLOW_SAMPLE_POINTS_THIN = 5;
+
+	/** Multiplier on the poll interval once past {@link #BUDGET_THIN_FRACTION}. */
+	private static final int THIN_INTERVAL_FACTOR = 2;
+
+	/**
+	 * How many points this sweep should ask for, given what is left.
+	 *
+	 * <p>Reads the budget rather than a timer, so it degrades on ACTUAL consumption - a day with
+	 * two long drives thins at the same point as one continuous drive of the same total length.
+	 */
+	/** Flow points already spent today. Cheap: one preference read, no network, no lock. */
+	private static int usedFlowPoints(@NonNull OsmandApplication app) {
+		try {
+			return used(app, PREF_FLOW_COUNT);
+		} catch (Throwable t) {
+			// Unknown budget is treated as SPENT, so an accounting failure degrades rather than
+			// overspends - the same principle as claimFlowRequests refusing on a failed claim.
+			return FLOW_DAILY_CAP;
+		}
+	}
+
+	private static int samplePointsForBudget(int flowUsed) {
+		return flowUsed >= FLOW_DAILY_CAP * BUDGET_THIN_FRACTION
+				? FLOW_SAMPLE_POINTS_THIN
+				: FLOW_SAMPLE_POINTS;
+	}
+
+	/** The poll floor for this sweep, stretched once the budget is mostly spent. */
+	private static long flowIntervalForBudget(int flowUsed) {
+		return flowUsed >= FLOW_DAILY_CAP * BUDGET_THIN_FRACTION
+				? FLOW_INTERVAL_MS * THIN_INTERVAL_FACTOR
+				: FLOW_INTERVAL_MS;
+	}
 
 	private static final int CONNECT_TIMEOUT_MS = 8000;
 	private static final int READ_TIMEOUT_MS = 12000;
@@ -373,7 +425,10 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 				return;
 			}
 			boolean incidentsDue = serveIncidents && now - lastIncidentPoll >= INCIDENT_INTERVAL_MS;
-			boolean flowDue = serveFlow && now - lastFlowPoll >= FLOW_INTERVAL_MS;
+			// Budget-aware cadence: past BUDGET_THIN_FRACTION this interval doubles, so the feature
+			// stretches across a long day instead of stopping dead partway through it.
+			long flowInterval = flowIntervalForBudget(usedFlowPoints(app));
+			boolean flowDue = serveFlow && now - lastFlowPoll >= flowInterval;
 			if (!incidentsDue && !flowDue) {
 				return;
 			}
@@ -407,7 +462,7 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 					return;
 				}
 				incidentsDue = serveIncidents && now - lastIncidentPoll >= INCIDENT_INTERVAL_MS;
-				flowDue = serveFlow && now - lastFlowPoll >= FLOW_INTERVAL_MS;
+				flowDue = serveFlow && now - lastFlowPoll >= flowIntervalForBudget(usedFlowPoints(app));
 				if (!incidentsDue && !flowDue) {
 					return;
 				}
@@ -735,6 +790,12 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 		List<LatLon> points = flowSamplePoints(lat, lon, corridor);
 		if (points.size() < FLOW_MIN_POINTS) {
 			return;
+		}
+		// Thin the sweep before claiming, not after: claiming the full set and discarding the tail
+		// would spend budget on points that are never requested.
+		int wanted = Math.min(points.size(), samplePointsForBudget(usedFlowPoints(app)));
+		if (wanted < points.size()) {
+			points = points.subList(0, wanted);
 		}
 		int granted = claimFlowRequests(app, points.size());
 		if (granted < FLOW_MIN_POINTS) {
