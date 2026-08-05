@@ -3501,13 +3501,15 @@ public class OsmandSettings {
 	// instruction. Still gated a second time on a compiled-in key, so a build without the key
 	// makes zero network calls no matter what this says, and the daily request caps in
 	// GOOGLE_TRAFFIC_REQUEST_COUNT bound the bill regardless of how long a drive runs.
-	public final OsmandPreference<Boolean> GOOGLE_TRAFFIC_ON_ROUTE = new BooleanPreference(this, "google_traffic_on_route", true).makeGlobal().makeShared().cache();
-	/** UTC day the counters below belong to, as System.currentTimeMillis()/86400000. */
-	public final OsmandPreference<Integer> GOOGLE_TRAFFIC_REQUEST_DAY = new IntPreference(this, "google_traffic_request_day", 0).makeGlobal();
-	/** Enterprise-SKU span polls spent today. Persisted so restarting cannot reset the budget. */
-	public final OsmandPreference<Integer> GOOGLE_TRAFFIC_REQUEST_COUNT = new IntPreference(this, "google_traffic_request_count", 0).makeGlobal();
-	/** Pro-SKU delay polls spent today. */
-	public final OsmandPreference<Integer> GOOGLE_TRAFFIC_DELAY_REQUEST_COUNT = new IntPreference(this, "google_traffic_delay_request_count", 0).makeGlobal();
+	// GOOGLE_TRAFFIC_ON_ROUTE and the three request counters are declared ABOVE, near the other
+	// CairoDrive preferences. The merge from claude/traffic-stack brought a second copy of all
+	// four into this class body - four duplicate fields, which is a javac error, not a warning.
+	//
+	// The versions kept are the ones already in use: same preference KEYS, so no stored value is
+	// orphaned, but CommonPreference with .cache() rather than plain OsmandPreference, and
+	// ON_ROUTE profile-scoped with CAR defaulted to true instead of a single global flag. Profile
+	// scoping is the meaningful difference - it keeps the poller off on bicycle and pedestrian,
+	// where a traffic feed costs money and answers a question nobody asked.
 
 	public final CommonPreference<Integer> LOCATION_INTERPOLATION_PERCENT = new IntPreference(this, "location_interpolation_percent", CairoDriveFeatures.getLocationInterpolationPercent()).makeProfile().makeShared();
 
