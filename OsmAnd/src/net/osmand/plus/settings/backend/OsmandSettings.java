@@ -3438,10 +3438,13 @@ public class OsmandSettings {
 	// forecasts that already exist on the account. See BestTimeProvider.
 	public final OsmandPreference<String> BESTTIME_VENUE_IDS = new StringPreference(this, "cairodrive_besttime_venue_ids", "").makeGlobal();
 
-	// OSM write-back for the CD_NARROW signal. OFF by default and deliberately so: it publishes a
-	// coordinate the owner drove to a public database under their own OSM identity, and nothing
-	// about that should happen because a default was left alone. See CairoDriveOsmFeedback.
-	public final OsmandPreference<Boolean> OSM_NARROW_FEEDBACK = new BooleanPreference(this, "cairodrive_osm_narrow_feedback", false).makeGlobal().makeShared().cache();
+	// OSM write-back for the CD_NARROW signal. ON by default at the owner's instruction.
+	//
+	// What this default turns on is COLLECTION ONLY - candidates accumulate in memory, deduped at
+	// 120 m and capped at 20. Nothing reaches OpenStreetMap until the "Send N OSM notes" row is
+	// pressed, which is a separate deliberate act and stays that way: a note carries a coordinate
+	// the owner drove, and publishing that is not something a default should decide.
+	public final OsmandPreference<Boolean> OSM_NARROW_FEEDBACK = new BooleanPreference(this, "cairodrive_osm_narrow_feedback", true).makeGlobal().makeShared().cache();
 
 	// Runtime switches for the provider stack, bound to the Configure map toggles.
 	//
@@ -3453,10 +3456,11 @@ public class OsmandSettings {
 	public final OsmandPreference<Boolean> WEATHER_HAZARD_ON = new BooleanPreference(this, "cairodrive_weather_hazard_on", true).makeGlobal().makeShared().cache();
 	public final OsmandPreference<Boolean> SUN_GLARE_ON = new BooleanPreference(this, "cairodrive_sun_glare_on", true).makeGlobal().makeShared().cache();
 
-	// Live traffic on the active route, from Google's Routes API. OFF by default and gated a
-	// second time on a compiled-in key, so a build without the key makes zero network calls no
-	// matter what this says. See GoogleTrafficHelper.
-	public final OsmandPreference<Boolean> GOOGLE_TRAFFIC_ON_ROUTE = new BooleanPreference(this, "google_traffic_on_route", false).makeGlobal().makeShared().cache();
+	// Live traffic on the active route, from Google's Routes API. ON by default at the owner's
+	// instruction. Still gated a second time on a compiled-in key, so a build without the key
+	// makes zero network calls no matter what this says, and the daily request caps in
+	// GOOGLE_TRAFFIC_REQUEST_COUNT bound the bill regardless of how long a drive runs.
+	public final OsmandPreference<Boolean> GOOGLE_TRAFFIC_ON_ROUTE = new BooleanPreference(this, "google_traffic_on_route", true).makeGlobal().makeShared().cache();
 	/** UTC day the counters below belong to, as System.currentTimeMillis()/86400000. */
 	public final OsmandPreference<Integer> GOOGLE_TRAFFIC_REQUEST_DAY = new IntPreference(this, "google_traffic_request_day", 0).makeGlobal();
 	/** Enterprise-SKU span polls spent today. Persisted so restarting cannot reset the budget. */

@@ -635,6 +635,17 @@ public class CairoDriveLogger {
 		return directory.mkdirs() || directory.isDirectory() ? directory : null;
 	}
 
+	/**
+	 * Whether a credential is compiled in - never what it is.
+	 *
+	 * <p>The distinction this records cannot be read from any other line: a provider that is
+	 * silent because its flag is false and one that is silent because the CI secret was not set
+	 * produce identical logs otherwise, and the second has cost a wasted drive before.
+	 */
+	private static String have(String value) {
+		return value != null && !value.trim().isEmpty() ? "yes" : "no";
+	}
+
 	private void logSessionHeader() {
 		log("SESSION", "==================== CairoDrive session start ====================");
 		log("SESSION", "app=" + BuildConfig.APPLICATION_ID + " flavor=" + BuildConfig.FLAVOR
@@ -693,6 +704,45 @@ public class CairoDriveLogger {
 				+ " fullLogging=" + BuildConfig.CAIRODRIVE_FULL_LOGGING
 				+ " unlockPro=" + BuildConfig.CAIRODRIVE_UNLOCK_PRO
 				+ " dataSaver=" + BuildConfig.CAIRODRIVE_DATA_SAVER);
+		// The rest of them. Eighteen flags were missing from this header - every provider, every
+		// Places feature, map matching, the speech lead, the interpolation percentage - which is
+		// the same failure the comment above describes, just for the features added since it was
+		// written. A drive log that cannot say whether TomTom traffic was compiled in is a log
+		// that cannot explain why the route avoided a road, or why it did not.
+		//
+		// KEYS ARE NOT LOGGED, only whether one is present. A log is pulled off the device and
+		// read in a chat; a key in it is a burned key. `have` is the only fact worth recording -
+		// it is what distinguishes "the feature is off" from "the feature has no credentials",
+		// which look identical in every other line.
+		log("SESSION", "flags2"
+				+ " tomtomTraffic=" + BuildConfig.CAIRODRIVE_TOMTOM_TRAFFIC
+				+ " weatherHazard=" + BuildConfig.CAIRODRIVE_WEATHER_HAZARD
+				+ " sunGlare=" + BuildConfig.CAIRODRIVE_SUN_GLARE
+				+ " trafficRouting=" + BuildConfig.CAIRODRIVE_TRAFFIC_ROUTING
+				+ " bestTime=" + BuildConfig.CAIRODRIVE_BESTTIME
+				+ " openChargeMap=" + BuildConfig.CAIRODRIVE_OPEN_CHARGE_MAP
+				+ " resumeZip=" + BuildConfig.CAIRODRIVE_RESUME_ZIP
+				+ " mapMatching=" + BuildConfig.CAIRODRIVE_MAP_MATCHING
+				+ " speechLead=" + BuildConfig.CAIRODRIVE_SPEECH_LEAD
+				+ " rerouteCache=" + BuildConfig.CAIRODRIVE_REROUTE_CACHE
+				+ " routeAlternatives=" + BuildConfig.CAIRODRIVE_ROUTE_ALTERNATIVES
+				+ " lockExternalApi=" + BuildConfig.CAIRODRIVE_LOCK_EXTERNAL_API
+				+ " interpolation=" + BuildConfig.CAIRODRIVE_LOCATION_INTERPOLATION);
+		log("SESSION", "places"
+				+ " details=" + BuildConfig.CAIRODRIVE_PLACES_DETAILS
+				+ " photos=" + BuildConfig.CAIRODRIVE_PLACES_PHOTOS
+				+ " reviews=" + BuildConfig.CAIRODRIVE_PLACES_REVIEWS
+				+ " autocomplete=" + BuildConfig.CAIRODRIVE_PLACES_AUTOCOMPLETE
+				+ " nearby=" + BuildConfig.CAIRODRIVE_PLACES_NEARBY);
+		log("SESSION", "keys"
+				+ " places=" + have(BuildConfig.GOOGLE_PLACES_API_KEY)
+				+ " routes=" + have(BuildConfig.CAIRODRIVE_ROUTES_KEY)
+				+ " tomtom=" + have(BuildConfig.CAIRODRIVE_TOMTOM_KEY)
+				+ " openweather=" + have(BuildConfig.CAIRODRIVE_OPENWEATHER_KEY)
+				+ " besttime=" + have(BuildConfig.CAIRODRIVE_BESTTIME_PRIVATE_KEY)
+				+ " besttimePublic=" + have(BuildConfig.CAIRODRIVE_BESTTIME_PUBLIC_KEY)
+				+ " mapillary=" + have(BuildConfig.CAIRODRIVE_MAPILLARY_TOKEN)
+				+ " osmOauth=" + have(BuildConfig.CAIRODRIVE_OSM_OAUTH_ID));
 		log("SESSION", "locale=" + Locale.getDefault() + " timezone=" + java.util.TimeZone.getDefault().getID());
 		log("SESSION", "logDir=" + writer.getDirectory().getAbsolutePath()
 				+ " maxFileBytes=" + CairoDriveLogWriter.MAX_FILE_BYTES
