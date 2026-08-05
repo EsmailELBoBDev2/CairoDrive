@@ -435,13 +435,51 @@ public final class TrafficAwareRouting {
 		clearAll(app, "reset");
 	}
 
-	/** Road ids currently made impassable by this class. Empty in a stock build. Never null. */
+	/**
+	 * Road ids currently made impassable by this class. Empty in a stock build. Never null.
+	 *
+	 * <p>Exists so a caller can see WHICH roads this class is suppressing, not just how many.
+	 * That distinction matters when a route looks wrong: "traffic routing removed 3 roads" does
+	 * not let anyone check whether it removed the right ones, and these ids are cross-referenceable
+	 * against OSM directly.
+	 */
 	@NonNull
 	public static Set<Long> appliedIds() {
 		synchronized (LOCK) {
 			return new LinkedHashSet<>(applied.keySet());
 		}
 	}
+
+	/**
+	 * The applied set as a CD_ROUTE-greppable string, for a drive log.
+	 *
+	 * <p>Capped: a pathological day could apply many closures and a log line is not the place for
+	 * an unbounded list. The count is always exact even when the ids are truncated, so the line
+	 * cannot understate what happened.
+	 */
+	@NonNull
+	public static String describeApplied() {
+		Set<Long> ids = appliedIds();
+		if (ids.isEmpty()) {
+			return "nogo=0";
+		}
+		StringBuilder builder = new StringBuilder("nogo=").append(ids.size()).append(" ids=");
+		int shown = 0;
+		for (Long id : ids) {
+			if (shown >= MAX_LOGGED_IDS) {
+				builder.append(",...");
+				break;
+			}
+			if (shown > 0) {
+				builder.append(',');
+			}
+			builder.append(id);
+			shown++;
+		}
+		return builder.toString();
+	}
+
+	private static final int MAX_LOGGED_IDS = 8;
 
 	// ------------------------------------------------------------------ the reconciler
 

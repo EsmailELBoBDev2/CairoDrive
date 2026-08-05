@@ -999,9 +999,15 @@ public class RoutingHelper {
 			long now = System.currentTimeMillis();
 			if (now - lastEtaLogTime > ETA_LOG_INTERVAL_MS) {
 				lastEtaLogTime = now;
+				// The nogo ids ride along on this line rather than getting their own. They change
+				// only when a closure is applied or lifted, so a dedicated periodic line would be
+				// almost entirely repetition - and this is the line that already says what the ETA
+				// came out as, which is the number a suppressed road changes.
 				CairoDriveLogger.getInstance().log("CD_ETA",
 						etaCalibrator.describe(staticSeconds, corrected)
-								+ " leftM=" + getLeftDistance());
+								+ " leftM=" + getLeftDistance()
+								+ " " + net.osmand.plus.cairodrive.providers.TrafficAwareRouting
+								.describeApplied());
 			}
 		}
 		return corrected;

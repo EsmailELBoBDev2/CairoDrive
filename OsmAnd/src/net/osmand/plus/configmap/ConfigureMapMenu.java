@@ -192,7 +192,16 @@ public class ConfigureMapMenu {
 		// on only starts COLLECTING candidates in memory. The upload is a second, explicit act -
 		// see below - because a note carries a coordinate the owner drove to a public database.
 		addProviderToggle(adapter, activity, app, settings.OSM_NARROW_FEEDBACK,
-				R.string.cairo_osm_narrow_feedback, R.drawable.ic_action_openstreetmap_logo, true);
+				R.string.cairo_osm_narrow_feedback, R.drawable.ic_action_openstreetmap_logo, true,
+				// Turning it OFF discards what was collected. Without this, switching it off and
+				// on again weeks later would offer to publish streets from a drive the owner had
+				// long forgotten - which is not what "off" can be allowed to mean for a feature
+				// that publishes coordinates.
+				isChecked -> {
+					if (!isChecked) {
+						net.osmand.plus.cairodrive.CairoDriveOsmFeedback.clearPending();
+					}
+				});
 		addOsmFeedbackUpload(adapter, activity, app);
 
 		ResourceManager resourceManager = app.getResourceManager();
@@ -751,6 +760,19 @@ public class ConfigureMapMenu {
 	                               @NonNull OsmandApplication app,
 	                               @NonNull net.osmand.plus.settings.backend.preferences.OsmandPreference<Boolean> pref,
 	                               int titleId, int iconId, boolean available) {
+		addProviderToggle(adapter, activity, app, pref, titleId, iconId, available, null);
+	}
+
+	/** A toggle whose flip has a side effect beyond writing the preference. */
+	private interface ToggleSideEffect {
+		void onToggled(boolean isChecked);
+	}
+
+	private void addProviderToggle(@NonNull ContextMenuAdapter adapter, @NonNull MapActivity activity,
+	                               @NonNull OsmandApplication app,
+	                               @NonNull net.osmand.plus.settings.backend.preferences.OsmandPreference<Boolean> pref,
+	                               int titleId, int iconId, boolean available,
+	                               @Nullable ToggleSideEffect sideEffect) {
 		if (!available) {
 			return;
 		}
@@ -763,6 +785,9 @@ public class ConfigureMapMenu {
 				.setItemDeleteAction(pref)
 				.setListener((uiAdapter, view, item, isChecked) -> {
 					pref.set(isChecked);
+					if (sideEffect != null) {
+						sideEffect.onToggled(isChecked);
+					}
 					item.setSelected(isChecked);
 					item.setColor(app, isChecked ? R.color.osmand_orange : INVALID_ID);
 					if (uiAdapter != null) {

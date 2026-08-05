@@ -124,7 +124,10 @@ class POIScreen(
                 if (note.isNotEmpty()) note.append(" • ")
                 note.append(station.operator)
             }
-            if (note.isNotEmpty()) rowBuilder.addText(note.toString())
+            // A charger with no operator, no power figure and open access would otherwise be a
+            // bare title indistinguishable from an OSM POI row. Say what it is.
+            if (note.isEmpty()) note.append(carContext.getString(R.string.cairodrive_ev_charging))
+            rowBuilder.addText(note.toString())
             rowBuilder.setMetadata(
                 Metadata.Builder().setPlace(
                     Place.Builder(
