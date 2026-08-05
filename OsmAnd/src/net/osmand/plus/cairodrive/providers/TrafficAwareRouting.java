@@ -10,6 +10,7 @@ import net.osmand.plus.BuildConfig;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.routing.RouteCalculationResult;
+import net.osmand.plus.routing.GoogleTrafficHelper;
 import net.osmand.plus.routing.RoutingHelper;
 import net.osmand.router.RouteSegmentResult;
 import net.osmand.router.RoutingConfiguration;
@@ -18,6 +19,7 @@ import net.osmand.util.MapUtils;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -182,6 +184,45 @@ public final class TrafficAwareRouting {
 	/** Below this the samples are not a corridor description and the ETA is left alone. */
 	private static final int MIN_FLOW_SAMPLES = 2;
 
+	/**
+	 * Speed ratios Google's two congestion grades correspond to.
+	 *
+	 * <p>The Routes API returns a BAND - {@code TRAFFIC_JAM} or {@code SLOW} - not a speed, so a
+	 * number has to be assigned to use it as flow. These are deliberately conservative: a stretch
+	 * called SLOW is treated as still moving at two thirds, not crawling, because over-stating a
+	 * delay pushes the ETA out and makes the driver distrust it. Under-stating it costs nothing
+	 * they will notice.
+	 */
+	private static final double JAM_SPEED_RATIO = 0.25;
+	private static final double SLOW_SPEED_RATIO = 0.65;
+
+	/**
+	 * How many TomTom-sample-equivalents one Google span is worth.
+	 *
+	 * <p>Google measures the road THIS CAR IS ON; TomTom samples fixed points across the city that
+	 * are only incidentally on the route. For an ETA about this route, the route-specific
+	 * observation is worth more - but not infinitely more, or one span would swamp six honest
+	 * samples and a single mis-graded stretch would move the whole estimate.
+	 */
+	private static final int GOOGLE_SPAN_WEIGHT = 2;
+
+	/**
+	 * Google's snapshot, or null unless it is on, live and fresh.
+	 *
+	 * <p>Aged on {@code spansTimeMs} for the reason the layer does: a cheap delay poll carries the
+	 * previous spans forward without re-fetching them, so ageing on the snapshot's own timestamp
+	 * would let stale congestion keep influencing the ETA indefinitely.
+	 */
+	@Nullable
+	private static GoogleTrafficHelper.TrafficSnapshot freshGoogleSnapshot() {
+		GoogleTrafficHelper.TrafficSnapshot snapshot = GoogleTrafficHelper.getSnapshot();
+		if (snapshot == null || snapshot.spans.isEmpty()) {
+			return null;
+		}
+		long age = System.currentTimeMillis() - snapshot.spansTimeMs;
+		return age >= 0 && age <= GoogleTrafficHelper.SNAPSHOT_TTL_MS ? snapshot : null;
+	}
+
 	// ------------------------------------------------------------------ evaluation cadence
 
 	/**
@@ -282,6 +323,36 @@ public final class TrafficAwareRouting {
 				ratioSum += ratio;
 				counted++;
 			}
+
+			// Google's congestion spans, merged in beside TomTom's flow samples.
+			//
+			// They are not redundant with each other and that is the whole reason both are here.
+			// TomTom samples a handful of fixed points across the city on a timer - broad, cheap,
+			// and only incidentally on the route. Google returns spans measured ALONG THE ROUTE
+			// THIS CAR IS DRIVING, which is exactly the population the ETA is about. So Google is
+			// weighted higher per observation, and TomTom is what keeps answering when the Google
+			// budget is spent or the snapshot has aged out.
+			//
+			// Averaged as speed ratios in the same pool rather than combined afterwards, because
+			// the arithmetic below inverts the MEAN - and mean-then-invert is not the same as
+			// invert-then-mean. Mixing two already-inverted stretches would overstate the delay.
+			GoogleTrafficHelper.TrafficSnapshot google = freshGoogleSnapshot();
+			if (google != null) {
+				for (GoogleTrafficHelper.CongestionSpan span : google.spans) {
+					if (span == null) {
+						continue;
+					}
+					// Google grades congestion, it does not publish a speed. These are the ratios
+					// its own colour bands correspond to: a red TRAFFIC_JAM stretch moves at
+					// roughly a quarter of free flow, an orange SLOW one at about two thirds.
+					double ratio = span.jam ? JAM_SPEED_RATIO : SLOW_SPEED_RATIO;
+					for (int i = 0; i < GOOGLE_SPAN_WEIGHT; i++) {
+						ratioSum += ratio;
+						counted++;
+					}
+				}
+			}
+
 			if (counted < MIN_FLOW_SAMPLES) {
 				return 1.0;
 			}
@@ -542,8 +613,124 @@ public final class TrafficAwareRouting {
 				break;
 			}
 		}
+		addGoogleJams(desired, segments, loc, currentId);
 		return desired;
 	}
+
+	/**
+	 * Google's severe jams, added to the same nogo set - with gates a closure does not need.
+	 *
+	 * <h3>Why a jam cannot be treated like a closure</h3>
+	 *
+	 * A closure is a fact about the road and it stays true whether or not this car is near it. A
+	 * jam is a measurement of the road THIS CAR IS ON, and Google only reports spans along the
+	 * current route. So the moment an avoidance succeeds, the jammed road leaves the route, leaves
+	 * the snapshot, and the evidence for avoiding it disappears - the nogo lifts, the router
+	 * offers the road back, and the car oscillates between two routes at the junction. That is the
+	 * failure mode, and it is why "just make jams impassable" is wrong.
+	 *
+	 * <p>Four gates, on top of the ahead/on-route/not-current tests the closures already pass:
+	 * <ul>
+	 *   <li><b>Severity</b> - {@code TRAFFIC_JAM} only. SLOW is what the ETA stretch is for.</li>
+	 *   <li><b>Length</b> - a jam shorter than {@link #MIN_JAM_POINTS} polyline points is a queue
+	 *       at a light, and rerouting round a traffic light is worse than waiting at it.</li>
+	 *   <li><b>Persistence</b> - the same road has to be reported jammed in
+	 *       {@link #JAM_CONFIRMATIONS} consecutive snapshots. One poll is noise; a jam that is
+	 *       still there on the next fetch is a jam.</li>
+	 *   <li><b>Hold</b> - once avoided, the id stays in the desired set for {@link #JAM_HOLD_MS}
+	 *       even after it drops out of the data. This is the anti-oscillation gate: the evidence
+	 *       vanishing because the avoidance WORKED must not immediately undo the avoidance.</li>
+	 * </ul>
+	 *
+	 * <p>Capped by {@link #MAX_NOGO} jointly with closures, and closures are added first so a real
+	 * road closure always wins the last slot over a jam.
+	 */
+	private static void addGoogleJams(@NonNull Set<Long> desired,
+	                                  @NonNull List<RouteSegmentResult> segments,
+	                                  @NonNull Location loc, long currentId) {
+		long now = System.currentTimeMillis();
+		GoogleTrafficHelper.TrafficSnapshot snapshot = freshGoogleSnapshot();
+		Set<Long> seenThisPoll = new LinkedHashSet<>();
+
+		if (snapshot != null && snapshot.version != lastJamVersion) {
+			lastJamVersion = snapshot.version;
+			for (GoogleTrafficHelper.CongestionSpan span : snapshot.spans) {
+				if (span == null || !span.jam) {
+					continue;
+				}
+				if (span.end - span.start < MIN_JAM_POINTS) {
+					continue;
+				}
+				// Anchor on the MIDDLE of the span. Its start is where the queue currently ends,
+				// which moves backwards as the jam grows and can already be behind the car; the
+				// middle is the stretch actually worth going around.
+				int mid = (span.start + span.end) / 2;
+				if (mid < 0 || mid >= snapshot.points.size()) {
+					continue;
+				}
+				LatLon at = snapshot.points.get(mid);
+				if (MapUtils.getDistance(loc.getLatitude(), loc.getLongitude(),
+						at.getLatitude(), at.getLongitude()) < MIN_AHEAD_M) {
+					continue;
+				}
+				Long id = matchToRoute(at, segments);
+				if (id == null || id == 0 || id == currentId) {
+					continue;
+				}
+				synchronized (LOCK) {
+					if (foreign.contains(id)) {
+						continue;
+					}
+				}
+				seenThisPoll.add(id);
+			}
+			// Counted per SNAPSHOT VERSION, not per fix. Location updates arrive about once a
+			// second and the traffic snapshot refreshes on a much slower cadence, so counting per
+			// fix would confirm a one-poll blip within seconds and defeat the gate entirely.
+			for (Long id : seenThisPoll) {
+				Integer seen = jamSeen.get(id);
+				jamSeen.put(id, seen == null ? 1 : seen + 1);
+			}
+			// A road that has dropped out of the data loses its progress towards confirmation, but
+			// NOT its hold if it already earned one - see jamHeldUntil below.
+			jamSeen.keySet().retainAll(seenThisPoll);
+		}
+
+		for (Map.Entry<Long, Integer> entry : jamSeen.entrySet()) {
+			if (entry.getValue() >= JAM_CONFIRMATIONS) {
+				jamHeldUntil.put(entry.getKey(), now + JAM_HOLD_MS);
+			}
+		}
+		for (Iterator<Map.Entry<Long, Long>> it = jamHeldUntil.entrySet().iterator(); it.hasNext(); ) {
+			Map.Entry<Long, Long> entry = it.next();
+			if (entry.getValue() < now) {
+				it.remove();
+				continue;
+			}
+			if (desired.size() >= MAX_NOGO) {
+				break;
+			}
+			desired.add(entry.getKey());
+		}
+	}
+
+	/** A jam shorter than this is a queue at a light, not a road worth going around. */
+	private static final int MIN_JAM_POINTS = 4;
+	/** Consecutive SNAPSHOTS, not fixes - see the counting note in {@link #addGoogleJams}. */
+	private static final int JAM_CONFIRMATIONS = 2;
+	/**
+	 * How long an avoided jam stays avoided after it leaves the data.
+	 *
+	 * <p>The anti-oscillation gate. Five minutes is longer than a reroute takes to commit and
+	 * shorter than a jam typically lasts, so the car cannot be offered the road back at the same
+	 * junction it just left.
+	 */
+	private static final long JAM_HOLD_MS = 5 * 60 * 1000L;
+
+	/** Main/routing-thread only, like the rest of the reconciler. */
+	private static final Map<Long, Integer> jamSeen = new LinkedHashMap<>();
+	private static final Map<Long, Long> jamHeldUntil = new LinkedHashMap<>();
+	private static int lastJamVersion = -1;
 
 	/**
 	 * The road id of the route segment an incident sits on, or null when it sits on none of them.
