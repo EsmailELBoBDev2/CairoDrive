@@ -272,8 +272,13 @@ public class RoutingHelper {
 		// Bumps the generation so any fetch still in flight discards its result instead of
 		// resurrecting traffic for a route that no longer exists.
 		GoogleTrafficHelper.reset(app);
-		// Same contract: drop route-anchored state and orphan any fetch still in flight. The
-		// hazard banner deliberately survives - dust is a property of the sky, not of the route.
+		// Orphans any fetch still in flight, and drops the state that really is route-anchored:
+		// FLOW, which is per-segment speed along the route that just went away.
+		//
+		// Two slots deliberately SURVIVE, for the same reason. Dust is a property of the sky, and a
+		// closure is a property of the city - neither becomes untrue because the destination
+		// changed. Incidents used to be wiped here, which blanked the closure chip on every route
+		// change and forced a re-fetch that can be forty minutes away on a spent ladder.
 		net.osmand.plus.cairodrive.providers.CairoDriveProviders.resetRouteState();
 		net.osmand.plus.cairodrive.providers.TrafficAwareRouting.onRouteCleared(app);
 		net.osmand.plus.cairodrive.providers.SunGlareProvider.reset(app);

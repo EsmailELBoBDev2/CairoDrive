@@ -238,10 +238,12 @@ public final class BudgetPacer {
 			// estimate over this driver's own past sessions - see FreeDriveHorizon. It applies no
 			// slack of its own because its quantile is already the pessimistic one.
 			//
-			// NOTE: unreachable today. Both providers return early on !isFollowingMode(), so no
-			// traffic is polled at all while free driving and nothing ever calls into here. Kept
-			// because the branch is correct the moment free-drive polling is enabled; see the
-			// class javadoc on FreeDriveHorizon.
+			// REACHABLE, and this note exists because it briefly was not. Three stacked gates used
+			// to stop free driving ever getting here - isFollowingMode inside each provider, and
+			// finalLocation == null in RoutingHelper.setCurrentLocation above them. All three are
+			// gone; TomTom now polls incidents without a destination. Do NOT delete FreeDriveHorizon
+			// as dead code on the strength of an older comment - which is exactly how the stale
+			// javadoc on TomTomTrafficProvider.reset() sent one audit down the wrong path today.
 			FreeDriveHorizon.onFreeDriveFix(app, now);
 			return FreeDriveHorizon.estimateRemainingMinutes(app, now);
 		} catch (Throwable t) {
