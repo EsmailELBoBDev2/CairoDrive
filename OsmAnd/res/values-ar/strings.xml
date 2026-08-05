@@ -18,6 +18,8 @@
     <string name="cairodrive_place_call">اتصل</string>
     <string name="cairodrive_place_reviews">التقييمات</string>
     <string name="cairo_traffic_delay">زحمة: +%1$d دقيقة على طريقك</string>
+    <string name="cairo_incident_closure">طريق مقفول على بعد %1$d كم</string>
+    <string name="cairo_incident_flooding">مياه على الطريق على بعد %1$d كم</string>
     <string name="cairodrive_place_popular_times">أوقات الزحمة</string>
     <string name="cairodrive_popular_quiet">فاضي دلوقتي</string>
     <string name="cairodrive_popular_steady">عادي دلوقتي</string>

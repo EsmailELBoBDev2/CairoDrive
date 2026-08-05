@@ -13,6 +13,7 @@ import androidx.annotation.Nullable;
 import androidx.annotation.StringRes;
 
 import net.osmand.data.RotatedTileBox;
+import net.osmand.Location;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.activities.MapActivity;
@@ -25,6 +26,7 @@ import net.osmand.plus.routing.RoutingHelper;
 import net.osmand.plus.views.OsmandMapTileView;
 import net.osmand.plus.views.layers.base.OsmandMapLayer;
 import net.osmand.util.Algorithms;
+import net.osmand.util.MapUtils;
 
 /**
  * The one place the provider stack becomes visible to the driver.
@@ -79,6 +81,19 @@ public class HazardBannerLayer extends OsmandMapLayer {
 	/** See {@link #delayText} - the draw path may not walk the route. */
 	private static final long DELAY_RECOMPUTE_MS = 2000;
 
+	/**
+	 * How far away an incident may be and still earn a chip, in metres.
+	 *
+	 * <p>Matches the free-driving request box in TomTomTrafficProvider, so the chip describes the
+	 * same area the request asked about rather than a subset of it.
+	 */
+	private static final double INCIDENT_MAX_M = 5500;
+	/** Same reason as {@link #DELAY_RECOMPUTE_MS}: the draw path may not scan a list per frame. */
+	private static final long INCIDENT_RECOMPUTE_MS = 2000;
+	/** Red-orange: a road that is gone is not the same fact as a road that is slow. */
+	private static final int CLOSURE_BG = 0xF2BF360C;
+	private static final int CLOSURE_FG = 0xFFFFFFFF;
+
 	private Paint chipPaint;
 	private Paint textPaint;
 	private float chipHeight;
@@ -99,6 +114,10 @@ public class HazardBannerLayer extends OsmandMapLayer {
 	/** Throttle state for {@link #delayText}. Main thread only, so unsynchronised is correct. */
 	private String lastDelayText;
 	private long lastDelayComputedMs;
+	private String lastIncidentText;
+	private long lastIncidentComputedMs;
+	private String cachedIncidentText;
+	private float cachedIncidentWidth;
 
 	/**
 	 * Resolved once per activity attach, never per frame: {@code findViewById} walks the hierarchy
@@ -185,11 +204,13 @@ public class HazardBannerLayer extends OsmandMapLayer {
 		}
 
 		String delayText = delayText(app);
+		String incidentText = incidentText(app);
 
-		if (hazardText == null && delayText == null) {
+		if (hazardText == null && delayText == null && incidentText == null) {
 			// The common case. Nothing measured, nothing allocated, nothing drawn.
 			cachedHazardText = null;
 			cachedDelayText = null;
+			cachedIncidentText = null;
 			return;
 		}
 
@@ -206,6 +227,18 @@ public class HazardBannerLayer extends OsmandMapLayer {
 		} else {
 			cachedHazardText = null;
 		}
+		// Closure BEFORE delay: one says a road is gone, the other says a road is slow, and if
+		// only one chip is read at 60 km/h it should be the one that changes where you can go.
+		if (incidentText != null) {
+			if (!incidentText.equals(cachedIncidentText)) {
+				cachedIncidentText = incidentText;
+				cachedIncidentWidth = textPaint.measureText(incidentText);
+			}
+			drawChip(canvas, incidentText, cachedIncidentWidth, centerX, y, CLOSURE_BG, CLOSURE_FG);
+			y += chipHeight + chipGap;
+		} else {
+			cachedIncidentText = null;
+		}
 		if (delayText != null) {
 			if (!delayText.equals(cachedDelayText)) {
 				cachedDelayText = delayText;
@@ -216,6 +249,67 @@ public class HazardBannerLayer extends OsmandMapLayer {
 			cachedDelayText = null;
 		}
 	}
+
+	/**
+	 * The nearest closure or flooding, or null when there is nothing worth saying.
+	 *
+	 * <p><b>This is the only thing that displays incidents at all.</b> Until now their sole consumer
+	 * was {@code TrafficAwareRouting.desiredNogoIds}, which returns empty without a calculated
+	 * route - so incidents fetched while free driving were paid for and discarded. A closure or a
+	 * flooded underpass is exactly as much of a problem when the driver has not told the app where
+	 * they are going, and this chip is what makes that true on screen.
+	 *
+	 * <p>Deliberately NOT gated on following mode, unlike {@link #delayText}. A delay is a property
+	 * of a route; a closed road is a property of the city.
+	 *
+	 * <p>Closures and flooding only. A jam or roadworks does not change where you can drive, and a
+	 * chip that fires for those would be showing something almost always, which is the fastest way
+	 * to teach a driver to ignore the banner - the same argument as {@link #MIN_DELAY_SECONDS}.
+	 *
+	 * <p>Throttled for the reason {@link #delayText} is: the draw path may not scan a list every
+	 * frame, and the underlying poll only refreshes every few minutes anyway.
+	 */
+	@Nullable
+	private String incidentText(@NonNull OsmandApplication app) {
+		long now = System.currentTimeMillis();
+		long age = now - lastIncidentComputedMs;
+		if (lastIncidentComputedMs != 0 && age >= 0 && age < INCIDENT_RECOMPUTE_MS) {
+			return lastIncidentText;
+		}
+		lastIncidentComputedMs = now;
+		lastIncidentText = null;
+		Location here = app.getLocationProvider().getLastKnownLocation();
+		if (here == null) {
+			return null;
+		}
+		double bestM = Double.MAX_VALUE;
+		CairoDriveProviders.TrafficIncident best = null;
+		for (CairoDriveProviders.TrafficIncident incident : CairoDriveProviders.getIncidents()) {
+			boolean flooding = incident.categoryId == ICON_FLOODING;
+			if (!incident.closure && !flooding) {
+				continue;
+			}
+			double metres = MapUtils.getDistance(here.getLatitude(), here.getLongitude(),
+					incident.at.getLatitude(), incident.at.getLongitude());
+			if (metres < bestM) {
+				bestM = metres;
+				best = incident;
+			}
+		}
+		if (best == null || bestM > INCIDENT_MAX_M) {
+			return null;
+		}
+		// Rounded UP, and never to zero: "0 km away" reads as a bug, and rounding a 600 m closure
+		// down to nothing is the one distance where the chip matters most.
+		int km = Math.max(1, (int) Math.ceil(bestM / 1000.0));
+		lastIncidentText = app.getString(
+				best.closure ? R.string.cairo_incident_closure : R.string.cairo_incident_flooding,
+				km);
+		return lastIncidentText;
+	}
+
+	/** TomTom v5 iconCategory for flooding. Mirrors TomTomTrafficProvider's table. */
+	private static final int ICON_FLOODING = 11;
 
 	/**
 	 * "Traffic: +N min on your route", or null when there is nothing honest to say.

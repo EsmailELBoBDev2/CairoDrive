@@ -27,6 +27,7 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URLEncoder;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
@@ -422,6 +423,17 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 	private static final double BBOX_MIN_SPAN_DEG = 0.01;
 	/** ~500 m of slack so an incident just off the traced line is still inside the rectangle. */
 	private static final double BBOX_MARGIN_DEG = 0.005;
+	/**
+	 * Half-width of the free-driving incident box, in degrees - about 5.5 km, so an 11 km square
+	 * centred on the car.
+	 *
+	 * <p>With no route there is no corridor to follow, and no way to know which way the driver will
+	 * turn. A box is the honest shape for that: it covers every direction equally rather than
+	 * guessing a heading that the next junction may contradict. 5.5 km is roughly ten minutes of
+	 * Cairo driving, which is far enough ahead to matter and near enough that the response is not
+	 * mostly closures the driver will never reach.
+	 */
+	private static final double FREE_DRIVE_RADIUS_DEG = 0.05;
 
 	/**
 	 * Floor applied to {@code currentSpeed} when the segment is reported closed or stopped.
@@ -560,9 +572,12 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 			}
 
 			OsmandSettings settings = app.getSettings();
-			if (!helper.isFollowingMode()) {
-				return;
-			}
+			// FREE DRIVING is served too, incidents only. This used to return outright, which meant
+			// no traffic at all without a destination - and a closure or a flooded underpass is
+			// exactly as much of a problem when you are driving somewhere you did not tell the app
+			// about. Flow stays navigation-only on purpose: it exists to correct an ETA, and
+			// without a route there is no ETA to correct, so it would be paid for and discarded.
+			boolean following = helper.isFollowingMode();
 			ApplicationMode mode = settings.getApplicationMode();
 			if (mode == null || !mode.isDerivedRoutingFrom(ApplicationMode.CAR)) {
 				return;
@@ -579,7 +594,7 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 			// Budget-aware cadence: past BUDGET_THIN_FRACTION this interval doubles, so the feature
 			// stretches across a long day instead of stopping dead partway through it.
 			long flowInterval = flowIntervalForBudget(usedFlowPoints(app), app);
-			boolean flowDue = serveFlow && now - lastFlowPoll >= flowInterval;
+			boolean flowDue = following && serveFlow && now - lastFlowPoll >= flowInterval;
 			if (!incidentsDue && !flowDue) {
 				return;
 			}
@@ -597,13 +612,20 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 			// Copied on THIS thread. getRouteLocations() is a live sublist view over the route that
 			// shrinks as the car moves, so handing it to a worker would let the geometry change
 			// underneath a request that is already describing it.
-			RouteCalculationResult route = helper.getRoute();
-			if (route == null) {
-				return;
-			}
-			List<Location> remaining = new ArrayList<>(route.getRouteLocations());
-			if (remaining.size() < 2) {
-				return;
+			// Free driving has no route to copy. The box around the car is built in poll()
+			// instead, from the fix that is already in hand.
+			List<Location> remaining;
+			if (following) {
+				RouteCalculationResult route = helper.getRoute();
+				if (route == null) {
+					return;
+				}
+				remaining = new ArrayList<>(route.getRouteLocations());
+				if (remaining.size() < 2) {
+					return;
+				}
+			} else {
+				remaining = Collections.emptyList();
 			}
 
 			synchronized (TomTomTrafficProvider.class) {
@@ -614,7 +636,8 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 				}
 				incidentsDue = serveIncidents
 						&& now - lastIncidentPoll >= incidentIntervalForBudget(usedIncidents(app), app);
-				flowDue = serveFlow && now - lastFlowPoll >= flowIntervalForBudget(usedFlowPoints(app), app);
+				flowDue = following && serveFlow
+						&& now - lastFlowPoll >= flowIntervalForBudget(usedFlowPoints(app), app);
 				if (!incidentsDue && !flowDue) {
 					return;
 				}
@@ -686,6 +709,20 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 		// The corridor is traced once and shared. Both endpoints describe the same stretch of road
 		// ahead, and tracing it twice could give them different answers if the walk changed.
 		List<Location> corridor = corridorAhead(remaining);
+		if (corridor.isEmpty()) {
+			// FREE DRIVING. Two opposite corners of a box centred on the car; fetchIncidents takes
+			// the min/max of whatever it is given, so this produces exactly that box with no
+			// special case inside it.
+			Location sw = new Location("cd-freedrive");
+			sw.setLatitude(lat - FREE_DRIVE_RADIUS_DEG);
+			sw.setLongitude(lon - FREE_DRIVE_RADIUS_DEG);
+			Location ne = new Location("cd-freedrive");
+			ne.setLatitude(lat + FREE_DRIVE_RADIUS_DEG);
+			ne.setLongitude(lon + FREE_DRIVE_RADIUS_DEG);
+			corridor = new ArrayList<>(2);
+			corridor.add(sw);
+			corridor.add(ne);
+		}
 		if (corridor.size() < 2) {
 			return;
 		}

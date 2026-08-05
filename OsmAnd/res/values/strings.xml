@@ -44,6 +44,8 @@
 	<string name="cairo_tomtom_traffic">Live traffic (TomTom)</string>
 	<string name="cairo_weather_hazard">Dust and air quality warnings</string>
 	<string name="cairo_sun_glare">Sun glare warning</string>
+	<string name="cairo_incident_closure">Road closed %1$d km away</string>
+	<string name="cairo_incident_flooding">Flooding %1$d km away</string>
 	<string name="cairo_hazard_dust">Dust — reduced visibility</string>
 	<string name="cairo_hazard_low_visibility">Low visibility — fog or haze</string>
 	<string name="cairo_hazard_sun_glare">Sun glare ahead</string>
