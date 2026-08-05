@@ -31,6 +31,7 @@ import net.osmand.plus.activities.MapActivity;
 import net.osmand.plus.cairodrive.search.GatedAmenityByTypeAPI;
 import net.osmand.plus.cairodrive.search.GatedAmenityTypesAPI;
 import net.osmand.plus.cairodrive.search.GatedSearchApi;
+import net.osmand.plus.cairodrive.search.GeoapifySearchApi;
 import net.osmand.plus.cairodrive.search.GooglePlacesSearchApi;
 import net.osmand.plus.cairodrive.search.SearchProviderGate;
 import net.osmand.plus.download.DownloadActivityType;
@@ -218,7 +219,14 @@ public class QuickSearchHelper implements ResourceListener {
 	 * back into the list.
 	 */
 	private void applyGooglePlacesSearch() {
-		if (!GooglePlacesSearchApi.isConfigured()) {
+		boolean google = GooglePlacesSearchApi.isConfigured();
+		// Geoapify is registered on its OWN key, not behind Google's.
+		//
+		// This method used to return here whenever Google was unconfigured, which would have made
+		// the fallback provider unreachable in precisely the build that needs it most: no Google
+		// key at all. The chain is Google -> Geoapify -> offline, and any link may be absent.
+		boolean geoapify = GeoapifySearchApi.isConfigured();
+		if (!google && !geoapify) {
 			return;
 		}
 		List<SearchCoreAPI> offlineApis = new ArrayList<>(core.getAPIs());
@@ -229,7 +237,16 @@ public class QuickSearchHelper implements ResourceListener {
 		GatedAmenityTypesAPI typesApi = new GatedAmenityTypesAPI(app.getPoiTypes(), searchGate);
 
 		core.clearAPIs();
-		core.registerAPI(new GooglePlacesSearchApi(app, searchGate));
+		if (google) {
+			core.registerAPI(new GooglePlacesSearchApi(app, searchGate));
+		}
+		// Registered SECOND, and it reports "do not run" for any phrase Google already satisfied,
+		// so it costs a credit only when Google produced nothing - no key, no connection, a failed
+		// request or an empty answer. Registered ahead of the offline providers for the same
+		// reason Google is: they are the last resort, not a supplement.
+		if (geoapify) {
+			core.registerAPI(new GeoapifySearchApi(app, searchGate));
+		}
 		for (SearchCoreAPI api : offlineApis) {
 			if (api instanceof SearchAmenityTypesAPI) {
 				core.registerAPI(typesApi);
