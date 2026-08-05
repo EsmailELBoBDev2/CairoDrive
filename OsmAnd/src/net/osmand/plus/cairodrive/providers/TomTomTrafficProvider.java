@@ -887,7 +887,12 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 				// The APPLIED interval as well as the tier's, because they now differ whenever the
 				// route horizon shortened it. Without this a log cannot tell a fast poll that was
 				// the tier from one that was the route.
-				+ " appliedS=" + (lastIncidentIntervalMs / 1000));
+				+ " appliedS=" + (lastIncidentIntervalMs / 1000)
+				// Also here, not only on the flow line. Flow does not poll while free driving, so
+				// the flow line never appears then - and free driving is the ONLY case where this
+				// estimate is what sets the cadence. Logging it only there made it invisible
+				// exactly when it mattered.
+				+ " " + FreeDriveHorizon.describe(app, System.currentTimeMillis()));
 	}
 
 	/**

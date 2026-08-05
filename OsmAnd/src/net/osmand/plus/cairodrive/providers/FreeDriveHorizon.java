@@ -209,17 +209,20 @@ public final class FreeDriveHorizon {
 	 *
 	 * <p>A stamp in the future means the clock moved backwards - NTP correcting a head unit that
 	 * booted with a dead RTC - and is discarded, because honouring it would report a negative or
-	 * absurd elapsed time. A stamp older than {@link #IDLE_GAP_MS} is not restored either: that
-	 * session is over, and {@link #onFreeDriveFix} will close and record it on the normal path.
+	 * absurd elapsed time.
+	 *
+	 * <p>An OLD stamp is restored rather than rejected, and deliberately so: {@link #onFreeDriveFix}
+	 * runs immediately after and closes it on the normal path, which is what RECORDS the session
+	 * that was open when the process died. Rejecting it here would silently discard exactly the
+	 * sessions this class exists to learn from - the ones that ended with the app being killed.
 	 */
 	private static void seed(@Nullable OsmandApplication app, long nowMs) {
-		if (seeded) {
+		if (seeded || app == null) {
+			// Note the ORDER: a null app must not consume the once-per-process flag, or a single
+			// early call with no application would disable seeding for the whole process.
 			return;
 		}
 		seeded = true;
-		if (app == null) {
-			return;
-		}
 		try {
 			OsmandSettings settings = app.getSettings();
 			SettingsAPI api = settings.getSettingsAPI();

@@ -636,8 +636,22 @@ public final class CairoDriveProviders {
 		synchronized (LOCK) {
 			generation++;
 			Snapshot previous = snapshot;
+			// FLOW is dropped: it is per-segment speed along the route that just went away, and its
+			// only consumer applies it to an ETA that no longer exists.
+			//
+			// INCIDENTS are KEPT, for the same reason the hazard banner is. A closure is a property
+			// of the city, not of the route - the same argument the comment on the hazard slot
+			// makes about dust. They also became city-scoped in fact as well as in principle once
+			// free driving started fetching a box around the car rather than a corridor.
+			//
+			// Dropping them was actively wrong: this runs whenever a destination is set OR cleared,
+			// so every route change blanked the closure chip and forced a re-fetch that could be
+			// twenty minutes away on a spent ladder - deleting live data about a road that had not
+			// reopened. Nothing downstream needs the wipe: desiredNogoIds already keeps only
+			// closures on the current route, and the chip keeps only those within 5.5 km, so a
+			// stale far-away incident is filtered by both. The TTL handles real staleness.
 			snapshot = new Snapshot(
-					Collections.<TrafficIncident>emptyList(), 0,
+					previous.incidents, previous.incidentsTimeMs,
 					Collections.<FlowSample>emptyList(), 0,
 					previous.hazard, previous.hazardTimeMs,
 					generation, ++versionCounter);
