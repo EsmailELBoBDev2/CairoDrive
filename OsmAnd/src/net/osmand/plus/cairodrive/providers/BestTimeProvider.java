@@ -35,16 +35,21 @@ import java.util.Set;
  *
  * <h3>The one architectural fact that decides the cost</h3>
  *
- * BestTime splits its API in two, and the split is the whole design of this class:
- * <ul>
- *   <li><b>POST</b> {@code /forecasts} with the PRIVATE key <i>generates</i> a forecast for a venue.
- *       This is the call that burns credits.</li>
- *   <li><b>GET</b> {@code /forecasts/now} with the PUBLIC key <i>re-reads</i> an already generated
- *       forecast by venue id. Cheap, and re-readable indefinitely.</li>
- * </ul>
- * So a venue is generated at most ONCE and then read back forever. Getting this backwards - a POST
- * per tap - is the exact cost blow-up this repo's Places rules already exist to prevent, and it
- * would be invisible until the bill arrived.
+ * <b>Every network call costs credits.</b> BestTime's own pricing page, read 2026-08-05:
+ * <pre>
+ *   Venue foot traffic - by name  (POST /forecasts)        2 credits
+ *   Venue foot traffic - by ID    (GET  query-week)        1 credit
+ * </pre>
+ *
+ * <p>An earlier version of this class asserted that the GET was "cheap, and re-readable
+ * indefinitely" and logged {@code credits=0} on that path. That was wrong, and wrong in the
+ * expensive direction: it made every pane view of a known venue cost a credit, for ever, while the
+ * log said it cost nothing.
+ *
+ * <p>So the design changes to match the billing. The POST already returns the WHOLE WEEK - 7 days
+ * x 24 hours of intensity - and popular times is a static weekly pattern that BestTime themselves
+ * say is "normally accurate for at least several weeks". There is nothing to poll. One POST per
+ * venue, cache the week, and index into it on-device at zero recurring cost.
  *
  * <h3>Nothing here is on a hot path</h3>
  *
@@ -179,39 +184,27 @@ public final class BestTimeProvider {
 	/**
 	 * Generate once with the private key, then read the current hour.
 	 *
-	 * <p>The POST already returns the week's analysis, so the common case needs no GET at all -
-	 * the current hour is read straight out of the generation response. The public-key GET exists
-	 * for the case where the forecast was generated on an earlier run and this process has an
-	 * empty cache; that path costs nothing and is why {@code venue_id} is worth keeping.
+	 * <p>The POST returns the whole week, so it is stored whole and every later lookup is a local
+	 * array index. There is no recurring network call and therefore no recurring credit - which is
+	 * the correction over the previous design, where a cold start re-read by id at 1 credit a
+	 * time.
 	 */
 	@Nullable
 	private static String fetch(@NonNull OsmandApplication app, @NonNull String name,
 	                            @NonNull String address) throws Exception {
 		String key = cacheKey(name, address);
 
-		// The free path first. A venue generated on ANY earlier run - days ago, before the last
-		// app restart - can be re-read by id with the public key for no credits at all. The
-		// in-memory cache is gone on a cold start; the venue id is not, because it is persisted.
-		// Skipping this and going straight to the POST would re-generate, and re-bill, a forecast
-		// that already exists, which is the single most expensive mistake available here.
-		String venueId = storedVenueId(app, key);
-		if (venueId != null && !Algorithms.isEmpty(BuildConfig.CAIRODRIVE_BESTTIME_PUBLIC_KEY)) {
-			long start = System.currentTimeMillis();
-			String body = get(BASE + "/forecasts/now?api_key_public="
-					+ enc(BuildConfig.CAIRODRIVE_BESTTIME_PUBLIC_KEY)
-					+ "&venue_id=" + enc(venueId));
-			long ms = System.currentTimeMillis() - start;
-			if (body != null) {
-				Integer now = nowIntensity(new JSONObject(body));
-				if (now != null) {
-					log("reread venue=" + name.length() + "ch intensity=" + now + " ms=" + ms
-							+ " credits=0");
-					return app.getString(describe(now));
-				}
+		// A week already stored from an earlier run - possibly days ago, across restarts. Indexing
+		// it costs nothing and makes the whole feature free after one POST per venue. This replaces
+		// a GET-by-id, which BestTime bills at 1 credit and which the previous version logged as
+		// credits=0.
+		int[] week = storedWeek(app, key);
+		if (week != null) {
+			Integer now = intensityFromWeek(week);
+			if (now != null) {
+				log("cached venue=" + name.length() + "ch intensity=" + now + " credits=0 net=0");
+				return app.getString(describe(now));
 			}
-			// Fall through to the POST. A stale or rejected id must not make the venue permanently
-			// unanswerable - it just means the free shortcut did not work this time.
-			log("reread MISS venue=" + name.length() + "ch ms=" + ms);
 		}
 
 		String url = BASE + "/forecasts?api_key_private="
@@ -233,107 +226,62 @@ public final class BestTimeProvider {
 			log("nodata venue=" + name.length() + "ch status=" + status + " ms=" + ms);
 			return null;
 		}
-		rememberVenueId(app, key, root);
+		rememberWeek(app, key, root);
 		Integer intensity = currentIntensity(root);
 		if (intensity == null) {
 			log("nohour venue=" + name.length() + "ch ms=" + ms);
 			return null;
 		}
 		log("generated venue=" + name.length() + "ch intensity=" + intensity + " ms=" + ms
-				+ " credits=1");
+				+ " credits=2 net=1 weekCached=1");
 		return app.getString(describe(intensity));
 	}
 
-	/**
-	 * {@code /forecasts/now} returns the current hour directly rather than a week to index into.
-	 *
-	 * <p>Deliberately a separate reader from {@link #currentIntensity}: that one walks the week
-	 * array and applies the 06:00 offset, and reusing it here would silently return null for every
-	 * re-read because this response has no {@code analysis} array at all.
-	 */
-	@Nullable
-	static Integer nowIntensity(@NonNull JSONObject root) {
-		if (!"OK".equalsIgnoreCase(root.optString("status", ""))) {
-			return null;
-		}
-		JSONObject analysis = root.optJSONObject("analysis");
-		if (analysis == null) {
-			return null;
-		}
-		if (analysis.has("hour_analysis")) {
-			JSONObject hour = analysis.optJSONObject("hour_analysis");
-			if (hour != null && hour.has("intensity_nr")) {
-				// intensity_nr is a -2..+2 band, not a 0-100 percentage. Mapped onto the same
-				// scale describe() expects rather than passed through, which would make every
-				// re-read report "quiet".
-				return bandToPercent(hour.optInt("intensity_nr"));
-			}
-		}
-		if (analysis.has("venue_forecasted_busyness")) {
-			return analysis.optInt("venue_forecasted_busyness");
-		}
-		return null;
-	}
 
-	/** BestTime's -2..+2 intensity band onto the 0-100 scale {@link #describe} uses. */
-	static int bandToPercent(int band) {
-		switch (band) {
-			case -2:
-				return 5;
-			case -1:
-				return 30;
-			case 0:
-				return 45;
-			case 1:
-				return 70;
-			default:
-				return 95;
-		}
-	}
 
 	/**
-	 * Venue ids survive a restart; the forecast cache does not.
+	 * The 7x24 intensity grid for the hour the car is in now, from a stored week.
 	 *
-	 * <p>Stored in one preference as a bounded {@code key=id} list rather than one preference per
-	 * venue. It is small, it is not sensitive - an id is BestTime's handle for a public business,
-	 * not a record of a visit - and keeping it out of the log is what keeps a drive log free of
-	 * the places the owner looked up.
+	 * <p>Same day/hour convention as {@link #currentIntensity}: Monday=0, and the published window
+	 * starts at 06:00, so index 0 is 06:00 and hours before it are outside what this data claims to
+	 * describe.
 	 */
 	@Nullable
-	private static String storedVenueId(@NonNull OsmandApplication app, @NonNull String key) {
+	static Integer intensityFromWeek(@NonNull int[] week) {
+		Calendar now = Calendar.getInstance();
+		int dayInt = (now.get(Calendar.DAY_OF_WEEK) + 5) % 7;
+		int index = now.get(Calendar.HOUR_OF_DAY) - 6;
+		if (index < 0 || index > 23) {
+			return null;
+		}
+		int slot = dayInt * 24 + index;
+		if (slot < 0 || slot >= week.length || week[slot] < 0) {
+			return null;
+		}
+		return week[slot];
+	}
+
+	@Nullable
+	private static int[] storedWeek(@NonNull OsmandApplication app, @NonNull String key) {
 		String raw = app.getSettings().BESTTIME_VENUE_IDS.get();
 		if (Algorithms.isEmpty(raw)) {
 			return null;
 		}
 		try {
-			return new JSONObject(raw).optString(key, null);
+			JSONArray stored = new JSONObject(raw).optJSONArray(key);
+			if (stored == null || stored.length() != 168) {
+				return null;
+			}
+			int[] week = new int[168];
+			for (int i = 0; i < 168; i++) {
+				week[i] = stored.optInt(i, -1);
+			}
+			return week;
 		} catch (Exception e) {
 			return null;
 		}
 	}
 
-	private static void rememberVenueId(@NonNull OsmandApplication app, @NonNull String key,
-	                                    @NonNull JSONObject root) {
-		JSONObject info = root.optJSONObject("venue_info");
-		String id = info != null ? info.optString("venue_id", null) : null;
-		if (Algorithms.isEmpty(id)) {
-			return;
-		}
-		try {
-			String raw = app.getSettings().BESTTIME_VENUE_IDS.get();
-			JSONObject store = Algorithms.isEmpty(raw) ? new JSONObject() : new JSONObject(raw);
-			// Bounded: a very long-lived install would otherwise grow this preference without
-			// limit. Oldest-first eviction is not worth the bookkeeping at this size - clearing
-			// and starting over costs at most one re-generation per venue.
-			if (store.length() >= MAX_VENUE_IDS) {
-				store = new JSONObject();
-			}
-			store.put(key, id);
-			app.getSettings().BESTTIME_VENUE_IDS.set(store.toString());
-		} catch (Exception e) {
-			LOG.error("BestTime venue id store failed", e);
-		}
-	}
 
 	private static final int MAX_VENUE_IDS = 200;
 
@@ -432,31 +380,6 @@ public final class BestTimeProvider {
 	}
 
 	@Nullable
-	private static String get(@NonNull String url) throws Exception {
-		HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-		try {
-			conn.setRequestMethod("GET");
-			conn.setConnectTimeout(TIMEOUT_MS);
-			conn.setReadTimeout(TIMEOUT_MS);
-			int code = conn.getResponseCode();
-			if (code >= 400) {
-				return null;
-			}
-			InputStream in = conn.getInputStream();
-			if (in == null) {
-				return null;
-			}
-			ByteArrayOutputStream out = new ByteArrayOutputStream();
-			byte[] buffer = new byte[4096];
-			int read;
-			while ((read = in.read(buffer)) > 0) {
-				out.write(buffer, 0, read);
-			}
-			return out.toString("UTF-8");
-		} finally {
-			conn.disconnect();
-		}
-	}
 
 	private static String enc(String value) throws Exception {
 		return URLEncoder.encode(value, "UTF-8");
