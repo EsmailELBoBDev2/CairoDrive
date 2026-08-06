@@ -7,6 +7,7 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.ServiceInfo;
 import android.net.Uri;
 import android.os.Build;
+import android.os.SystemClock;
 
 import androidx.annotation.NonNull;
 import androidx.car.app.CarAppService;
@@ -19,6 +20,7 @@ import androidx.lifecycle.LifecycleOwner;
 import net.osmand.PlatformUtil;
 import net.osmand.plus.OsmAndLocationProvider;
 import net.osmand.plus.OsmandApplication;
+import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.notifications.OsmandNotification.NotificationType;
 
 import java.util.Arrays;
@@ -34,7 +36,14 @@ import java.util.List;
 public final class NavigationCarAppService extends CarAppService implements ActivityCompat.OnRequestPermissionsResultCallback {
 
 	private static final org.apache.commons.logging.Log LOG = PlatformUtil.getLog(NavigationCarAppService.class);
+	/**
+	 * CD_ is written here rather than passed to {@code CairoDriveLog}, which prepends its own.
+	 * {@link CairoDriveLogger#log} takes the tag verbatim.
+	 */
+	private static final String DEVICE_TAG = "CD_DEVICE";
 	private boolean foreground = false;
+	/** Monotonic, so the session length survives a clock correction from the head unit. */
+	private long sessionStartedAtMs;
 
 	private OsmandApplication getApp() {
 		return (OsmandApplication) getApplication();
@@ -73,16 +82,36 @@ public final class NavigationCarAppService extends CarAppService implements Acti
 	public Session onCreateSession() {
 		startForegroundWithPermission();
 		NavigationSession session = new NavigationSession();
+		// When the head unit actually attached and detached, which nothing recorded.
+		//
+		// Everything this project reads out of a drive log is scoped to the projected session -
+		// CD_FRAME only exists while the car surface does, and CD_PRESENT's fallback decision is
+		// taken once per connect. Without these two lines the boundaries have to be inferred from
+		// where CD_FRAME starts and stops, which cannot distinguish "the cable came out" from
+		// "the renderer stopped producing frames" - opposite conclusions about the same silence.
+		sessionStartedAtMs = SystemClock.elapsedRealtime();
+		logCar("androidAuto CONNECTED uptimeMs=" + sessionStartedAtMs
+				+ " foreground=" + foreground);
 		session.getLifecycle()
 				.addObserver(new DefaultLifecycleObserver() {
 					@Override
 					public void onDestroy(@NonNull LifecycleOwner owner) {
 						foreground = false;
+						logCar("androidAuto DISCONNECTED sessionMs="
+								+ (SystemClock.elapsedRealtime() - sessionStartedAtMs));
 						stopForeground(STOP_FOREGROUND_REMOVE);
 					}
 				});
 
 		return session;
+	}
+
+	/** Guarded: a diagnostic must never be what stops the car session being created or torn down. */
+	private static void logCar(@NonNull String message) {
+		try {
+			CairoDriveLogger.getInstance().log(DEVICE_TAG, message);
+		} catch (Throwable ignored) {
+		}
 	}
 
 	private void startForegroundWithPermission() {

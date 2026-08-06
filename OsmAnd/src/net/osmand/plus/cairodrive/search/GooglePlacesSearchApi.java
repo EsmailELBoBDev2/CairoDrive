@@ -458,6 +458,7 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 	@Nullable
 	private String request(@NonNull String query, @Nullable LatLon location) {
 		HttpURLConnection connection;
+		long started = android.os.SystemClock.elapsedRealtime();
 		try {
 			connection = (HttpURLConnection) new URL(TEXT_SEARCH_URL).openConnection();
 			connection.setRequestMethod("POST");
@@ -487,17 +488,39 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 			if (code != HttpURLConnection.HTTP_OK) {
 				// 403 here almost always means the key's Android app restriction does not
 				// match this build's package name and signing certificate.
-				String body = read(connection.getErrorStream());
+				// Named `error`, not `body`: the success path below declares its own `body` in
+				// the enclosing block, and two same-named locals in overlapping blocks is what
+				// failed the build in GoogleTrafficHelper for exactly this shape.
+				String error = read(connection.getErrorStream());
+				long ms = android.os.SystemClock.elapsedRealtime() - started;
 				net.osmand.plus.cairodrive.providers.ApiHealth.recordFailure(
-						net.osmand.plus.cairodrive.providers.ApiHealth.Api.GOOGLE_PLACES, code, body);
-				LOG.error(TRACE_TAG + " request failed: HTTP " + code + " " + body);
+						net.osmand.plus.cairodrive.providers.ApiHealth.Api.GOOGLE_PLACES, code,
+						error, ms);
+				LOG.error(TRACE_TAG + " request failed: HTTP " + code + " " + error);
+				trace("http=" + code + " ms=" + ms + " (see APISTATUS for the reason text)");
 				return null;
 			}
+			String body = read(connection.getInputStream());
+			long ms = android.os.SystemClock.elapsedRealtime() - started;
 			net.osmand.plus.cairodrive.providers.ApiHealth.recordOk(
-					net.osmand.plus.cairodrive.providers.ApiHealth.Api.GOOGLE_PLACES);
-			return read(connection.getInputStream());
+					net.osmand.plus.cairodrive.providers.ApiHealth.Api.GOOGLE_PLACES, ms);
+			trace("http=200 ms=" + ms + " bytes=" + (body == null ? 0 : body.length()));
+			return body;
 		} catch (IOException | RuntimeException e) {
+			// A dead socket recorded NOTHING here. It went to LOG.error - which the logcat pump
+			// does capture - but left no ApiHealth entry at all, so the status screen and every
+			// APISTATUS line went on reporting the last success while every search was timing out.
+			// The elapsed time is what separates the two causes that land here: a refused
+			// connection returns in tens of milliseconds, a tunnel runs the full read timeout.
+			long ms = android.os.SystemClock.elapsedRealtime() - started;
+			String kind = e instanceof java.net.SocketTimeoutException ? "TIMEOUT"
+					: e.getClass().getSimpleName();
+			net.osmand.plus.cairodrive.providers.ApiHealth.recordFailure(
+					net.osmand.plus.cairodrive.providers.ApiHealth.Api.GOOGLE_PLACES, 0, kind, ms);
 			LOG.error(TRACE_TAG + " request failed", e);
+			trace("NO RESPONSE " + kind + " ms=" + ms
+					+ " connectTimeoutMs=" + CONNECT_TIMEOUT_MS
+					+ " readTimeoutMs=" + READ_TIMEOUT_MS);
 			return null;
 		}
 		// Deliberately no disconnect(). It tears the socket out of the keep-alive pool, so

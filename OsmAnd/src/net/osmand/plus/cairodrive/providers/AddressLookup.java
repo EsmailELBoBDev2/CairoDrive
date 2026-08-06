@@ -77,13 +77,25 @@ public final class AddressLookup {
 		if (!Algorithms.isEmpty(primary)) {
 			return primary;
 		}
+		// The MISS, stated with its reason. The line below already said the fallback answered; it
+		// did not say WHY the primary did not, and that is the only actionable half - "no key in
+		// this build", "daily budget spent" and "HTTP 401" are three different jobs and were
+		// indistinguishable from here. ApiHealth already holds the answer in words; this reads it
+		// back rather than duplicating the reasoning.
+		String primaryReason = ApiHealth.explain(ApiHealth.get(ApiHealth.Api.GEOAPIFY));
 		String fallback = LocationIqProvider.reverseGeocode(app, at);
 		if (!Algorithms.isEmpty(fallback)) {
-			// Worth a line: a drive log where every address came from the fallback means the
-			// primary is broken, and that is invisible from the result alone.
-			CairoDriveLog.log(TRACE_TAG, "address from FALLBACK (LocationIQ) - Geoapify gave nothing");
+			CairoDriveLog.log(TRACE_TAG, "reverse MISS tried=Geoapify why=\"" + primaryReason
+					+ "\" fellThroughTo=LocationIQ result=answered");
 			return fallback;
 		}
+		// Both gone. Worth its own line because the caller cannot distinguish this from "this
+		// point genuinely has no address", and the two lead to opposite conclusions about whether
+		// a custom Egypt .obf would have helped.
+		CairoDriveLog.log(TRACE_TAG, "reverse MISS tried=Geoapify why=\"" + primaryReason
+				+ "\" fellThroughTo=LocationIQ why=\""
+				+ ApiHealth.explain(ApiHealth.get(ApiHealth.Api.LOCATIONIQ))
+				+ "\" result=none (offline .obf answers from here)");
 		return null;
 	}
 
@@ -111,6 +123,8 @@ public final class AddressLookup {
 			return GeoapifyProvider.autocomplete(app, query);
 		}
 		if (LocationIqProvider.hasKey()) {
+			// Not the normal path - the primary has no key compiled in at all. Said once per
+			// keystroke would be a flood, so it rides the debounce line the provider writes.
 			return LocationIqProvider.autocomplete(app, query);
 		}
 		return new ArrayList<>();

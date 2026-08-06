@@ -748,6 +748,7 @@ public class GoogleTrafficHelper {
 	private static String postRoutes(@NonNull OsmandApplication app, @NonNull String body,
 	                                 boolean spansPoll) {
 		HttpURLConnection connection = null;
+		long started = android.os.SystemClock.elapsedRealtime();
 		try {
 			connection = NetworkUtils.getHttpURLConnection(ROUTES_API);
 			connection.setRequestMethod("POST");
@@ -774,27 +775,34 @@ public class GoogleTrafficHelper {
 				out.write(payload);
 			}
 			int code = connection.getResponseCode();
+			long ms = android.os.SystemClock.elapsedRealtime() - started;
 			if (code != HttpURLConnection.HTTP_OK) {
 				// Named for what it is, and NOT `body` - that is this method's request-body
 				// parameter, and shadowing it here is what failed the build.
 				String error = read(connection.getErrorStream());
 				net.osmand.plus.cairodrive.providers.ApiHealth.recordFailure(
-						net.osmand.plus.cairodrive.providers.ApiHealth.Api.GOOGLE_ROUTES, code, error);
+						net.osmand.plus.cairodrive.providers.ApiHealth.Api.GOOGLE_ROUTES, code,
+						error, ms);
 				LOG.info(TRACE_TAG + " HTTP " + code + " " + error);
+				CairoDriveLogger.getInstance().log(TRACE_TAG, "http=" + code + " ms=" + ms);
 				return null;
 			}
 			net.osmand.plus.cairodrive.providers.ApiHealth.recordOk(
-					net.osmand.plus.cairodrive.providers.ApiHealth.Api.GOOGLE_ROUTES);
+					net.osmand.plus.cairodrive.providers.ApiHealth.Api.GOOGLE_ROUTES, ms);
+			CairoDriveLogger.getInstance().log(TRACE_TAG, "http=200 ms=" + ms);
 			return read(connection.getInputStream());
 		} catch (Throwable t) {
+			long ms = android.os.SystemClock.elapsedRealtime() - started;
 			LOG.info(TRACE_TAG + " request failed", t);
 			// Code 0 is this stack's convention for "never got a response at all", which is what
 			// the status screen turns into "No response. No internet, DNS blocked, or the request
 			// timed out." Without it a transport failure left the row reading whatever the last
 			// attempt said, which is the wrong answer stated confidently.
+			String kind = t instanceof java.net.SocketTimeoutException ? "TIMEOUT"
+					: t.getClass().getSimpleName();
 			net.osmand.plus.cairodrive.providers.ApiHealth.recordFailure(
-					net.osmand.plus.cairodrive.providers.ApiHealth.Api.GOOGLE_ROUTES, 0,
-					t.getClass().getSimpleName());
+					net.osmand.plus.cairodrive.providers.ApiHealth.Api.GOOGLE_ROUTES, 0, kind, ms);
+			CairoDriveLogger.getInstance().log(TRACE_TAG, "NO RESPONSE " + kind + " ms=" + ms);
 		} finally {
 			if (connection != null) {
 				connection.disconnect();

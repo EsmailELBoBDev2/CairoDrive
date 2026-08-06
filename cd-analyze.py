@@ -275,6 +275,124 @@ def matching(rows):
         print("        degraded-fix correction is not engaging - check degraded= above.")
 
 
+def device(rows):
+    """Phone state, and the GPS quality that every other number here depends on.
+
+    Added because the log had no answer to "was the phone throttled, out of signal, or in
+    power save" - and each of those explains a slow frame, a stale fix or a dead provider
+    while looking exactly like an app fault. A CD_DEVICE line is written on TRANSITIONS only,
+    so a quiet section here means the phone was steady, not that nothing was recorded.
+    """
+    section("CD_DEVICE / CD_GPS - the phone, and the fix quality")
+
+    dev = rows.get("CD_DEVICE", [])
+    if not dev:
+        print("  no CD_DEVICE lines. This build predates device logging.")
+    else:
+        # Print them all. They are transitions, so the count IS the information: a drive with
+        # forty thermal and transport changes is a different drive from one with two.
+        print("  %d state changes:" % len(dev))
+        for line in dev[:40]:
+            print("    " + line[:150])
+        if len(dev) > 40:
+            print("    ... %d more" % (len(dev) - 40))
+        for needle, why in (("powerSave=true", "POWER SAVE was on - Android throttles GPS and CPU. "
+                                               "A slow frame or a stale fix here is the phone, not the app."),
+                            ("deviceIdle=true", "DOZE was on - background work and network are deferred."),
+                            ("thermal=SEVERE", "SEVERE thermal throttling - the CPU was clamped."),
+                            ("thermal=CRITICAL", "CRITICAL thermal throttling."),
+                            ("mock", "A MOCK location provider was seen. Nothing in this log is a real drive.")):
+            if any(needle in l for l in dev):
+                print("\n  !! " + why)
+
+    gps = rows.get("CD_GPS", [])
+    print("")
+    if not gps:
+        print("  no CD_GPS lines.")
+    else:
+        # Matched on the LINE PREFIX the logger writes, not on a substring anywhere in the
+        # line. "provider" appears inside the ttff line too ("ttff ms=… provider=gps"), and a
+        # substring test counted every first fix as a provider switch.
+        gaps = [l for l in gps if l.startswith("gap")]
+        ttff = [l for l in gps if l.startswith("ttff")]
+        switches = [l for l in gps if l.startswith("providerSwitch")]
+        mock = [l for l in gps if l.startswith("MOCK")]
+        if mock:
+            print("  !! MOCK LOCATION seen - nothing in this log is a real drive:")
+            print("     " + mock[0][:150])
+        summaries = [kv(l) for l in gps if "fixes=" in l]
+        for label, ls in (("TTFF", ttff), ("provider switches", switches)):
+            print("  %s: %d" % (label, len(ls)))
+            for line in ls[:5]:
+                print("    " + line[:150])
+        # Gaps are the point of this section in Cairo: flyovers and tunnels drop the fix, and
+        # a reroute decided on a stale position is indistinguishable from a routing bug
+        # unless the gap is on the record next to it.
+        print("  fix GAPS: %d" % len(gaps))
+        for line in gaps[:15]:
+            print("    " + line[:150])
+        if len(gaps) > 15:
+            print("    ... %d more" % (len(gaps) - 15))
+        if summaries:
+            acc = [num(d, "avgAcc") for d in summaries if "avgAcc" in d]
+            acc = [a for a in acc if a is not None]
+            if acc:
+                print("  avg accuracy across %d windows: %.1f m (worst window %.1f m)"
+                      % (len(acc), sum(acc) / len(acc), max(acc)))
+
+
+def providers(rows):
+    """Whether each external API actually worked, and what it cost.
+
+    CD_APISTATUS is the one line that answers "why am I not seeing anything" without
+    guessing, so it is printed whole rather than summarised - the reason text is the payload.
+    """
+    section("CD_APISTATUS - what every provider did, and why not")
+    status = rows.get("CD_APISTATUS", [])
+    if not status:
+        print("  no CD_APISTATUS lines. Either this build predates it, or the logger never ran")
+        print("  its 3-minute writer - which itself means the session was under 3 minutes.")
+    else:
+        # The LAST one is the end-of-drive picture; earlier ones only matter when they differ.
+        print("  %d status snapshots. The last one:" % len(status))
+        for part in status[-1].split(" | "):
+            print("    " + part[:150])
+        # Anything that was ever NOT working, even if it recovered, is worth naming.
+        bad = set()
+        for line in status:
+            for part in line.split(" | "):
+                if ":" in part and not (" Working" in part or "Not used yet" in part):
+                    bad.add(part.split(":")[0].strip())
+        if bad:
+            print("\n  Not working at some point during the drive: " + ", ".join(sorted(bad)))
+
+    for tag, hint in (("CD_GEOCODE", "address lookups - Geoapify, LocationIQ, and the misses"),
+                      ("CD_SEARCH2", "Geoapify search - including when it stood aside"),
+                      ("CD_ROUTEWX", "Azure weather along the route"),
+                      ("CD_WEATHER2", "Tomorrow.io visibility second opinion"),
+                      ("CD_WEATHER", "OpenWeather dust and air quality"),
+                      ("CD_TRAFFIC", "TomTom flow and incidents"),
+                      ("CD_CLOSURE", "live road closures applied as nogo - the riskiest feature here")):
+        lines = rows.get(tag, [])
+        print("\n  %s  (%s)" % (tag, hint))
+        if not lines:
+            print("    none")
+            continue
+        print("    %d lines, first and last:" % len(lines))
+        print("    " + lines[0][:150])
+        if len(lines) > 1:
+            print("    " + lines[-1][:150])
+
+    # The doubled-prefix bug, made impossible to miss. It shipped once, silently, and cost a
+    # whole drive's worth of provider data: every line landed under CD_CD_GEOCODE and a grep
+    # for the documented tag returned nothing at all.
+    doubled = sorted(t for t in rows if t.startswith("CD_CD_"))
+    if doubled:
+        print("\n  !! DOUBLED TAGS: " + ", ".join(doubled))
+        print("     Something passed a CD_-prefixed tag to CairoDriveLog.log, which prefixes")
+        print("     again. Those lines are in the file under a tag nobody greps for.")
+
+
 def misc(rows):
     section("EVERYTHING ELSE")
     for tag, hint in (("CD_TRIP", "head unit accepted the manoeuvre card during reroute?"),
@@ -313,6 +431,8 @@ def main():
     reroute(rows)
     matching(rows)
     eta(rows)
+    device(rows)
+    providers(rows)
     misc(rows)
     print("\n" + BAR)
 

@@ -1,5 +1,7 @@
 package net.osmand.plus.cairodrive.providers;
 
+import android.os.SystemClock;
+
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
@@ -17,6 +19,7 @@ import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
+import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.util.Calendar;
@@ -429,6 +432,7 @@ public final class BestTimeProvider {
 	@Nullable
 	private static String post(@NonNull String url) throws Exception {
 		HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+		long started = SystemClock.elapsedRealtime();
 		try {
 			conn.setRequestMethod("POST");
 			conn.setConnectTimeout(TIMEOUT_MS);
@@ -437,10 +441,12 @@ public final class BestTimeProvider {
 			conn.setFixedLengthStreamingMode(0);
 			conn.connect();
 			int code = conn.getResponseCode();
+			long ms = SystemClock.elapsedRealtime() - started;
 			if (code != HttpURLConnection.HTTP_OK) {
-				ApiHealth.recordFailure(ApiHealth.Api.BESTTIME, code, null);
+				ApiHealth.recordFailure(ApiHealth.Api.BESTTIME, code, null, ms);
+				log("HTTP " + code + " ms=" + ms);
 			} else {
-				ApiHealth.recordOk(ApiHealth.Api.BESTTIME);
+				ApiHealth.recordOk(ApiHealth.Api.BESTTIME, ms);
 			}
 			InputStream in = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
 			if (in == null) {
@@ -453,6 +459,17 @@ public final class BestTimeProvider {
 				out.write(buffer, 0, read);
 			}
 			return code >= 400 ? null : out.toString("UTF-8");
+		} catch (Exception e) {
+			// Rethrown, not swallowed - the caller's contract is unchanged. What is new is that
+			// the attempt is now RECORDED: this method declares `throws Exception`, so a socket
+			// that died mid-request left through the caller with no ApiHealth entry and no line,
+			// and the status screen went on reporting the previous success.
+			long ms = SystemClock.elapsedRealtime() - started;
+			String kind = e instanceof SocketTimeoutException ? "TIMEOUT"
+					: e.getClass().getSimpleName();
+			ApiHealth.recordFailure(ApiHealth.Api.BESTTIME, 0, kind, ms);
+			log("NO RESPONSE " + kind + " ms=" + ms + " timeoutMs=" + TIMEOUT_MS);
+			throw e;
 		} finally {
 			conn.disconnect();
 		}

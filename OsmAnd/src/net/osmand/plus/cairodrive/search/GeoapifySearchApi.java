@@ -126,17 +126,17 @@ public class GeoapifySearchApi extends SearchBaseAPI {
 	@Override
 	public int getSearchPriority(SearchPhrase phrase) {
 		if (!isActive()) {
-			return -1;
+			return standAside(isConfigured() ? "no internet" : "no Geoapify key in this build");
 		}
 		// Already answered by Google. Reported as "do not run" rather than checked inside search(),
 		// because SearchUICore re-evaluates priority per provider at its turn in the run loop -
 		// the same mechanism SearchProviderGate documents at length.
 		if (gate.isSatisfied(phrase)) {
-			return -1;
+			return standAside("Google already satisfied this phrase");
 		}
 		if (phrase.getLastSelectedWord() == null
 				&& queryOf(phrase).length() < MIN_QUERY_LENGTH) {
-			return -1;
+			return standAside("query shorter than " + MIN_QUERY_LENGTH + " chars");
 		}
 		// A tapped CATEGORY with no known location cannot be answered. Places needs a centre, and
 		// without this guard search() fell through to the autocomplete branch and sent the
@@ -145,9 +145,34 @@ public class GeoapifySearchApi extends SearchBaseAPI {
 		// what the comment in search() says must not happen.
 		if (phrase.getLastSelectedWord() != null
 				&& phrase.getSettings().getOriginalLocation() == null) {
-			return -1;
+			return standAside("category tapped but no known location - Places needs a centre");
 		}
+		lastStandAsideReason = null;
 		return SEARCH_PRIORITY;
+	}
+
+	/**
+	 * The last reason this provider declined, so the same one is not written twice in a row.
+	 *
+	 * <p>Rate limiting by CHANGE rather than by clock, because that is the shape of the noise:
+	 * {@code getSearchPriority} is re-evaluated per provider per keystroke, so "query shorter than
+	 * 3 chars" would otherwise appear once per letter of every search, while the transition from
+	 * that to "no internet" - the one worth reading - would be buried in it.
+	 *
+	 * <p>Not volatile and not synchronised: SearchUICore runs its providers on one shared thread,
+	 * and the worst a race could do is print a duplicate line.
+	 */
+	private String lastStandAsideReason;
+
+	private int standAside(@NonNull String reason) {
+		// Silence here was the actual defect. A provider that returns -1 does not run, does not
+		// log, and is indistinguishable from one that ran and found nothing - so "Geoapify never
+		// answers" had five possible causes and no way to tell them apart from a drive log.
+		if (!reason.equals(lastStandAsideReason)) {
+			lastStandAsideReason = reason;
+			CairoDriveLog.log(TRACE_TAG, "stood aside: " + reason);
+		}
+		return -1;
 	}
 
 	@Override
@@ -159,6 +184,10 @@ public class GeoapifySearchApi extends SearchBaseAPI {
 	@Override
 	public boolean search(SearchPhrase phrase, SearchResultMatcher matcher) throws IOException {
 		if (!isActive() || gate.isSatisfied(phrase)) {
+			// Reachable despite getSearchPriority having said the same thing: the gate can close
+			// between the priority call and this one, which is the whole reason it is re-checked.
+			standAside(isActive() ? "Google satisfied the phrase after priority was granted"
+					: "went inactive after priority was granted");
 			return true;
 		}
 		LatLon origin = phrase.getSettings().getOriginalLocation();
@@ -173,6 +202,7 @@ public class GeoapifySearchApi extends SearchBaseAPI {
 			if (categories == null) {
 				// An unmapped category is not an error and must not become a text search for the
 				// category's NAME - that would answer "Fuel" with places called Fuel.
+				standAside("category is not in the Geoapify mapping - offline index answers it");
 				return true;
 			}
 			found = GeoapifyProvider.nearby(app, origin, categories, NEARBY_RADIUS_M);

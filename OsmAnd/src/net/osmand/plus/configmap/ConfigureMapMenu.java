@@ -294,13 +294,20 @@ public class ConfigureMapMenu {
 					// Also into the drive log, so the same picture survives the dialog closing and
 					// can be read afterwards against the drive it belonged to.
 					// Straight to the logger, NOT through CairoDriveLog: that helper prefixes "CD_"
-					// (so this read CD_APISTATUS while the periodic writer used APISTATUS - two
-					// tags for one record, and a grep finds half the data) and truncates at 400
-					// characters, which cuts roughly the last four providers off an eleven-row
-					// summary. The rows that get cut are the ones added most recently, i.e. the
-					// ones most likely to be what someone is looking for.
-					net.osmand.plus.cairodrive.CairoDriveLogger.getInstance().log("APISTATUS",
-							net.osmand.plus.cairodrive.providers.ApiHealth.summary()
+					// and truncates at 400 characters, which cuts roughly the last four providers
+					// off an eleven-row summary - and the rows it cuts are the ones added most
+					// recently, i.e. the ones most likely to be what someone is looking for.
+					//
+					// The tag is spelled in full and must MATCH CairoDriveLogger.API_STATUS_TAG.
+					// These two writers have now drifted apart twice: once as APISTATUS here
+					// against CD_APISTATUS there, and once the other way round when the periodic
+					// writer was renamed. Both times the result is two tags for one record, so a
+					// grep for either finds half the data. There is no third spelling to try.
+					//
+					// summaryForLog(), not summary(): the log is where latency and budget are
+					// actually useful, and the dialog stays readable without them.
+					net.osmand.plus.cairodrive.CairoDriveLogger.getInstance().log("CD_APISTATUS",
+							net.osmand.plus.cairodrive.providers.ApiHealth.summaryForLog()
 									.replace("\n", " | "));
 					return false;
 				}));

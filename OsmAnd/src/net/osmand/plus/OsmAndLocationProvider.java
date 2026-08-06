@@ -190,6 +190,13 @@ public class OsmAndLocationProvider implements SensorEventListener {
 		if (isLocationPermissionAvailable(app)) {
 			LocationManager locationService = (LocationManager) app.getSystemService(LOCATION_SERVICE);
 			registerGpsStatusListener(locationService);
+			// The zero of time-to-first-fix. It has to be marked HERE rather than at logger start,
+			// because the app is created long before it is allowed to ask for a position - a TTFF
+			// measured from Application.onCreate would be mostly the permission dialog.
+			try {
+				net.osmand.plus.cairodrive.CairoDriveLogger.getInstance().noteLocationRequested();
+			} catch (Throwable ignored) {
+			}
 			try {
 				locationServiceHelper.requestLocationUpdates(new LocationCallback() {
 					@Override
@@ -650,6 +657,17 @@ public class OsmAndLocationProvider implements SensorEventListener {
 	public static net.osmand.Location convertLocation(Location l, OsmandApplication app) {
 		if (l == null) {
 			return null;
+		}
+		// The only place the mock flag is reachable: net.osmand.Location does not carry it, so by
+		// the time a fix reaches any listener - or the drive log - a synthetic position is
+		// indistinguishable from a real one in every field. A boolean read per fix, and the
+		// logger states it once per process.
+		try {
+			if (l.isFromMockProvider()) {
+				net.osmand.plus.cairodrive.CairoDriveLogger.getInstance()
+						.noteMockLocation(l.getProvider());
+			}
+		} catch (Throwable ignored) {
 		}
 		net.osmand.Location r = new net.osmand.Location(l.getProvider());
 		r.setLatitude(l.getLatitude());

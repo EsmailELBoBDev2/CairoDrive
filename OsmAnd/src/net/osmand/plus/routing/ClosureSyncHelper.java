@@ -1,5 +1,7 @@
 package net.osmand.plus.routing;
 
+import android.os.SystemClock;
+
 import net.osmand.Location;
 import net.osmand.PlatformUtil;
 import net.osmand.ResultMatcher;
@@ -224,7 +226,14 @@ public class ClosureSyncHelper {
 			// Type only, never getMessage(): the key rides in this URL as a query parameter and
 			// MalformedURLException / FileNotFoundException both carry the full URL as their message.
 			log.info("TomTom closures skipped: " + t.getClass().getSimpleName());
-			ApiHealth.recordFailure(ApiHealth.Api.TOMTOM_INCIDENTS, 0, t.getClass().getSimpleName());
+			// Also into the drive log. This branch is where a timeout lands, and a timeout that
+			// only reaches logcat is a timeout that is missing from the file anyone reads after
+			// the drive - which made a dead socket and a provider that was never called identical.
+			String kind = t instanceof java.net.SocketTimeoutException ? "TIMEOUT"
+					: t.getClass().getSimpleName();
+			CairoDriveLog.log("CLOSURE", "TomTom NO RESPONSE " + kind
+					+ " connectTimeoutMs=" + CONNECT_TIMEOUT + " readTimeoutMs=" + READ_TIMEOUT);
+			ApiHealth.recordFailure(ApiHealth.Api.TOMTOM_INCIDENTS, 0, kind);
 		}
 	}
 
@@ -268,7 +277,14 @@ public class ClosureSyncHelper {
 		} catch (Throwable t) {
 			// Type only - same key-in-URL reason as fetchTomTom.
 			log.info("HERE closures skipped: " + t.getClass().getSimpleName());
-			ApiHealth.recordFailure(ApiHealth.Api.HERE, 0, t.getClass().getSimpleName());
+			// Also into the drive log. This branch is where a timeout lands, and a timeout that
+			// only reaches logcat is a timeout that is missing from the file anyone reads after
+			// the drive - which made a dead socket and a provider that was never called identical.
+			String kind = t instanceof java.net.SocketTimeoutException ? "TIMEOUT"
+					: t.getClass().getSimpleName();
+			CairoDriveLog.log("CLOSURE", "HERE NO RESPONSE " + kind
+					+ " connectTimeoutMs=" + CONNECT_TIMEOUT + " readTimeoutMs=" + READ_TIMEOUT);
+			ApiHealth.recordFailure(ApiHealth.Api.HERE, 0, kind);
 		}
 	}
 
@@ -508,6 +524,7 @@ public class ClosureSyncHelper {
 
 	private static String get(String url, ApiHealth.Api api) throws Exception {
 		HttpURLConnection c = NetworkUtils.getHttpURLConnection(url);
+		long started = SystemClock.elapsedRealtime();
 		try {
 			c.setConnectTimeout(CONNECT_TIMEOUT);
 			c.setReadTimeout(READ_TIMEOUT);
@@ -517,13 +534,15 @@ public class ClosureSyncHelper {
 				// Return BEFORE touching any stream: the provider keys ride in this URL as query
 				// parameters, and reading the error stream surfaces the full URL in the exception
 				// message. Log the code only, never the URL or the body.
-				log.info("Closure provider HTTP " + code);
+				long ms = SystemClock.elapsedRealtime() - started;
+				log.info("Closure provider HTTP " + code + " ms=" + ms);
+				CairoDriveLog.log("CLOSURE", api.name() + " HTTP " + code + " ms=" + ms);
 				// Code only, no body, for the same reason - which is why the status screen shows
 				// the generic 403 wording for these two rather than a provider's own message.
-				ApiHealth.recordFailure(api, code, null);
+				ApiHealth.recordFailure(api, code, null, ms);
 				return null;
 			}
-			ApiHealth.recordOk(api);
+			ApiHealth.recordOk(api, SystemClock.elapsedRealtime() - started);
 			StringBuilder sb = new StringBuilder();
 			try (BufferedReader r = new BufferedReader(
 					new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8))) {

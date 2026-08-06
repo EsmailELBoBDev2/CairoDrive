@@ -2,6 +2,8 @@ package net.osmand.plus.cairodrive.providers;
 
 import android.os.Process;
 
+import android.os.SystemClock;
+
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
@@ -23,6 +25,7 @@ import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
+import java.net.SocketTimeoutException;
 import java.util.EnumSet;
 import java.util.Locale;
 
@@ -580,6 +583,7 @@ public final class OpenWeatherHazardProvider implements CairoDriveProviders.Prov
 	private static String request(@NonNull OsmandApplication app, @NonNull String url,
 	                              @NonNull String label) {
 		HttpURLConnection connection = null;
+		long started = SystemClock.elapsedRealtime();
 		try {
 			connection = NetworkUtils.getHttpURLConnection(url);
 			connection.setRequestMethod("GET");
@@ -595,14 +599,28 @@ public final class OpenWeatherHazardProvider implements CairoDriveProviders.Prov
 				// hours to enable a new one - and 429 means the free allowance is gone. Both are
 				// worth seeing in a drive log, which is why the status is logged even though the
 				// body is not.
-				ApiHealth.recordFailure(ApiHealth.Api.OPENWEATHER, code, null);
-				LOG.info(TRACE_TAG + " " + label + " HTTP " + code);
+				long ms = SystemClock.elapsedRealtime() - started;
+				ApiHealth.recordFailure(ApiHealth.Api.OPENWEATHER, code, null, ms);
+				CairoDriveLogger.getInstance().log(TRACE_TAG, label + " HTTP " + code + " ms=" + ms);
 				return null;
 			}
-			ApiHealth.recordOk(ApiHealth.Api.OPENWEATHER);
-			return read(connection.getInputStream());
+			String body = read(connection.getInputStream());
+			long ms = SystemClock.elapsedRealtime() - started;
+			ApiHealth.recordOk(ApiHealth.Api.OPENWEATHER, ms);
+			CairoDriveLogger.getInstance().log(TRACE_TAG, label + " HTTP 200 ms=" + ms
+					+ " bytes=" + (body == null ? 0 : body.length()));
+			return body;
 		} catch (Throwable t) {
-			LOG.info(TRACE_TAG + " " + label + " request failed", t);
+			// This branch reached the drive log through LOG.info only, which the logcat pump does
+			// capture - but with no elapsed time and no ApiHealth record, so the status screen
+			// went on reporting the last success while every poll was timing out.
+			long ms = SystemClock.elapsedRealtime() - started;
+			String kind = t instanceof SocketTimeoutException ? "TIMEOUT"
+					: t.getClass().getSimpleName();
+			ApiHealth.recordFailure(ApiHealth.Api.OPENWEATHER, 0, kind, ms);
+			CairoDriveLogger.getInstance().log(TRACE_TAG, label + " NO RESPONSE " + kind + " ms=" + ms
+					+ " connectTimeoutMs=" + CONNECT_TIMEOUT_MS
+					+ " readTimeoutMs=" + READ_TIMEOUT_MS);
 			return null;
 		} finally {
 			if (connection != null) {

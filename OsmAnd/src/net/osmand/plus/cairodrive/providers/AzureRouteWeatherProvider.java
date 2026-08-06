@@ -1,5 +1,7 @@
 package net.osmand.plus.cairodrive.providers;
 
+import android.os.SystemClock;
+
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
@@ -18,6 +20,7 @@ import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Locale;
@@ -510,6 +513,7 @@ public final class AzureRouteWeatherProvider {
 	@Nullable
 	private static String get(@NonNull String url) {
 		HttpURLConnection c = null;
+		long started = SystemClock.elapsedRealtime();
 		try {
 			c = NetworkUtils.getHttpURLConnection(url);
 			c.setConnectTimeout(CONNECT_TIMEOUT_MS);
@@ -517,8 +521,9 @@ public final class AzureRouteWeatherProvider {
 			c.setRequestProperty("Accept", "application/json");
 			int code = c.getResponseCode();
 			if (code != HttpURLConnection.HTTP_OK) {
-				ApiHealth.recordFailure(ApiHealth.Api.AZURE_MAPS, code, null);
-				CairoDriveLog.log(TRACE_TAG, "azure HTTP " + code);
+				long ms = SystemClock.elapsedRealtime() - started;
+				ApiHealth.recordFailure(ApiHealth.Api.AZURE_MAPS, code, null, ms);
+				CairoDriveLog.log(TRACE_TAG, "azure HTTP " + code + " ms=" + ms);
 				return null;
 			}
 			StringBuilder sb = new StringBuilder();
@@ -529,10 +534,22 @@ public final class AzureRouteWeatherProvider {
 					sb.append(line);
 				}
 			}
-			ApiHealth.recordOk(ApiHealth.Api.AZURE_MAPS);
+			long ms = SystemClock.elapsedRealtime() - started;
+			ApiHealth.recordOk(ApiHealth.Api.AZURE_MAPS, ms);
+			CairoDriveLog.log(TRACE_TAG, "azure HTTP 200 ms=" + ms + " bytes=" + sb.length());
 			return sb.toString();
 		} catch (Throwable t) {
-			ApiHealth.recordFailure(ApiHealth.Api.AZURE_MAPS, 0, t.getClass().getSimpleName());
+			// A request that never got a response wrote nothing at all before this: the failure
+			// went into ApiHealth and the method returned null, so a poll lost in a tunnel and a
+			// poll that was never made produced the same log. The elapsed time is what tells a
+			// refused connection from a read that ran the full timeout.
+			long ms = SystemClock.elapsedRealtime() - started;
+			String kind = t instanceof SocketTimeoutException ? "TIMEOUT"
+					: t.getClass().getSimpleName();
+			ApiHealth.recordFailure(ApiHealth.Api.AZURE_MAPS, 0, kind, ms);
+			CairoDriveLog.log(TRACE_TAG, "azure NO RESPONSE " + kind + " ms=" + ms
+					+ " connectTimeoutMs=" + CONNECT_TIMEOUT_MS
+					+ " readTimeoutMs=" + READ_TIMEOUT_MS);
 			return null;
 		} finally {
 			if (c != null) {

@@ -835,7 +835,7 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 			// Note what is NOT logged: the URL. It carries the key in a query parameter, and the
 			// redaction in CairoDriveLogger only filters the logcat pump, not direct log() calls.
 			// Code only, never the body - the key rides in this URL. See the note on the flow path.
-			ApiHealth.recordFailure(ApiHealth.Api.TOMTOM_INCIDENTS, response.code, null);
+			ApiHealth.recordFailure(ApiHealth.Api.TOMTOM_INCIDENTS, response.code, null, elapsed);
 			CairoDriveLogger.getInstance().log(TRACE_TAG, "incidents http=" + response.code
 					+ " mode=" + (following ? "nav" : "free")
 					+ " ms=" + elapsed + " bbox=" + bbox + " lang=" + language
@@ -890,7 +890,9 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 			return;
 		}
 
-		ApiHealth.recordOk(ApiHealth.Api.TOMTOM_INCIDENTS);
+		ApiHealth.recordOk(ApiHealth.Api.TOMTOM_INCIDENTS, elapsed);
+		ApiHealth.recordBudget(ApiHealth.Api.TOMTOM_INCIDENTS,
+				used(app, PREF_INCIDENT_COUNT), INCIDENT_DAILY_CAP);
 		CairoDriveProviders.publishIncidents(generation, incidents);
 		CairoDriveLogger.getInstance().log(TRACE_TAG, "incidents http=200 ms=" + elapsed
 				// The MODE, because the two are otherwise only distinguishable by reverse-engineering
@@ -1063,7 +1065,8 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 			// error body goes into ApiHealth.lastDetail -> the APISTATUS line -> the drive log that
 			// gets pulled off the phone and pasted into a chat. ClosureSyncHelper already refuses
 			// to do this for the same vendor; this was the one place that still did.
-			ApiHealth.recordFailure(ApiHealth.Api.TOMTOM_FLOW, response.code, null);
+			ApiHealth.recordFailure(ApiHealth.Api.TOMTOM_FLOW, response.code, null,
+					System.currentTimeMillis() - started);
 				failures++;
 				handleHttpFailure(response.code, null);
 				continue;
@@ -1095,7 +1098,12 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 		// while fresher data was in hand.
 		if (!samples.isEmpty()) {
 			CairoDriveProviders.publishFlow(generation, samples);
+			// A sweep is several requests, so the recorded latency is the whole sweep divided by
+			// the points that answered - which is what a per-request figure means here.
+			ApiHealth.recordOk(ApiHealth.Api.TOMTOM_FLOW, elapsed / Math.max(1, samples.size()));
 		}
+		ApiHealth.recordBudget(ApiHealth.Api.TOMTOM_FLOW,
+				used(app, PREF_FLOW_COUNT), FLOW_DAILY_CAP);
 		CairoDriveLogger.getInstance().log(TRACE_TAG, "flow http="
 				+ (failures == 0 ? 200 : lastCode) + " ms=" + elapsed
 				+ " pts=" + samples.size() + "/" + points.size() + " failed=" + failures

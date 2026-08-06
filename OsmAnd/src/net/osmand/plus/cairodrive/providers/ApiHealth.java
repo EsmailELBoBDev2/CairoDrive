@@ -91,6 +91,27 @@ public final class ApiHealth {
 		public volatile int okCount;
 		public volatile int failCount;
 
+		/**
+		 * Round trip of the last attempt in milliseconds, or -1 when nothing has been timed.
+		 *
+		 * <p>"Working" is not an answer to the only question asked of this line in a drive log,
+		 * which is whether a provider is about to become a problem. A geocoder answering in 2800
+		 * ms on a flyover and one answering in 180 ms are both "Working", and only one of them is
+		 * about to time out.
+		 */
+		public volatile long lastLatencyMs = -1;
+
+		/**
+		 * Requests spent today against the daily cap, or -1 for a provider that does not meter.
+		 *
+		 * <p>Recorded by the provider at the moment it claims a request, because the counters are
+		 * persisted per UTC day inside each provider and there is nowhere else they can be read
+		 * from. Without them the line says "Working" right up to the request that is refused, and
+		 * "am I about to run out" is unanswerable from the log.
+		 */
+		public volatile int budgetUsed = -1;
+		public volatile int budgetCap = -1;
+
 		Status(Api api) {
 			this.api = api;
 		}
@@ -135,6 +156,11 @@ public final class ApiHealth {
 	}
 
 	public static void recordOk(@NonNull Api api) {
+		recordOk(api, -1);
+	}
+
+	/** @param latencyMs round trip of the call, or -1 when the caller did not time it */
+	public static void recordOk(@NonNull Api api, long latencyMs) {
 		Status s = get(api);
 		long now = System.currentTimeMillis();
 		s.lastAttemptMs = now;
@@ -143,6 +169,7 @@ public final class ApiHealth {
 		s.lastDetail = null;
 		s.lastSkip = null;
 		s.lastSkipMs = 0;
+		s.lastLatencyMs = latencyMs;
 		s.okCount++;
 	}
 
@@ -151,10 +178,21 @@ public final class ApiHealth {
 	 * @param body the response body; truncated, and only ever read for its reason text
 	 */
 	public static void recordFailure(@NonNull Api api, int code, @Nullable String body) {
+		recordFailure(api, code, body, -1);
+	}
+
+	/**
+	 * @param latencyMs how long the failure took. Worth as much as the success case and often
+	 *                  more: a refusal at 40 ms is the server rejecting the key, and the same
+	 *                  code at 12000 ms is a read timeout that only looked like a refusal.
+	 */
+	public static void recordFailure(@NonNull Api api, int code, @Nullable String body,
+	                                 long latencyMs) {
 		Status s = get(api);
 		s.lastAttemptMs = System.currentTimeMillis();
 		s.lastCode = code;
 		s.lastSkip = null;
+		s.lastLatencyMs = latencyMs;
 		s.failCount++;
 		if (body != null && !body.isEmpty()) {
 			String trimmed = body.trim().replaceAll("\\s+", " ");
@@ -163,6 +201,21 @@ public final class ApiHealth {
 		} else {
 			s.lastDetail = null;
 		}
+	}
+
+	/**
+	 * How much of today's budget this provider has spent.
+	 *
+	 * <p>Separate from {@link #recordOk} because the two do not coincide: the counter is claimed
+	 * BEFORE the request, and a provider that is refused by its own cap makes no call at all -
+	 * which is precisely the moment the number is worth having.
+	 *
+	 * @param cap the daily cap the count is measured against, or 0 for an unmetered provider
+	 */
+	public static void recordBudget(@NonNull Api api, int used, int cap) {
+		Status s = get(api);
+		s.budgetUsed = used;
+		s.budgetCap = cap;
 	}
 
 	/** No call was made, and this is why. The most common real answer on a working install. */
@@ -228,9 +281,29 @@ public final class ApiHealth {
 	/** {@code label: Working (12 ok)} or {@code label: Refused ... (0 ok, 3 failed)}. */
 	@NonNull
 	public static String describe(@NonNull Status s) {
+		return describe(s, false);
+	}
+
+	/**
+	 * @param withMetrics append latency and budget. On for the drive log, off for the dialog: a
+	 *                    driver reading the status screen wants a sentence, and the numbers are
+	 *                    for the log, where the question is asked afterwards and in detail.
+	 */
+	@NonNull
+	public static String describe(@NonNull Status s, boolean withMetrics) {
 		String counts = s.okCount == 0 && s.failCount == 0 ? ""
 				: String.format(Locale.US, "  (%d ok, %d failed)", s.okCount, s.failCount);
-		return s.api.label + ": " + explain(s) + counts;
+		StringBuilder sb = new StringBuilder(s.api.label).append(": ").append(explain(s))
+				.append(counts);
+		if (withMetrics) {
+			if (s.lastLatencyMs >= 0) {
+				sb.append(" lastMs=").append(s.lastLatencyMs);
+			}
+			if (s.budgetCap > 0) {
+				sb.append(" used=").append(s.budgetUsed).append('/').append(s.budgetCap);
+			}
+		}
+		return sb.toString();
 	}
 
 	/**
@@ -242,12 +315,23 @@ public final class ApiHealth {
 	 */
 	@NonNull
 	public static String summary() {
+		return summary(false);
+	}
+
+	/** The same picture with latency and budget on every provider, for {@code CD_APISTATUS}. */
+	@NonNull
+	public static String summaryForLog() {
+		return summary(true);
+	}
+
+	@NonNull
+	private static String summary(boolean withMetrics) {
 		StringBuilder sb = new StringBuilder();
 		for (Status s : all()) {
 			if (sb.length() > 0) {
 				sb.append('\n');
 			}
-			sb.append(describe(s));
+			sb.append(describe(s, withMetrics));
 		}
 		return sb.toString();
 	}

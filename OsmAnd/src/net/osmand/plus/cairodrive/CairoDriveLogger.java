@@ -4,11 +4,13 @@ import android.app.Activity;
 import android.app.ActivityManager;
 import android.app.Application;
 import android.content.BroadcastReceiver;
+import android.content.ComponentCallbacks2;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.hardware.display.DisplayManager;
 import android.location.LocationManager;
 import android.net.ConnectivityManager;
@@ -53,6 +55,7 @@ import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.TimeZone;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -81,6 +84,20 @@ import java.util.concurrent.atomic.AtomicLong;
 public class CairoDriveLogger {
 
 	public static final String LOG_DIR_NAME = "cairodrive-logs";
+
+	/**
+	 * Tags for the streams this class writes that {@code cd-analyze.py} is meant to read.
+	 *
+	 * <p>The CD_ prefix is spelled out here because {@link #log} takes the tag verbatim - unlike
+	 * {@code net.osmand.plus.helpers.CairoDriveLog}, which prepends it and where passing "CD_X"
+	 * produced CD_CD_X. It is not decoration: the analyser only matches
+	 * {@code (SESSION|CD_[A-Z_]+)}, so an unprefixed tag reaches the file and is then invisible to
+	 * the only thing that reads it back. {@code APISTATUS} had exactly that problem - written
+	 * every three minutes for weeks and parsed by nothing.
+	 */
+	private static final String DEVICE_TAG = "CD_DEVICE";
+	private static final String GPS_TAG = "CD_GPS";
+	private static final String API_STATUS_TAG = "CD_APISTATUS";
 
 	/**
 	 * How often the position is sampled when no new fix arrived.
@@ -119,6 +136,33 @@ public class CairoDriveLogger {
 	 * hardest to reproduce on request.
 	 */
 	private static final long API_STATUS_INTERVAL_MS = 3 * 60 * 1000L;
+	/**
+	 * How often {@link GpsQuality} writes its aggregate line.
+	 *
+	 * <p>The same minute {@code CD_FIXRATE} and {@code CD_STATIONARY} already use, so the three
+	 * can be read side by side against the same window. Sixty lines an hour against the ~3600 FIX
+	 * lines they summarise.
+	 */
+	private static final long GPS_SUMMARY_INTERVAL_MS = 60_000;
+	/**
+	 * A silence longer than this between fixes is reported as a gap.
+	 *
+	 * <p>Five seconds rather than two: the provider delivers at roughly 1 Hz and a missed fix or
+	 * two is ordinary, while a Cairo underpass or the deck of the 6th October flyover takes the
+	 * signal away for tens of seconds. The threshold has to sit above the noise or the gap line
+	 * becomes the noise.
+	 */
+	private static final long GPS_GAP_MS = 5000;
+	/**
+	 * Battery level is reported in steps of this many percent.
+	 *
+	 * <p>ACTION_BATTERY_CHANGED fires on every level, voltage and temperature change. What a drive
+	 * log needs from it is "was it charging, and was it running out", and a per-percent trace of a
+	 * six-hour drive is a hundred lines to answer that. Plug and charge-state changes are still
+	 * reported the moment they happen - a cable working loose in a cradle shows up there and
+	 * nowhere else.
+	 */
+	private static final int BATTERY_STEP_PCT = 5;
 	/** Compass updates arrive at sensor rate; log at most one per this interval. */
 	private static final long COMPASS_LOG_INTERVAL_MS = 500;
 	private static final long LOGCAT_RESTART_DELAY_MS = 2000;
@@ -309,6 +353,9 @@ public class CairoDriveLogger {
 	private BroadcastReceiver screenReceiver;
 	private BroadcastReceiver batteryReceiver;
 	private BroadcastReceiver providerReceiver;
+	private BroadcastReceiver powerReceiver;
+	private ConnectivityManager.NetworkCallback networkCallback;
+	private ComponentCallbacks2 memoryCallbacks;
 
 	/**
 	 * Last position written, as an immutable snapshot published through a single volatile
@@ -358,6 +405,32 @@ public class CairoDriveLogger {
 	private volatile int batteryHealth = -1;
 	private volatile String batteryTech;
 	private volatile boolean batteryKnown;
+
+	/**
+	 * What was last WRITTEN, as opposed to what is last known - see {@link #logBatteryTransition}.
+	 * Battery-receiver thread only.
+	 */
+	private int lastLoggedBatteryStep = Integer.MIN_VALUE;
+	private int lastLoggedBatteryStatus = Integer.MIN_VALUE;
+	private int lastLoggedBatteryPlugged = Integer.MIN_VALUE;
+
+	/**
+	 * Power save and Doze, and the thermal status, cached so a transition can be told from a
+	 * repeat reading.
+	 * <p>
+	 * All three throttle the SoC, and none of them were recorded anywhere. That matters because
+	 * this project reads a long frame time and a stale fix as evidence about the app or the head
+	 * unit: under power save both are the phone conserving battery, and the conclusion drawn from
+	 * them would be wrong in a way nothing else in the log could reveal.
+	 */
+	private volatile boolean powerSaveMode;
+	private volatile boolean deviceIdleMode;
+	private volatile boolean powerStateKnown;
+	private volatile int lastThermalStatus = Integer.MIN_VALUE;
+	/** Null until the first network callback; see {@link #noteTransport}. */
+	private volatile String lastTransport;
+	/** Set by the first mock fix seen, so the warning is written once and not once per fix. */
+	private final AtomicBoolean mockLocationReported = new AtomicBoolean();
 
 	/** Sampler thread only: previous CPU jiffies and the moment they were read, for app CPU%. */
 	private long lastCpuJiffies = -1;
@@ -444,7 +517,14 @@ public class CairoDriveLogger {
 		if (provider == null) {
 			return;
 		}
-		locationListener = location -> logLocation("FIX", location, true);
+		locationListener = location -> {
+			logLocation("FIX", location, true);
+			try {
+				gpsQuality.onFix(location);
+			} catch (Throwable ignored) {
+				// Never let the aggregate cost the fix it is aggregating.
+			}
+		};
 		compassListener = value -> {
 			long now = System.currentTimeMillis();
 			long previous = lastCompassLogTime.get();
@@ -551,6 +631,27 @@ public class CairoDriveLogger {
 		screenReceiver = unregister(app, screenReceiver);
 		batteryReceiver = unregister(app, batteryReceiver);
 		providerReceiver = unregister(app, providerReceiver);
+		powerReceiver = unregister(app, powerReceiver);
+		if (networkCallback != null) {
+			try {
+				ConnectivityManager manager =
+						(ConnectivityManager) app.getSystemService(Context.CONNECTIVITY_SERVICE);
+				if (manager != null) {
+					manager.unregisterNetworkCallback(networkCallback);
+				}
+			} catch (Throwable ignored) {
+				// Same rule as the receivers: unregistering one that never registered throws, and
+				// that must not stop the rest of the teardown.
+			}
+			networkCallback = null;
+		}
+		if (memoryCallbacks != null) {
+			try {
+				app.unregisterComponentCallbacks(memoryCallbacks);
+			} catch (Throwable ignored) {
+			}
+			memoryCallbacks = null;
+		}
 	}
 
 	@Nullable
@@ -589,6 +690,27 @@ public class CairoDriveLogger {
 
 	public void log(@NonNull String tag, @Nullable String message, @NonNull Throwable throwable) {
 		log(tag, message + "\n" + CairoDriveLogWriter.stackTraceToString(throwable));
+	}
+
+	/**
+	 * The two entry points every device and GPS line added here goes through.
+	 * <p>
+	 * Swallowing is the point. These are reached from a broadcast receiver, a
+	 * {@code ConnectivityManager} callback, {@code onTrimMemory} and the location callback - four
+	 * places where an exception thrown by a diagnostic ends the drive it was recording.
+	 */
+	private void logDevice(@NonNull String message) {
+		try {
+			log(DEVICE_TAG, message);
+		} catch (Throwable ignored) {
+		}
+	}
+
+	private void logGps(@NonNull String message) {
+		try {
+			log(GPS_TAG, message);
+		} catch (Throwable ignored) {
+		}
 	}
 
 	/**
@@ -781,7 +903,171 @@ public class CairoDriveLogger {
 				+ " systemProbeMs=" + SYSTEM_PROBE_INTERVAL_MS
 				+ " coordDecimals=" + COORD_DECIMALS);
 		logLocationPermissions();
+		logDeviceHeader();
 		logSystemSample(true);
+	}
+
+	/**
+	 * The device conditions the drive started under, on one greppable line.
+	 *
+	 * <p>The owner asked for "mobile device data and GPS" and none of this was recorded. Each
+	 * field here is one that changes how every OTHER line in the log should be read:
+	 *
+	 * <ul>
+	 *   <li>{@code powerSave} / {@code deviceIdle} throttle the CPU and lengthen the location
+	 *       update interval, so a long frame or a stale fix under either is the platform
+	 *       conserving power rather than a fault in the app - the opposite conclusion.</li>
+	 *   <li>{@code batteryPct} with {@code batteryStatus}, because a phone that is discharging in
+	 *       a cradle is a phone that will be throttled later in the same drive.</li>
+	 *   <li>{@code ramAvailMb}, because the map core is native and an OOM-adjacent device
+	 *       explains GC pauses that {@code CD_FRAME maxMs} otherwise reports without a cause.</li>
+	 *   <li>{@code logVolumeFreeMb}, because the failure it predicts is this file stopping - and
+	 *       a log that ends abruptly cannot state why it ended.</li>
+	 * </ul>
+	 */
+	private void logDeviceHeader() {
+		StringBuilder builder = new StringBuilder(256).append("sessionStart ");
+		appendBatteryState(builder);
+		appendPowerState(builder);
+		try {
+			ActivityManager manager = (ActivityManager) app.getSystemService(Context.ACTIVITY_SERVICE);
+			if (manager != null) {
+				ActivityManager.MemoryInfo info = new ActivityManager.MemoryInfo();
+				manager.getMemoryInfo(info);
+				builder.append(" ramAvailMb=").append(info.availMem / (1024 * 1024))
+						.append(" ramTotalMb=").append(info.totalMem / (1024 * 1024))
+						.append(" ramLow=").append(info.lowMemory);
+			}
+		} catch (Throwable ignored) {
+		}
+		try {
+			StatFs stat = new StatFs(writer.getDirectory().getAbsolutePath());
+			builder.append(" logVolumeFreeMb=").append(stat.getAvailableBytes() / (1024 * 1024));
+		} catch (Throwable ignored) {
+		}
+		appendNetworkState(builder, app);
+		appendThermalState(builder, app);
+		logDevice(builder.toString());
+	}
+
+	/**
+	 * Power save, Doze and the battery-optimisation exemption, cached for the transition receiver.
+	 *
+	 * <p>{@code isPowerSaveMode} is API 21 and {@code isDeviceIdleMode} and
+	 * {@code isIgnoringBatteryOptimizations} are API 23, all below this project's minSdk of 24, so
+	 * none of the three needs a version guard.
+	 */
+	private void appendPowerState(@NonNull StringBuilder builder) {
+		try {
+			PowerManager manager = powerManager();
+			if (manager == null) {
+				return;
+			}
+			powerSaveMode = manager.isPowerSaveMode();
+			deviceIdleMode = manager.isDeviceIdleMode();
+			powerStateKnown = true;
+			builder.append(" powerSave=").append(powerSaveMode)
+					.append(" deviceIdle=").append(deviceIdleMode)
+					// The exemption an app needs to keep getting locations with the screen off.
+					// Without it a long drive can lose fixes for reasons that look like GNSS.
+					.append(" batteryOptExempt=")
+					.append(manager.isIgnoringBatteryOptimizations(app.getPackageName()));
+		} catch (Throwable ignored) {
+		}
+	}
+
+	@Nullable
+	private PowerManager powerManager() {
+		OsmandApplication app = this.app;
+		return app == null ? null : (PowerManager) app.getSystemService(Context.POWER_SERVICE);
+	}
+
+	/**
+	 * One line when power save or Doze actually flips, driven by the platform's own broadcasts
+	 * rather than by polling. Both are protected system broadcasts, so nothing else can forge one.
+	 */
+	private void logPowerTransition() {
+		try {
+			PowerManager manager = powerManager();
+			if (manager == null) {
+				return;
+			}
+			boolean save = manager.isPowerSaveMode();
+			boolean idle = manager.isDeviceIdleMode();
+			if (powerStateKnown && save == powerSaveMode && idle == deviceIdleMode) {
+				return;
+			}
+			powerSaveMode = save;
+			deviceIdleMode = idle;
+			powerStateKnown = true;
+			logDevice("power powerSave=" + save + " deviceIdle=" + idle
+					+ (save ? "  <-- POWER SAVE THROTTLES THE CPU AND THE LOCATION RATE."
+					+ " FRAME TIMES AND FIX GAPS AFTER THIS LINE ARE NOT COMPARABLE"
+					+ " WITH THE ONES BEFORE IT" : ""));
+		} catch (Throwable ignored) {
+		}
+	}
+
+	/**
+	 * One line when the battery state moves, out of the several a minute
+	 * ACTION_BATTERY_CHANGED delivers. See {@link #BATTERY_STEP_PCT} for what counts as a move.
+	 *
+	 * <p>The first call only seeds the comparison and prints nothing - it runs while the receiver
+	 * is being registered, before {@link #logDeviceHeader} has written the same state.
+	 */
+	private void logBatteryTransition() {
+		int step = batteryPercent < 0 ? Integer.MIN_VALUE + 1 : batteryPercent / BATTERY_STEP_PCT;
+		if (step == lastLoggedBatteryStep
+				&& batteryStatus == lastLoggedBatteryStatus
+				&& batteryPlugged == lastLoggedBatteryPlugged) {
+			return;
+		}
+		boolean seeding = lastLoggedBatteryStatus == Integer.MIN_VALUE;
+		lastLoggedBatteryStep = step;
+		lastLoggedBatteryStatus = batteryStatus;
+		lastLoggedBatteryPlugged = batteryPlugged;
+		if (seeding) {
+			return;
+		}
+		StringBuilder builder = new StringBuilder(128).append("battery ");
+		appendBatteryState(builder);
+		logDevice(builder.toString());
+	}
+
+	/**
+	 * Time to first fix, measured from the moment the app asked the platform for locations.
+	 *
+	 * <p>Only the FIRST request counts. {@code resumeAllUpdates} runs again on every return to the
+	 * foreground, and a TTFF measured from the fourth of those is a warm re-acquisition being read
+	 * as a cold start.
+	 */
+	public void noteLocationRequested() {
+		try {
+			gpsQuality.noteRequested();
+		} catch (Throwable ignored) {
+		}
+	}
+
+	/**
+	 * A fix arrived carrying {@code isFromMockProvider()}. Said once, loudly.
+	 *
+	 * <p>Once because it is a property of the session, not of the fix: developer options' "select
+	 * mock location app" stays selected, so the second fix says nothing the first did not. And
+	 * loudly because there is no other line in the file that distinguishes a synthetic position
+	 * from a real one - accuracy, satellite count and provider name are all whatever the mock
+	 * chose to claim.
+	 */
+	public void noteMockLocation(@Nullable String provider) {
+		// `started` is tested BEFORE the latch is taken. log() drops silently when the writer is
+		// not up, and spending the one-shot on a line that went nowhere would mean the warning
+		// never appears in the file at all.
+		if (!started || mockLocationReported.getAndSet(true)) {
+			return;
+		}
+		logGps("MOCK LOCATION - a fix arrived with isFromMockProvider()=true, provider=" + provider
+				+ ". Every position from here on may be synthetic (developer options' mock"
+				+ " location app, or another app injecting test locations). No other field in"
+				+ " this log can tell a mock fix from a real one.");
 	}
 
 	/**
@@ -905,10 +1191,13 @@ public class CairoDriveLogger {
 			// Pipe-joined rather than multi-line: one grep-able line per sample keeps it aligned
 			// with every other periodic line in this file, and newlines inside a log record are
 			// what make a log hard to read back.
-			log("APISTATUS", ApiHealth.summary().replace("\n", " | "));
+			// summaryForLog, not summary: the dialog wants a sentence a driver can read at a
+			// glance, and the log wants the numbers behind it. "Working" with no numbers cannot
+			// answer "am I about to run out", which is the question this line is pulled for.
+			log(API_STATUS_TAG, ApiHealth.summaryForLog().replace("\n", " | "));
 		} catch (Throwable t) {
 			// Diagnostics must never be able to take down the thing they diagnose.
-			log("APISTATUS", "unavailable: " + t.getClass().getSimpleName());
+			log(API_STATUS_TAG, "unavailable: " + t.getClass().getSimpleName());
 		}
 	}
 
@@ -1088,10 +1377,16 @@ public class CairoDriveLogger {
 						.append(stat.getAvailableBytes() / (1024 * 1024));
 			} catch (Throwable ignored) {
 			}
-			appendThermalState(builder, app);
 			appendNetworkState(builder, app);
 			appendDisplayState(builder, app);
 			appendProcessState(builder);
+		}
+		if (app != null) {
+			// Off the 30 s probe path and onto every sample. It is one binder call per five
+			// seconds, and it buys the resolution the bucket is read at: a throttling SoC is the
+			// standing alternative explanation for a frame time, and pairing a 46.9 ms frame with
+			// a thermal reading half a minute old is not an answer either way.
+			appendThermalState(builder, app);
 		}
 		builder.append(' ');
 		appendBatteryState(builder);
@@ -1172,9 +1467,14 @@ public class CairoDriveLogger {
 	}
 
 	/**
-	 * Thermal throttling status. When the SoC is throttling, frame times balloon and reroutes
-	 * slow down, so this is one of the more useful things on the sample when the phone gets hot in
-	 * a windscreen cradle. A binder call, so it only runs on the probe path. API 29+.
+	 * Thermal throttling status, on every sample, plus a line of its own when it changes.
+	 *
+	 * <p>When the SoC is throttling, frame times balloon and reroutes slow down, so this is the
+	 * standing alternative explanation for both - and the one this project has no other way to
+	 * rule out. The field on the SYSTEM line gives the level at any moment; the transition line
+	 * gives the instant, which is what a reader actually correlates a jump in {@code avgMs}
+	 * against. API 29+, so a POCO C85 on Android 15 reports it and an older device silently does
+	 * not.
 	 */
 	private void appendThermalState(@NonNull StringBuilder builder, @NonNull Context ctx) {
 		if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
@@ -1182,8 +1482,22 @@ public class CairoDriveLogger {
 		}
 		try {
 			PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
-			if (pm != null) {
-				builder.append(" thermal=").append(thermalName(pm.getCurrentThermalStatus()));
+			if (pm == null) {
+				return;
+			}
+			int status = pm.getCurrentThermalStatus();
+			builder.append(" thermal=").append(thermalName(status));
+			int previous = lastThermalStatus;
+			if (status != previous) {
+				lastThermalStatus = status;
+				// The first reading of a session only seeds the comparison; the session line it
+				// is being built for already states the level.
+				if (previous != Integer.MIN_VALUE) {
+					logDevice("thermal " + thermalName(previous) + " -> " + thermalName(status)
+							+ (status >= PowerManager.THERMAL_STATUS_MODERATE
+							? "  <-- THE SOC IS THROTTLING; FRAME AND ROUTE TIMES AFTER THIS"
+							+ " LINE ARE NOT COMPARABLE WITH THE ONES BEFORE IT" : ""));
+				}
 			}
 		} catch (Throwable ignored) {
 		}
@@ -1220,11 +1534,7 @@ public class CairoDriveLogger {
 				builder.append(" net=none");
 				return;
 			}
-			String transport = "other";
-			if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) transport = "wifi";
-			else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) transport = "cellular";
-			else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) transport = "ethernet";
-			builder.append(" net=").append(transport)
+			builder.append(" net=").append(transportName(caps))
 					.append(" netMetered=").append(cm.isActiveNetworkMetered())
 					.append(" netVpn=").append(caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN));
 			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -1236,6 +1546,84 @@ public class CairoDriveLogger {
 						.append(" netUpKbps=").append(caps.getLinkUpstreamBandwidthKbps());
 			}
 		} catch (Throwable ignored) {
+		}
+	}
+
+	@NonNull
+	private static String transportName(@Nullable NetworkCapabilities caps) {
+		if (caps == null) {
+			return "none";
+		}
+		if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return "wifi";
+		if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) return "cellular";
+		if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) return "ethernet";
+		return "other";
+	}
+
+	/**
+	 * A line for every change of the ACTIVE transport, from the platform's own callback.
+	 *
+	 * <h3>Why this is worth a line of its own</h3>
+	 *
+	 * Every provider failure in this app is currently recorded as a provider failure. Under a
+	 * Cairo flyover most of them are not: the cellular link went away and came back, and whatever
+	 * request straddled it timed out. From the log those two are indistinguishable, so the wrong
+	 * one gets investigated - and the sequence "net cellular -> none" immediately before a run of
+	 * timeouts settles it in one glance.
+	 *
+	 * <p>{@code onCapabilitiesChanged} fires on every signal-strength step, several times a
+	 * minute on a moving phone, so {@link #noteTransport} compares before it writes. Without that
+	 * this would be the noisiest line in the file and would say nothing.
+	 */
+	private void registerNetworkCallback(@NonNull Context context, @Nullable Handler handler) {
+		try {
+			ConnectivityManager manager =
+					(ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+			if (manager == null) {
+				return;
+			}
+			networkCallback = new ConnectivityManager.NetworkCallback() {
+				@Override
+				public void onAvailable(@NonNull Network network) {
+					noteTransport(transportName(manager.getNetworkCapabilities(network)));
+				}
+
+				@Override
+				public void onCapabilitiesChanged(@NonNull Network network,
+				                                  @NonNull NetworkCapabilities caps) {
+					noteTransport(transportName(caps));
+				}
+
+				@Override
+				public void onLost(@NonNull Network network) {
+					noteTransport("none");
+				}
+			};
+			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && handler != null) {
+				// Dispatched on the sampler thread wherever the platform allows it, for the same
+				// reason the battery receiver is: a diagnostic has no business adding callbacks to
+				// the main thread of the app whose main-thread cost it exists to measure. The
+				// Handler overload is API 26; on 24-25 the default looper is the only option.
+				manager.registerDefaultNetworkCallback(networkCallback, handler);
+			} else {
+				manager.registerDefaultNetworkCallback(networkCallback);
+			}
+		} catch (Throwable t) {
+			// A device that refuses the callback still gets net= on every SYSTEM sample.
+			networkCallback = null;
+		}
+	}
+
+	private void noteTransport(@NonNull String transport) {
+		String previous = lastTransport;
+		if (transport.equals(previous)) {
+			return;
+		}
+		lastTransport = transport;
+		// The first callback lands within milliseconds of registration and only seeds the
+		// comparison - the session line already carries the transport it started on.
+		if (previous != null) {
+			logDevice("net " + previous + " -> " + transport);
 		}
 	}
 
@@ -1345,6 +1733,7 @@ public class CairoDriveLogger {
 			batteryHealth = intent.getIntExtra(BatteryManager.EXTRA_HEALTH, -1);
 			batteryTech = intent.getStringExtra(BatteryManager.EXTRA_TECHNOLOGY);
 			batteryKnown = true;
+			logBatteryTransition();
 		} catch (Throwable ignored) {
 			// A malformed sticky intent is not worth a line, let alone a crash.
 		}
@@ -1580,10 +1969,67 @@ public class CairoDriveLogger {
 		ContextCompat.registerReceiver(app, providerReceiver,
 				new IntentFilter(LocationManager.PROVIDERS_CHANGED_ACTION), null, handler,
 				ContextCompat.RECEIVER_NOT_EXPORTED);
+
+		// Power save and Doze, on the same sampler handler and for the same reason. Both actions
+		// are protected system broadcasts, so RECEIVER_NOT_EXPORTED costs nothing and keeps this
+		// consistent with every other receiver here.
+		powerReceiver = new BroadcastReceiver() {
+			@Override
+			public void onReceive(Context context, Intent intent) {
+				logPowerTransition();
+			}
+		};
+		IntentFilter powerFilter = new IntentFilter(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED);
+		powerFilter.addAction(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED);
+		ContextCompat.registerReceiver(app, powerReceiver, powerFilter, null, handler,
+				ContextCompat.RECEIVER_NOT_EXPORTED);
+
+		registerNetworkCallback(app, handler);
+
+		// onTrimMemory is the only warning the platform gives before it starts killing things, and
+		// nothing in this app was listening. It also dates a GC pause: a TRIM_MEMORY_RUNNING_LOW
+		// immediately before a spike in CD_FRAME's maxMs is the whole explanation of that spike.
+		memoryCallbacks = new ComponentCallbacks2() {
+			@Override
+			public void onTrimMemory(int level) {
+				Runtime runtime = Runtime.getRuntime();
+				logDevice("trimMemory level=" + trimLevelName(level)
+						+ " heapUsedMb="
+						+ ((runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024))
+						+ " heapMaxMb=" + (runtime.maxMemory() / (1024 * 1024))
+						+ " nativeHeapMb="
+						+ (Debug.getNativeHeapAllocatedSize() / (1024 * 1024)));
+			}
+
+			@Override
+			public void onLowMemory() {
+				logDevice("lowMemory");
+			}
+
+			@Override
+			public void onConfigurationChanged(@NonNull Configuration configuration) {
+			}
+		};
+		app.registerComponentCallbacks(memoryCallbacks);
+
 		// Seeded off the main thread; the provider may not exist yet at init() time, in
 		// which case the first sampler probe picks it up.
 		if (handler != null) {
 			handler.post(this::refreshProviderState);
+		}
+	}
+
+	@NonNull
+	private static String trimLevelName(int level) {
+		switch (level) {
+			case ComponentCallbacks2.TRIM_MEMORY_COMPLETE: return "COMPLETE";
+			case ComponentCallbacks2.TRIM_MEMORY_MODERATE: return "MODERATE";
+			case ComponentCallbacks2.TRIM_MEMORY_BACKGROUND: return "BACKGROUND";
+			case ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN: return "UI_HIDDEN";
+			case ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL: return "RUNNING_CRITICAL";
+			case ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW: return "RUNNING_LOW";
+			case ComponentCallbacks2.TRIM_MEMORY_RUNNING_MODERATE: return "RUNNING_MODERATE";
+			default: return "level" + level;
 		}
 	}
 
@@ -1709,6 +2155,227 @@ public class CairoDriveLogger {
 	}
 
 	private final GnssHealth gnssHealth = new GnssHealth();
+
+	/**
+	 * The GPS questions a per-fix line cannot answer, at a sixtieth of the volume.
+	 *
+	 * <h3>What was missing</h3>
+	 *
+	 * The FIX line already carries everything about ONE fix - provider, accuracy, speed, bearing,
+	 * satellites, age. What it cannot show is the shape of a RUN of them, and every GPS question
+	 * this project has actually had is about the run:
+	 *
+	 * <ul>
+	 *   <li><b>TTFF</b> - how long the phone took to produce a position at all. Nothing recorded
+	 *       when the app asked, so the first fix's timestamp was an absolute instant with nothing
+	 *       to subtract it from.</li>
+	 *   <li><b>Gaps</b> - the single most useful line here. Cairo's underpasses and the deck of a
+	 *       flyover take the signal away for tens of seconds, and a gap is currently visible only
+	 *       as an absence between two FIX lines, which is exactly the thing nobody spots reading
+	 *       3600 of them.</li>
+	 *   <li><b>Provider switches</b> - fused, gps and network do not have the same error
+	 *       behaviour, and a switch mid-route changes what an accuracy figure means.</li>
+	 *   <li><b>The distribution</b> - avg and max of accuracy, speed and interval over a window,
+	 *       which is what says whether a drive was on good positions or on Wi-Fi trilateration.</li>
+	 * </ul>
+	 *
+	 * <h3>Volume</h3>
+	 *
+	 * One summary a minute plus a line for each of the three ANOMALIES - a gap, a provider switch,
+	 * a mock fix. Nothing here is written per fix, which is the rule the existing FIX line
+	 * predates.
+	 *
+	 * <p>Synchronised because the fix tap and the TTFF mark arrive on different threads: the
+	 * location callback and whichever thread called {@code resumeAllUpdates}.
+	 */
+	private final class GpsQuality {
+
+		/** Monotonic - a GNSS time correction must not be able to produce a negative TTFF. */
+		private long requestedAtMs;
+		private boolean ttffReported;
+
+		private long lastFixAtMs;
+		private String lastProvider;
+
+		private long windowStartedAtMs;
+		private int fixes;
+		private int accuracySamples;
+		private double accuracySumM;
+		private float accuracyMaxM;
+		private double speedSumMs;
+		private float speedMaxMs;
+		private int bearings;
+		private long ageSumMs;
+		private long intervalSumMs;
+		private long intervalMaxMs;
+		private int gaps;
+		private int satSamples;
+		private long satUsedSum;
+		private int satUsedMin;
+
+		synchronized void noteRequested() {
+			if (requestedAtMs == 0) {
+				requestedAtMs = SystemClock.elapsedRealtime();
+			}
+		}
+
+		synchronized void onFix(@Nullable Location location) {
+			if (location == null) {
+				// A null fix is the provider reporting loss, not a fix of unknown quality; it is
+				// already a NO_LOCATION line and must not enter the averages.
+				return;
+			}
+			long now = SystemClock.elapsedRealtime();
+			if (!ttffReported && requestedAtMs > 0) {
+				ttffReported = true;
+				StringBuilder builder = new StringBuilder(96).append("ttff ms=")
+						.append(Math.max(0, now - requestedAtMs))
+						.append(" provider=").append(location.getProvider());
+				if (location.hasAccuracy()) {
+					builder.append(" accuracyM=");
+					appendFixed(builder, location.getAccuracy(), VALUE_DECIMALS);
+				}
+				logGps(builder.toString());
+			}
+
+			if (lastFixAtMs > 0) {
+				long interval = now - lastFixAtMs;
+				intervalSumMs += interval;
+				if (interval > intervalMaxMs) {
+					intervalMaxMs = interval;
+				}
+				if (interval >= GPS_GAP_MS) {
+					gaps++;
+					StringBuilder builder = new StringBuilder(128).append("gap ms=")
+							.append(interval)
+							.append(" resumedProvider=").append(location.getProvider())
+							.append(" lat=");
+					appendFixed(builder, location.getLatitude(), COORD_DECIMALS);
+					builder.append(" lon=");
+					appendFixed(builder, location.getLongitude(), COORD_DECIMALS);
+					if (location.hasAccuracy()) {
+						builder.append(" accuracyM=");
+						appendFixed(builder, location.getAccuracy(), VALUE_DECIMALS);
+					}
+					logGps(builder.toString());
+				}
+			}
+			lastFixAtMs = now;
+
+			String provider = location.getProvider();
+			if (provider != null && !provider.equals(lastProvider)) {
+				if (lastProvider != null) {
+					logGps("providerSwitch from=" + lastProvider + " to=" + provider);
+				}
+				lastProvider = provider;
+			}
+
+			if (windowStartedAtMs == 0) {
+				windowStartedAtMs = now;
+			}
+			fixes++;
+			if (location.hasAccuracy()) {
+				accuracySamples++;
+				accuracySumM += location.getAccuracy();
+				if (location.getAccuracy() > accuracyMaxM) {
+					accuracyMaxM = location.getAccuracy();
+				}
+			}
+			if (location.hasSpeed()) {
+				speedSumMs += location.getSpeed();
+				if (location.getSpeed() > speedMaxMs) {
+					speedMaxMs = location.getSpeed();
+				}
+			}
+			if (location.hasBearing()) {
+				bearings++;
+			}
+			ageSumMs += Math.max(0, System.currentTimeMillis() - location.getTime());
+			noteSatellites();
+
+			if (now - windowStartedAtMs >= GPS_SUMMARY_INTERVAL_MS) {
+				logSummary(now - windowStartedAtMs);
+				resetWindow(now);
+			}
+		}
+
+		/** A field read on the provider's own counter object, not a binder call. */
+		private void noteSatellites() {
+			OsmandApplication app = CairoDriveLogger.this.app;
+			OsmAndLocationProvider provider = app != null ? app.getLocationProvider() : null;
+			if (provider == null) {
+				return;
+			}
+			try {
+				GPSInfo info = provider.getGPSInfo();
+				if (info == null) {
+					return;
+				}
+				if (satSamples == 0 || info.usedSatellites < satUsedMin) {
+					satUsedMin = info.usedSatellites;
+				}
+				satSamples++;
+				satUsedSum += info.usedSatellites;
+			} catch (Throwable ignored) {
+			}
+		}
+
+		private void logSummary(long windowMs) {
+			if (fixes == 0) {
+				return;
+			}
+			StringBuilder builder = new StringBuilder(320).append("summary fixes=").append(fixes)
+					.append(" windowMs=").append(windowMs)
+					.append(" hz=");
+			appendFixed(builder, fixes * 1000d / Math.max(1, windowMs), 2);
+			builder.append(" provider=").append(lastProvider);
+			if (accuracySamples > 0) {
+				builder.append(" avgAccuracyM=");
+				appendFixed(builder, accuracySumM / accuracySamples, VALUE_DECIMALS);
+				builder.append(" maxAccuracyM=");
+				appendFixed(builder, accuracyMaxM, VALUE_DECIMALS);
+			}
+			builder.append(" avgSpeedKmh=");
+			appendFixed(builder, speedSumMs / fixes * 3.6d, 1);
+			builder.append(" maxSpeedKmh=");
+			appendFixed(builder, speedMaxMs * 3.6d, 1);
+			builder.append(" bearings=").append(bearings).append('/').append(fixes)
+					.append(" avgAgeMs=").append(ageSumMs / fixes);
+			if (fixes > 1) {
+				builder.append(" avgIntervalMs=").append(intervalSumMs / (fixes - 1))
+						.append(" maxIntervalMs=").append(intervalMaxMs);
+			}
+			builder.append(" gaps=").append(gaps);
+			if (satSamples > 0) {
+				// Used-in-fix, not found: below four there is no 3D solution however many are
+				// visible, which is the point GnssHealth is built on.
+				builder.append(" avgSatsUsed=");
+				appendFixed(builder, satUsedSum / (double) satSamples, 1);
+				builder.append(" minSatsUsed=").append(satUsedMin);
+			}
+			logGps(builder.toString());
+		}
+
+		private void resetWindow(long now) {
+			windowStartedAtMs = now;
+			fixes = 0;
+			accuracySamples = 0;
+			accuracySumM = 0;
+			accuracyMaxM = 0;
+			speedSumMs = 0;
+			speedMaxMs = 0;
+			bearings = 0;
+			ageSumMs = 0;
+			intervalSumMs = 0;
+			intervalMaxMs = 0;
+			gaps = 0;
+			satSamples = 0;
+			satUsedSum = 0;
+			satUsedMin = 0;
+		}
+	}
+
+	private final GpsQuality gpsQuality = new GpsQuality();
 
 	/**
 	 * Whether the last GNSS sample said the fix is network-derived rather than satellite-derived.

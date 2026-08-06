@@ -1,5 +1,7 @@
 package net.osmand.plus.cairodrive.providers;
 
+import android.os.SystemClock;
+
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
@@ -18,6 +20,7 @@ import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
+import java.net.SocketTimeoutException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -255,9 +258,11 @@ public final class LocationIqProvider {
 				int day = prefs.getInt(dayPref, -1);
 				int count = day == today ? prefs.getInt(countPref, 0) : 0;
 				if (count >= cap) {
+					ApiHealth.recordBudget(ApiHealth.Api.LOCATIONIQ, count, cap);
 					return false;
 				}
 				prefs.edit().putInt(dayPref, today).putInt(countPref, count + 1).apply();
+				ApiHealth.recordBudget(ApiHealth.Api.LOCATIONIQ, count + 1, cap);
 				return true;
 			}
 		} catch (Throwable t) {
@@ -269,6 +274,7 @@ public final class LocationIqProvider {
 	@Nullable
 	private static String get(@NonNull String url, @NonNull ApiHealth.Api api) {
 		HttpURLConnection c = null;
+		long started = SystemClock.elapsedRealtime();
 		try {
 			c = NetworkUtils.getHttpURLConnection(url);
 			c.setConnectTimeout(CONNECT_TIMEOUT_MS);
@@ -276,8 +282,9 @@ public final class LocationIqProvider {
 			c.setRequestProperty("Accept", "application/json");
 			int code = c.getResponseCode();
 			if (code != HttpURLConnection.HTTP_OK) {
-				ApiHealth.recordFailure(api, code, null);
-				CairoDriveLog.log(TRACE_TAG, "locationiq HTTP " + code);
+				long ms = SystemClock.elapsedRealtime() - started;
+				ApiHealth.recordFailure(api, code, null, ms);
+				CairoDriveLog.log(TRACE_TAG, "locationiq HTTP " + code + " ms=" + ms);
 				return null;
 			}
 			StringBuilder sb = new StringBuilder();
@@ -288,10 +295,22 @@ public final class LocationIqProvider {
 					sb.append(line);
 				}
 			}
-			ApiHealth.recordOk(api);
+			long ms = SystemClock.elapsedRealtime() - started;
+			ApiHealth.recordOk(api, ms);
+			CairoDriveLog.log(TRACE_TAG, "locationiq HTTP 200 ms=" + ms + " bytes=" + sb.length());
 			return sb.toString();
 		} catch (Throwable t) {
-			ApiHealth.recordFailure(api, 0, t.getClass().getSimpleName());
+			// Silence here used to be indistinguishable from the provider never being reached -
+			// this is the LAST geocoder in the chain, so nothing downstream reports its absence
+			// either. The elapsed time separates a refused connection from a read that ran the
+			// full timeout, which is the difference between a dead key and a dead tunnel.
+			long ms = SystemClock.elapsedRealtime() - started;
+			String kind = t instanceof SocketTimeoutException ? "TIMEOUT"
+					: t.getClass().getSimpleName();
+			ApiHealth.recordFailure(api, 0, kind, ms);
+			CairoDriveLog.log(TRACE_TAG, "locationiq NO RESPONSE " + kind + " ms=" + ms
+					+ " connectTimeoutMs=" + CONNECT_TIMEOUT_MS
+					+ " readTimeoutMs=" + READ_TIMEOUT_MS);
 			return null;
 		} finally {
 			if (c != null) {

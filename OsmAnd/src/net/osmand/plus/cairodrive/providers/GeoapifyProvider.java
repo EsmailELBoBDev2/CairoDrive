@@ -1,5 +1,7 @@
 package net.osmand.plus.cairodrive.providers;
 
+import android.os.SystemClock;
+
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
@@ -18,6 +20,7 @@ import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
+import java.net.SocketTimeoutException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -117,6 +120,43 @@ public final class GeoapifyProvider {
 	private static final String PREF_NEARBY_COUNT = "cairodrive_geoapify_nearby_count";
 
 	private static volatile long lastTypingRequestMs;
+
+	/**
+	 * The debounce, counted rather than assumed.
+	 *
+	 * <h3>Why this is the number that decides whether autocomplete is affordable</h3>
+	 *
+	 * Geoapify bills autocomplete per REQUEST, so {@link #TYPING_DEBOUNCE_MS} is not a UI tuning
+	 * knob, it is the cost model - and 350 ms was chosen from a guess about how fast the owner
+	 * types. {@code sent} is what the day's budget is actually spent on and {@code swallowed} is
+	 * what the debounce saved; the ratio says directly whether the window should move, and in
+	 * which direction. Google's own autocomplete is billed per keystroke SESSION and is by far the
+	 * most expensive thing on the deferred list, so the same measurement is what any decision
+	 * about enabling it has to rest on.
+	 *
+	 * <p>Reported at most once per {@link #DEBOUNCE_LOG_INTERVAL_MS} and only while typing is
+	 * happening, so a drive with no searching in it costs nothing at all. Counts are cumulative
+	 * for the process, which is what makes two lines minutes apart subtractable.
+	 */
+	private static final long DEBOUNCE_LOG_INTERVAL_MS = 30_000;
+	private static int typingSwallowed;
+	private static int typingSent;
+	private static long lastDebounceLogMs;
+
+	/** Caller holds the class monitor - both counters are read and written under it. */
+	private static void logDebounce(long now) {
+		if (now - lastDebounceLogMs < DEBOUNCE_LOG_INTERVAL_MS) {
+			return;
+		}
+		lastDebounceLogMs = now;
+		int total = typingSwallowed + typingSent;
+		CairoDriveLog.log(TRACE_TAG, "autocomplete debounce sent=" + typingSent
+				+ " swallowed=" + typingSwallowed
+				+ " keystrokes=" + total
+				+ " sentPct=" + (total == 0 ? 0 : 100 * typingSent / total)
+				+ " debounceMs=" + TYPING_DEBOUNCE_MS
+				+ " capPerDay=" + AUTOCOMPLETE_DAILY_CAP);
+	}
 
 	private GeoapifyProvider() {
 	}
@@ -224,9 +264,13 @@ public final class GeoapifyProvider {
 		long now = System.currentTimeMillis();
 		synchronized (GeoapifyProvider.class) {
 			if (now - lastTypingRequestMs < TYPING_DEBOUNCE_MS) {
+				typingSwallowed++;
+				logDebounce(now);
 				return out;
 			}
 			lastTypingRequestMs = now;
+			typingSent++;
+			logDebounce(now);
 		}
 		if (!claim(app, PREF_AC_DAY, PREF_AC_COUNT, AUTOCOMPLETE_DAILY_CAP)) {
 			ApiHealth.recordSkipped(ApiHealth.Api.GEOAPIFY, ApiHealth.Skip.BUDGET_SPENT);
@@ -383,9 +427,13 @@ public final class GeoapifyProvider {
 				int day = prefs.getInt(dayPref, -1);
 				int count = day == today ? prefs.getInt(countPref, 0) : 0;
 				if (count >= cap) {
+					// Published on the refusal too. This is the exact moment the number matters,
+					// and it is the one moment no request is made and nothing else records it.
+					ApiHealth.recordBudget(ApiHealth.Api.GEOAPIFY, count, cap);
 					return false;
 				}
 				prefs.edit().putInt(dayPref, today).putInt(countPref, count + 1).apply();
+				ApiHealth.recordBudget(ApiHealth.Api.GEOAPIFY, count + 1, cap);
 				return true;
 			}
 		} catch (Throwable t) {
@@ -406,6 +454,7 @@ public final class GeoapifyProvider {
 	@Nullable
 	private static String get(@NonNull String url, @NonNull ApiHealth.Api api) {
 		HttpURLConnection c = null;
+		long started = SystemClock.elapsedRealtime();
 		try {
 			c = NetworkUtils.getHttpURLConnection(url);
 			c.setConnectTimeout(CONNECT_TIMEOUT_MS);
@@ -413,8 +462,9 @@ public final class GeoapifyProvider {
 			c.setRequestProperty("Accept", "application/json");
 			int code = c.getResponseCode();
 			if (code != HttpURLConnection.HTTP_OK) {
-				ApiHealth.recordFailure(api, code, null);
-				CairoDriveLog.log(TRACE_TAG, api.name() + " HTTP " + code);
+				long ms = SystemClock.elapsedRealtime() - started;
+				ApiHealth.recordFailure(api, code, null, ms);
+				CairoDriveLog.log(TRACE_TAG, api.name() + " HTTP " + code + " ms=" + ms);
 				return null;
 			}
 			StringBuilder sb = new StringBuilder();
@@ -425,12 +475,26 @@ public final class GeoapifyProvider {
 					sb.append(line);
 				}
 			}
-			ApiHealth.recordOk(api);
+			long ms = SystemClock.elapsedRealtime() - started;
+			ApiHealth.recordOk(api, ms);
+			CairoDriveLog.log(TRACE_TAG, api.name() + " HTTP 200 ms=" + ms
+					+ " bytes=" + sb.length());
 			return sb.toString();
 		} catch (Throwable t) {
+			// A dead socket used to log NOTHING - it recorded a failure into ApiHealth and
+			// returned null, so a drive spent entirely out of coverage produced a log identical to
+			// one where the provider was never called. The elapsed time is what separates the two
+			// causes that land here: a connect refused in 30 ms is not the same fault as a read
+			// that ran the full 8000 ms timeout, and only the second is "the tunnel".
+			long ms = SystemClock.elapsedRealtime() - started;
 			// Type only - MalformedURLException and FileNotFoundException both carry the full URL
 			// as their message, and the key is in it.
-			ApiHealth.recordFailure(api, 0, t.getClass().getSimpleName());
+			String kind = t instanceof SocketTimeoutException ? "TIMEOUT"
+					: t.getClass().getSimpleName();
+			ApiHealth.recordFailure(api, 0, kind, ms);
+			CairoDriveLog.log(TRACE_TAG, api.name() + " NO RESPONSE " + kind + " ms=" + ms
+					+ " connectTimeoutMs=" + CONNECT_TIMEOUT_MS
+					+ " readTimeoutMs=" + READ_TIMEOUT_MS);
 			return null;
 		} finally {
 			if (c != null) {
