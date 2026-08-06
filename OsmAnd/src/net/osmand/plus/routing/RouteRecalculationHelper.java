@@ -89,6 +89,33 @@ class RouteRecalculationHelper {
 		this.calculationProgressListeners = listeners;
 	}
 
+	/**
+	 * Is a calculation waiting BESIDES the one on this thread?
+	 *
+	 * <p>Exists because {@link #isRouteBeingCalculated()} cannot answer that question from inside
+	 * a running task. The probe and the speculation are both called from within
+	 * {@code RouteRecalculationTask.run()}, and a task's own Future does not become
+	 * {@code isDone()} until {@code run()} returns - so the plain check saw the CALLER and always
+	 * said "busy". Both features returned at their first line on every invocation and neither had
+	 * ever executed once. The repair probe is the measurement this whole feature was gated on, so
+	 * "no repairProbe lines in the log" was read as "no deviations" for weeks; it meant the probe
+	 * was structurally unreachable.
+	 *
+	 * <p>Counting more than one incomplete Future answers the intended question - is somebody
+	 * else waiting - and is correct whether or not the caller is itself a task.
+	 */
+	boolean isAnotherRouteQueued() {
+		synchronized (routingHelper) {
+			int pending = 0;
+			for (Future<?> future : tasksMap.keySet()) {
+				if (!future.isDone() && ++pending > 1) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
 	boolean isRouteBeingCalculated() {
 		synchronized (routingHelper) {
 			for (Future<?> future : tasksMap.keySet()) {
@@ -298,7 +325,7 @@ class RouteRecalculationHelper {
 			if (now - lastRepairProbeAt < REPAIR_PROBE_MIN_INTERVAL_MS) {
 				return;
 			}
-			if (isRouteBeingCalculated()) {
+			if (isAnotherRouteQueued()) {
 				// A real calculation has been queued behind this one. It gets the CPU.
 				return;
 			}
@@ -475,6 +502,25 @@ class RouteRecalculationHelper {
 		}
 		try {
 			long now = System.currentTimeMillis();
+			// DELIBERATELY still isRouteBeingCalculated(), not isAnotherRouteQueued().
+			//
+			// Called from inside RouteRecalculationTask.run(), that predicate is always true, so
+			// this returns every time and speculation has never once executed. The probe above
+			// had the same fault and was fixed; this one is left dead ON PURPOSE, because
+			// unblocking it without fixing its geometry would turn a dead feature into a wrong
+			// route.
+			//
+			// What it computes today: `from` is 400 m ahead ON THE CURRENT ROUTE and `rejoin` is
+			// 1000 m ahead ON THE CURRENT ROUTE, so the result is approximately the existing
+			// route with its first 400 m removed. It does not model a missed turn at all - a
+			// missed turn puts the driver on a DIFFERENT road. takeSpeculation then accepts it
+			// whenever the driver is within SPECULATE_MATCH_M = 120 m of that on-route point,
+			// and on a dense Cairo grid a parallel street is well inside 120 m. So a "hit" would
+			// hand a deviated driver their OLD route, starting from a point they are not on, and
+			// it is consulted BEFORE every guard in tryRepairRoute.
+			//
+			// Fix the geometry first - speculate at the actual junction and its plausible wrong
+			// exits, invalidated once the fork is passed - then swap this predicate.
 			if (now - lastSpeculationAt < SPECULATE_MIN_INTERVAL_MS || isRouteBeingCalculated()) {
 				return;
 			}
@@ -694,10 +740,27 @@ class RouteRecalculationHelper {
 			long elapsedMs = System.currentTimeMillis() - startedAt;
 
 			String reject = null;
+			int repairDistM = -1;
 			if (repaired == null || !repaired.isCalculated()) {
 				reject = "notCalculated";
 			} else {
-				int repairDistM = repaired.getWholeDistance();
+				// Score the NEW LEG, not the whole journey.
+				//
+				// This used to read repaired.getWholeDistance(), which is listDistance[0] - the
+				// distance of the entire spliced route to the REAL destination, tail included.
+				// The thresholds are sized for a leg of a few hundred metres, so on any route
+				// with more than ~2.4 km left the comparison was 7000-odd metres against 3100 and
+				// the repair was rejected every single time. Worse than useless: each rejection
+				// costs a full wasted repair search BEFORE the ordinary search, and three of them
+				// trip consecutiveRepairs and disable the path for the rest of the process. The
+				// feature was making reroutes slower than having no repair at all.
+				//
+				// previous.getDistanceFromPoint(rejoinIndex) is listDistance[rejoinIndex] on the
+				// OLD route - exactly the tail that was reused - so subtracting it leaves the
+				// distance actually driven to get back on route, which is what both thresholds
+				// were written to bound.
+				int reusedTailM = previous.getDistanceFromPoint(rejoinIndex);
+				repairDistM = Math.max(0, repaired.getWholeDistance() - reusedTailM);
 				if (repairDistM > REPAIR_ABSOLUTE_CAP_M + alongRouteM) {
 					reject = "tooLong";
 				} else if (repairDistM > REPAIR_DETOUR_RATIO * Math.max(alongRouteM, REPAIR_MIN_BASE_M)
@@ -709,6 +772,7 @@ class RouteRecalculationHelper {
 				consecutiveRepairs++;
 				CairoDriveLogger.getInstance().log("CD_REROUTE", "repair REJECTED"
 						+ " reason=" + reject + " ms=" + elapsedMs
+						+ " repairLegM=" + repairDistM
 						+ " cutoffM=" + repairCutoffM()
 						+ " consecutiveRepairs=" + consecutiveRepairs + " - falling back to full search");
 				return null;
@@ -716,6 +780,7 @@ class RouteRecalculationHelper {
 			consecutiveRepairs = 0;
 			CairoDriveLogger.getInstance().log("CD_REROUTE", "repair USED"
 					+ " ms=" + elapsedMs
+					+ " repairLegM=" + repairDistM
 					+ " alongRouteM=" + alongRouteM
 					+ " cutoffM=" + repairCutoffM()
 					+ " wholeDistM=" + repaired.getWholeDistance());
