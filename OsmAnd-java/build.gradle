@@ -84,11 +84,32 @@ tasks.register('collectExternalResources') {
 			collectMiscResources
 }
 
+// `assemble`, not `build` - and that one word is what takes the test suite off the app's
+// critical path without a second CI job.
+//
+// `build` is `assemble` + `check`, and `check` pulls in test and routingTest. So this jar - which
+// everything in :OsmAnd compiles against - could not be produced until the entire OsmAnd-java
+// suite had finished. Every Android compile, every R8 run and every bundle waited behind it, in
+// series, for something none of them consume.
+//
+// The alternative considered and rejected was a parallel CI job: ~120 lines of duplicated
+// checkout, resources, patches and JDK setup, costing about a minute before it runs a line, to
+// move ~22 s of tests. This costs nothing and moves the same 22 s, because Gradle's own scheduler
+// already parallelises across PROJECTS (org.gradle.parallel=true is set by the workflow) and
+// :OsmAnd-java:test has no dependency on anything in :OsmAnd. Once the jar exists the tests run
+// BESIDE the native build, R8 and bundling instead of in front of them.
+//
+// The tests are NOT skipped, and this is the part to keep straight: both CI jobs now name
+// `:OsmAnd-java:test :OsmAnd-java:routingTest` on the gradlew command line beside the bundle
+// task, so a failure still fails the build and still blocks the artifact. `check.dependsOn
+// routingTest` below is untouched, so `./gradlew check` and `./gradlew build` - what upstream and
+// a local developer run - behave exactly as before. The only thing that changed is the ORDER CI
+// is free to use.
 tasks.register('androidJar', Jar) {
 	if (!project.hasProperty('osmandCoreSimple')) {
-		dependsOn collectExternalResources, build
+		dependsOn collectExternalResources, assemble
 	} else {
-		dependsOn build
+		dependsOn assemble
 	}
 	archiveAppendix = "android"
 	from(sourceSets.main.java.classesDirectory) {

@@ -96,7 +96,8 @@ names them in the build log every run, so the exclusion is never silent.
 
 | | Decision | Why |
 |---|---|---|
-| Move the suite to a job beside the app build | **No** | ~22 s after the exclusion. Starting a parallel job costs a minute of checkout and Gradle configuration, so the split is a net loss — and it would let a red suite ship an artifact |
+| Move the suite to a SEPARATE CI job | **No** | ~22 s after the exclusion. Starting a parallel job costs a minute of checkout and Gradle configuration, so that shape is a net loss |
+| Get it off the critical path anyway | **Done, for free** | `androidJar` depended on `build` (= `assemble` + `check`), so every Android compile, R8 run and bundle waited behind the suite. Now `assemble`, and Gradle's cross-project parallelism runs the tests BESIDE that work. **Both CI jobs must keep naming `:OsmAnd-java:test :OsmAnd-java:routingTest` on the gradlew line** — nothing pulls them in implicitly any more, and dropping the names would silently stop testing a signed build |
 | Raise the 1500 ms timeout | **Not needed** | The surviving copy sits at 37.5% of budget. The ceiling was never the problem |
 
 The build now prints `SUITE COST` with a per-class breakdown and a `HEADROOM:` line on every

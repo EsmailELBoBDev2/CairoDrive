@@ -631,8 +631,18 @@ jobs:
           if [ "${NATIVE_CACHE_OK:-false}" = "true" ]; then
             SKIP_NATIVE="-x :OsmAnd:buildOsmAndCore"
           fi
+          # The OsmAnd-java suite is named EXPLICITLY here, and it has to be. androidJar now
+          # depends on `assemble` rather than `build` (OsmAnd-java/build.gradle:87), which is
+          # what lets the tests run beside the native build, R8 and bundling instead of in
+          # front of them - but it also means the bundle task no longer drags them in. Without
+          # these two names the suite would silently stop running, which is a far worse
+          # outcome than the ~22 s it saves.
+          #
+          # Same invocation, so a failure in either still fails this step and still blocks
+          # every upload below it. Nothing about what gates the artifact has changed.
           # shellcheck disable=SC2086
-          ./gradlew --no-daemon --stacktrace ${SKIP_NATIVE} "${BUNDLE_TASK}"
+          ./gradlew --no-daemon --stacktrace ${SKIP_NATIVE} "${BUNDLE_TASK}" \
+            :OsmAnd-java:test :OsmAnd-java:routingTest
 
       # A failing :OsmAnd-java:test says only "There were failing tests, see the report at
       # file:///home/runner/..." - a path on a runner that no longer exists by the time anyone
@@ -715,9 +725,13 @@ jobs:
           #
           # FIRST RUN ANSWERED IT: 62.1s across 444 cases, of which 40.2s was three *NativeTest
           # classes re-running their parents byte for byte (see OsmAnd-java/build.gradle). With
-          # those excluded the suite is ~22s. Moving 22 seconds into a job that costs a minute
-          # of checkout and Gradle configuration to start is a LOSS, so the split is DECIDED
-          # AGAINST rather than merely deferred. Do not re-raise it without a new number here.
+          # those excluded the suite is ~22s. Moving 22 seconds into a SEPARATE JOB that costs a
+          # minute of checkout and Gradle configuration to start is a loss, so that shape is
+          # decided against - but the goal was worth having, and it was reachable for nothing:
+          # androidJar now depends on `assemble` rather than `build`, so the suite runs BESIDE
+          # the native build, R8 and bundling instead of in front of them, in this same job with
+          # no duplicated setup. Both jobs name the two test tasks on the gradlew line, so a
+          # failure still blocks the artifact. Do not re-raise the separate job without a number.
           #
           # The same line also found the real cause of the flaky routing timeout, which is why
           # it stays: HEADROOM went negative, and the per-class breakdown showed the identical
@@ -1379,7 +1393,15 @@ jobs:
           CAIRODRIVE_KEY_ALIAS: ${{ secrets.CAIRODRIVE_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
           CAIRODRIVE_KEY_PASSWORD: ${{ secrets.CAIRODRIVE_KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD }}
           BUNDLE_TASK: ${{ steps.variant.outputs.bundle_task }}
-        run: ./gradlew --no-daemon --stacktrace "${BUNDLE_TASK}"
+        run: |
+          set -euo pipefail
+          # Named explicitly for the same reason as the dev job, and it matters MORE here:
+          # androidJar no longer pulls the suite in, so omitting these would let a signed,
+          # Play-uploadable bundle be produced without a single OsmAnd-java test having run.
+          # This job carries no native cache and takes no shortcuts; it does not get to skip
+          # the tests either.
+          ./gradlew --no-daemon --stacktrace "${BUNDLE_TASK}" \
+            :OsmAnd-java:test :OsmAnd-java:routingTest
 
       # Same reasoning as the build job's copy - and it matters more here, because this job is
       # behind the `production` reviewer gate. A test failure with no named test costs an
@@ -1455,9 +1477,13 @@ jobs:
           #
           # FIRST RUN ANSWERED IT: 62.1s across 444 cases, of which 40.2s was three *NativeTest
           # classes re-running their parents byte for byte (see OsmAnd-java/build.gradle). With
-          # those excluded the suite is ~22s. Moving 22 seconds into a job that costs a minute
-          # of checkout and Gradle configuration to start is a LOSS, so the split is DECIDED
-          # AGAINST rather than merely deferred. Do not re-raise it without a new number here.
+          # those excluded the suite is ~22s. Moving 22 seconds into a SEPARATE JOB that costs a
+          # minute of checkout and Gradle configuration to start is a loss, so that shape is
+          # decided against - but the goal was worth having, and it was reachable for nothing:
+          # androidJar now depends on `assemble` rather than `build`, so the suite runs BESIDE
+          # the native build, R8 and bundling instead of in front of them, in this same job with
+          # no duplicated setup. Both jobs name the two test tasks on the gradlew line, so a
+          # failure still blocks the artifact. Do not re-raise the separate job without a number.
           #
           # The same line also found the real cause of the flaky routing timeout, which is why
           # it stays: HEADROOM went negative, and the per-class breakdown showed the identical
