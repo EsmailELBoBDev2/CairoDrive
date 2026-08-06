@@ -1297,7 +1297,7 @@ public class RouteProvider {
 			if (progress != null) {
 				// The pre-search block: missing-maps check, private-access probe, region lookup for
 				// all route points. On the HH C++ path `find` is structurally 0 - that path never
-				// resolves start segments in Java - and `routingTime` is only ~15-20% of `search`,
+				// resolves start segments in Java - and `routeCostSec` is NOT a duration at all,
 				// so most of a 4-8 s reroute has had no bucket at all. This is the half of it that
 				// can be timed without touching the native library.
 				sb.append(" pre=").append(ms(progress.timeToPrepare));
@@ -1310,7 +1310,16 @@ public class RouteProvider {
 						.append(" visited=").append(progress.visitedSegments)
 						.append(" cancelled=").append(progress.isCancelled ? 1 : 0);
 			}
-			sb.append(" routingTime=").append(String.format(Locale.US, "%.0f", ctx.routingTime));
+			// routeCostSec, NOT a duration. ctx.routingTime is the accumulated ROUTING COST -
+			// the route's estimated driving time in seconds - and it is printed raw here while
+			// setup/search/pre/find/load all go through ms(nanos). RoutingHelper:375 prints the
+			// same value as `+ " sec"` beside getCalculateTime(), which is the real one.
+			//
+			// Named routingTime it was read as a share of search= and produced the standing
+			// "routing is only 15-20% of search" note. That was seconds-of-travel over
+			// milliseconds-of-work: it will land near 15-20% on any route forever, for purely
+			// arithmetic reasons, and it sent one whole investigation down the wrong path.
+			sb.append(" routeCostSec=").append(String.format(Locale.US, "%.0f", ctx.routingTime));
 			sb.append(" ok=").append(result != null && result.isCorrect() ? 1 : 0);
 			if (result instanceof HHRouteDataStructure.HHNetworkRouteRes) {
 				HHRouteDataStructure.RoutingStats stats = ((HHRouteDataStructure.HHNetworkRouteRes) result).stats;

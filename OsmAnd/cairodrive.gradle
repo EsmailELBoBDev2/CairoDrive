@@ -676,7 +676,21 @@ def routeRepairEnv = System.getenv("CAIRODRIVE_ROUTE_REPAIR")
 def routeRepair = routeRepairEnv?.trim() ? routeRepairEnv.trim() : "true"
 
 def alternateAltEnv = System.getenv("CAIRODRIVE_ALTERNATE_ALTERNATIVES")
-def alternateAlternatives = alternateAltEnv?.trim() ? alternateAltEnv.trim() : "true"
+// OFF. Was "true" to A/B the cost of asking the native engine for alternative routes; that
+// experiment is closed because the code answers it outright - the alternatives are COMPUTED AND
+// DISCARDED. searchHHRoute returns only the detailed route, altRoutes never crosses JNI, and no
+// consumer exists on the car path (the alternativeRoutes hits in this tree are all
+// TransportRoutePlanner, which is public transport). Upstream's own progress model even marks
+// the step ALTERNATIVES(0), // disabled.
+//
+// The cost is not small. Each alternative is an extra full runRoutingPointsToPoints AND an extra
+// complete retrieveSegmentsGeometry pass - the per-segment A* with its tile I/O, the most
+// expensive phase there is - repeated, on every ODD calculation.
+//
+// There is nothing left to measure: the benefit is zero by construction, so any cost above zero
+// is waste. Keeping the A/B running would only price something already known to be worthless,
+// and it would keep half of all reroutes paying it while we watched.
+def alternateAlternatives = alternateAltEnv?.trim() ? alternateAltEnv.trim() : "false"
 
 def lockExternalApiEnv = System.getenv("CAIRODRIVE_LOCK_EXTERNAL_API")
 def lockExternalApi = lockExternalApiEnv?.trim() ? lockExternalApiEnv.trim() : "true"
