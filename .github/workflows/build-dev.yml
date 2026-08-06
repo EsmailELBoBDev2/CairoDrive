@@ -257,6 +257,15 @@ jobs:
           path: core-legacy
           persist-credentials: false
 
+      # Makes the native router's own diagnostics reach a drive log. Two edits, neither of
+      # which touches routing: it retags native logging from "net.osmand:native" (a tag a
+      # logcat filterspec cannot name, so every INFO line was silently dropped) to
+      # "net.osmand", and it makes the HH point-load statistics unconditional - they sit
+      # behind a compile-time-zero constant upstream, so the point count for an .obf has
+      # never been knowable. Refuses to apply against a drifted upstream.
+      - name: Patch OsmAnd-core-legacy diagnostics
+        run: python3 android/patches/cairodrive_native_diag.py core-legacy
+
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
@@ -365,7 +374,7 @@ jobs:
           #   jni/*.mk        - the flags and the module list
           #   old-ndk-build.sh- the invocation, including the -j level
           # No restore-keys, on purpose. See the block comment above.
-          key: nativeso-v1-${{ runner.os }}-${{ env.ABI }}-${{ env.CORE_LEGACY_REF }}-${{ steps.ndk.outputs.rev }}-${{ hashFiles('android/OsmAnd/jni/*.mk', 'android/OsmAnd/old-ndk-build.sh') }}
+          key: nativeso-v2-${{ runner.os }}-${{ env.ABI }}-${{ env.CORE_LEGACY_REF }}-${{ steps.ndk.outputs.rev }}-${{ hashFiles('android/OsmAnd/jni/*.mk', 'android/OsmAnd/old-ndk-build.sh', 'android/patches/cairodrive_native_diag.py') }}
 
       # A restored .so is treated as untrusted input until it has been checked, because the
       # cost of a bad one is silent and only shows up on a drive. Two things are verified:
@@ -394,6 +403,21 @@ jobs:
               fi
             done
           done
+          # The digest check above proves the restored library is INTACT. It cannot prove it
+          # is CURRENT with respect to a source patch, because a stale entry's digest matches
+          # its own stale bytes perfectly. cairodrive_native_diag.py rewrites core-legacy
+          # sources before the build, so a cache entry predating it restores an unpatched
+          # library and every other guard here reports success. Checking for the patch's own
+          # string is what turns that silence into a rebuild.
+          if [ "${bad}" -eq 0 ]; then
+            for abi in ${expected}; do
+              so="OsmAnd/libs/${abi}/libosmand.so"
+              if [ -f "${so}" ] && ! strings -a "${so}" | grep -q 'CD_HHLOAD'; then
+                echo "::warning::${so} predates the native diagnostics patch - rebuilding."
+                bad=1
+              fi
+            done
+          fi
           if [ "${bad}" -eq 0 ] && [ -f OsmAnd/native-cache.sha256 ]; then
             if (cd OsmAnd && sha256sum -c native-cache.sha256); then
               echo "Native libraries restored and verified - skipping the ~8 minute NDK build."
@@ -1395,6 +1419,15 @@ jobs:
           ref: ${{ env.CORE_LEGACY_REF }}
           path: core-legacy
           persist-credentials: false
+
+      # Makes the native router's own diagnostics reach a drive log. Two edits, neither of
+      # which touches routing: it retags native logging from "net.osmand:native" (a tag a
+      # logcat filterspec cannot name, so every INFO line was silently dropped) to
+      # "net.osmand", and it makes the HH point-load statistics unconditional - they sit
+      # behind a compile-time-zero constant upstream, so the point count for an .obf has
+      # never been knowable. Refuses to apply against a drifted upstream.
+      - name: Patch OsmAnd-core-legacy diagnostics
+        run: python3 android/patches/cairodrive_native_diag.py core-legacy
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
