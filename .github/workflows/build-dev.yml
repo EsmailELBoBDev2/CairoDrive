@@ -575,7 +575,24 @@ jobs:
           CAIRODRIVE_TOMORROW_KEY: ${{ secrets.TOMORROW_KEY }}
           APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
           APK_RELEASE_TASK: ${{ steps.variant.outputs.apk_release_task }}
-        run: ./gradlew --no-daemon --stacktrace "${APK_RELEASE_TASK}"
+        run: |
+          set -euo pipefail
+          # Skip lintVital: measured at 1 min 9 s of this step's 2 min 4 s, and it gates nothing.
+          # `warningsAsErrors false` (OsmAnd/build.gradle:63), and on the run this was measured
+          # from, lint threw NegativeArraySizeException inside its own jar loader - it is already
+          # failing to analyse and passing anyway.
+          #
+          # Only `assembleRelease` runs lintVital; `bundleRelease` never does. So the AAB step
+          # above has never paid this, and skipping it here loses nothing the bundle checked.
+          #
+          # Task names are derived from APK_RELEASE_TASK (`:OsmAnd:assemble<Variant>Release`)
+          # rather than hardcoded, because the variant changes with the abi/core inputs. If a
+          # future AGP renames these tasks, `-x` fails with "Task not found" - loud and one line
+          # to fix, which is the right failure mode for an optimisation.
+          SUFFIX="${APK_RELEASE_TASK#:OsmAnd:assemble}"
+          ./gradlew --no-daemon --stacktrace "${APK_RELEASE_TASK}" \
+            -x ":OsmAnd:lintVitalAnalyze${SUFFIX}" \
+            -x ":OsmAnd:lintVitalReport${SUFFIX}"
 
       # Fails the build if the native routing library did not make it into the artifacts.
       # This is the guard that was missing: the app degrades SILENTLY without libosmand.so -
@@ -1114,7 +1131,24 @@ jobs:
           CAIRODRIVE_KEY_ALIAS: ${{ secrets.CAIRODRIVE_KEY_ALIAS || secrets.ANDROID_KEY_ALIAS }}
           CAIRODRIVE_KEY_PASSWORD: ${{ secrets.CAIRODRIVE_KEY_PASSWORD || secrets.ANDROID_KEY_PASSWORD }}
           APK_RELEASE_TASK: ${{ steps.variant.outputs.apk_release_task }}
-        run: ./gradlew --no-daemon --stacktrace "${APK_RELEASE_TASK}"
+        run: |
+          set -euo pipefail
+          # Skip lintVital: measured at 1 min 9 s of this step's 2 min 4 s, and it gates nothing.
+          # `warningsAsErrors false` (OsmAnd/build.gradle:63), and on the run this was measured
+          # from, lint threw NegativeArraySizeException inside its own jar loader - it is already
+          # failing to analyse and passing anyway.
+          #
+          # Only `assembleRelease` runs lintVital; `bundleRelease` never does. So the AAB step
+          # above has never paid this, and skipping it here loses nothing the bundle checked.
+          #
+          # Task names are derived from APK_RELEASE_TASK (`:OsmAnd:assemble<Variant>Release`)
+          # rather than hardcoded, because the variant changes with the abi/core inputs. If a
+          # future AGP renames these tasks, `-x` fails with "Task not found" - loud and one line
+          # to fix, which is the right failure mode for an optimisation.
+          SUFFIX="${APK_RELEASE_TASK#:OsmAnd:assemble}"
+          ./gradlew --no-daemon --stacktrace "${APK_RELEASE_TASK}" \
+            -x ":OsmAnd:lintVitalAnalyze${SUFFIX}" \
+            -x ":OsmAnd:lintVitalReport${SUFFIX}"
 
       # Fails the build if the native routing library did not make it into the artifacts.
       # This is the guard that was missing: the app degrades SILENTLY without libosmand.so -
