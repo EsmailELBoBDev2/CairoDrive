@@ -49,7 +49,9 @@ import java.util.Locale;
  *
  * <p>What has NOT changed: Gen1 retires <b>15 September 2026</b> with automatic migration to Gen2
  * at roughly 5-9x the per-transaction rate, and Azure bills through a subscription rather than a
- * card-free freemium. Both are reasons the daily cap below is small and hard rather than generous.
+ * card-free freemium - so there are hard daily caps below. They are sized against what a heavy
+ * day actually uses, not against the allowance: the pair costs about 1% of the free tier, because
+ * a cap tight enough to cut a feature off mid-drive is not safety, it is a bug.
  *
  * <h3>Why the sun glare here does not replace the local one</h3>
  *
@@ -104,11 +106,24 @@ public final class AzureRouteWeatherProvider {
 	private static final int HORIZON_MINUTES = 115;
 
 	/**
-	 * Small on purpose. One request covers a whole route, so a drive needs 1-3; this leaves room
-	 * for a reroute or two and nothing more. Azure bills through a subscription, so an unbounded
-	 * loop here has a bill at the end of it rather than a 429.
+	 * SEPARATE budgets, and that separation is the point.
+	 *
+	 * <p>These were one shared counter of 12, which is wrong in both directions at once. A
+	 * two-hour drive wants 12 route polls at ten-minute spacing plus 4 alert polls - so the budget
+	 * ran out mid-drive, and because route weather polls three times as often it always won the
+	 * race. The thing that died first was the SEVERE WEATHER ALERT: an official sandstorm warning
+	 * from the Egyptian Meteorological Authority, dropped so that a routine ten-minute forecast
+	 * refresh could happen. That is exactly backwards.
+	 *
+	 * <p>Own counters mean route polling cannot starve alerts however long the drive runs.
+	 *
+	 * <p>The numbers are sized against real use, not against the allowance. A heavy day is roughly
+	 * four hours navigating (24 route polls) and eight hours driving (16 alert polls); these leave
+	 * better than 2x headroom on both. Against Azure's 250,000/month Gen2 free tier the pair costs
+	 * about 1% - so the old cap was not buying safety, it was buying a broken feature.
 	 */
-	private static final int DAILY_CAP = 12;
+	private static final int ROUTE_DAILY_CAP = 60;
+	private static final int ALERT_DAILY_CAP = 20;
 
 	/** A route is re-checked no more often than this. Azure refreshes the data every 5 minutes. */
 	private static final long MIN_INTERVAL_MS = 10 * 60 * 1000L;
@@ -118,6 +133,8 @@ public final class AzureRouteWeatherProvider {
 
 	private static final String PREF_DAY = "cairodrive_azure_wx_day";
 	private static final String PREF_COUNT = "cairodrive_azure_wx_count";
+	private static final String PREF_ALERT_DAY = "cairodrive_azure_alert_day";
+	private static final String PREF_ALERT_COUNT = "cairodrive_azure_alert_count";
 
 	private static volatile long lastPollMs;
 
@@ -229,9 +246,10 @@ public final class AzureRouteWeatherProvider {
 		if (lastPollMs != 0 && now - lastPollMs < MIN_INTERVAL_MS) {
 			return -1;
 		}
-		if (!claim(app)) {
+		if (!claim(app, PREF_DAY, PREF_COUNT, ROUTE_DAILY_CAP)) {
 			ApiHealth.recordSkipped(ApiHealth.Api.AZURE_MAPS, ApiHealth.Skip.BUDGET_SPENT);
-			CairoDriveLog.log(TRACE_TAG, "azure route weather skipped - daily cap " + DAILY_CAP);
+			CairoDriveLog.log(TRACE_TAG, "azure route weather skipped - daily cap "
+					+ ROUTE_DAILY_CAP + " reached (alerts have their own budget and continue)");
 			return -1;
 		}
 		lastPollMs = now;
@@ -374,8 +392,10 @@ public final class AzureRouteWeatherProvider {
 		if (lastAlertPollMs != 0 && now - lastAlertPollMs < ALERT_INTERVAL_MS) {
 			return null;
 		}
-		if (!claim(app)) {
+		if (!claim(app, PREF_ALERT_DAY, PREF_ALERT_COUNT, ALERT_DAILY_CAP)) {
 			ApiHealth.recordSkipped(ApiHealth.Api.AZURE_MAPS, ApiHealth.Skip.BUDGET_SPENT);
+			CairoDriveLog.log(TRACE_TAG, "azure severe alerts skipped - daily cap "
+					+ ALERT_DAILY_CAP + " reached");
 			return null;
 		}
 		lastAlertPollMs = now;
@@ -433,18 +453,19 @@ public final class AzureRouteWeatherProvider {
 	@Nullable
 	private static volatile String lastAlertSummary;
 
-	private static boolean claim(@NonNull OsmandApplication app) {
+	private static boolean claim(@NonNull OsmandApplication app, @NonNull String dayPref,
+	                             @NonNull String countPref, int cap) {
 		try {
 			android.content.SharedPreferences prefs = app.getSharedPreferences(
 					"cairodrive_providers", android.content.Context.MODE_PRIVATE);
 			int today = (int) (System.currentTimeMillis() / (24L * 60 * 60 * 1000));
 			synchronized (AzureRouteWeatherProvider.class) {
-				int day = prefs.getInt(PREF_DAY, -1);
-				int count = day == today ? prefs.getInt(PREF_COUNT, 0) : 0;
-				if (count >= DAILY_CAP) {
+				int day = prefs.getInt(dayPref, -1);
+				int count = day == today ? prefs.getInt(countPref, 0) : 0;
+				if (count >= cap) {
 					return false;
 				}
-				prefs.edit().putInt(PREF_DAY, today).putInt(PREF_COUNT, count + 1).apply();
+				prefs.edit().putInt(dayPref, today).putInt(countPref, count + 1).apply();
 				return true;
 			}
 		} catch (Throwable t) {
