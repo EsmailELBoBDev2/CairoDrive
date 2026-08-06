@@ -148,6 +148,61 @@ because the *reasons* they were held are the useful part.
 - Four one-shot user-initiated paths read `getLastKnownLocation()` into routing. None is on the
   per-fix path, and N6's route-snapped stand-down covers the case.
 
+## What this app collects, and what leaves the phone
+
+Written down because it is a Play Data safety declaration, and because "does it collect my
+GPS" deserves an answer that distinguishes the two very different things going on here.
+
+### Stays on the phone, always
+
+The drive log. `/sdcard/Android/data/com.cairodrive.app/files/cairodrive-logs/`, app-scoped
+external storage, written by `CairoDriveLogger`. It contains GPS fixes, speeds, headings, frame
+timings, route calculations, device state and provider outcomes. **Nothing uploads it.** It is
+pulled over USB by hand, and it is the only reason any of this is diagnosable at all.
+
+Being on-device does NOT make it harmless: it is a minute-by-minute record of where the car went,
+readable by anyone holding the unlocked phone. That is a deliberate trade for a single-user fork
+and would not be one for a public app. Keys and tokens are redacted from it by `SECRET_NAMES`
+before writing - the query a driver TYPES is redacted to a character count for the same reason.
+
+For Play's purposes this is not "collection": it never leaves the device and is not shared. It is
+still worth declaring honestly if the listing ever goes wider than internal testing.
+
+### Leaves the phone, to a third party
+
+This is the part that must be declared, and it is not one recipient any more - it is nine.
+
+| Goes out | To | Triggered by | Play category |
+|---|---|---|---|
+| Typed search query + coarse location | Google Places | A search | App activity - search history; Location - precise |
+| Current point / bbox around the car | TomTom (flow, incidents) | Driving, paced by `BudgetPacer` | Location - precise |
+| Route polyline | Google Routes | Live traffic, opt-in, default OFF | Location - precise |
+| Point | OpenWeather | Dust / air-quality poll | Location - precise |
+| Point | Geoapify | Reverse geocode - ONLY when the offline `.obf` has no name; autocomplete; nearby | Location - precise |
+| Point | LocationIQ | Same, as fallback when Geoapify has no key or no budget | Location - precise |
+| Sampled points along the route | Azure Maps | Weather along route, severe alerts | Location - precise |
+| Point | Tomorrow.io | Visibility second opinion | Location - precise |
+| bbox | HERE | Closures, if the key is set | Location - precise |
+
+Two things follow that are easy to miss:
+
+1. **The category has not changed since the Places-only declaration - the RECIPIENT LIST has.**
+   "Location - precise, shared with third parties" was already true. What is new is that it is
+   now true continuously while driving rather than only when someone searches, and that eight
+   more companies receive it. A declaration naming only Google is no longer accurate.
+2. **Every one of these is gated on a key being present in the build.** A build with no secrets
+   set sends nothing anywhere, degrades to the offline `.obf`, and the API status screen says so
+   per provider. That is the honest baseline, and it is what the app does today for any key the
+   owner has not registered.
+
+### Not collected at all
+
+No account, no analytics SDK, no crash reporter, no advertising ID, no contacts, no
+device identifiers sent anywhere. `GOOGLE_PLACES_API_KEY` and friends ship inside the APK, which
+is a key-exposure question (settled - see below), not a data-collection one.
+
+---
+
 ## Needs a human, not a build
 
 The Arabic strings in B2 are an agent's, not a translator's — `الاتجاهات` for Navigate.
