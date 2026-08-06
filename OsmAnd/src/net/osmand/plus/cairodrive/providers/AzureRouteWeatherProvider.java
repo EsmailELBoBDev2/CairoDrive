@@ -280,7 +280,7 @@ public final class AzureRouteWeatherProvider {
 			CairoDriveLog.log(TRACE_TAG, "azure route weather: route too short to sample, no request");
 			return -1;
 		}
-		if (!claim(app, PREF_DAY, PREF_COUNT, ROUTE_DAILY_CAP)) {
+		if (!ProviderBudget.claim(app, ApiHealth.Api.AZURE_MAPS, PREF_DAY, PREF_COUNT, ROUTE_DAILY_CAP)) {
 			ApiHealth.recordSkipped(ApiHealth.Api.AZURE_MAPS, ApiHealth.Skip.BUDGET_SPENT);
 			CairoDriveLog.log(TRACE_TAG, "azure route weather skipped - daily cap "
 					+ ROUTE_DAILY_CAP + " reached (alerts have their own budget and continue)");
@@ -420,7 +420,7 @@ public final class AzureRouteWeatherProvider {
 		if (lastAlertPollMs != 0 && now - lastAlertPollMs < ALERT_INTERVAL_MS) {
 			return null;
 		}
-		if (!claim(app, PREF_ALERT_DAY, PREF_ALERT_COUNT, ALERT_DAILY_CAP)) {
+		if (!ProviderBudget.claim(app, ApiHealth.Api.AZURE_MAPS, PREF_ALERT_DAY, PREF_ALERT_COUNT, ALERT_DAILY_CAP)) {
 			ApiHealth.recordSkipped(ApiHealth.Api.AZURE_MAPS, ApiHealth.Skip.BUDGET_SPENT);
 			CairoDriveLog.log(TRACE_TAG, "azure severe alerts skipped - daily cap "
 					+ ALERT_DAILY_CAP + " reached");
@@ -487,26 +487,6 @@ public final class AzureRouteWeatherProvider {
 	@NonNull
 	private static String firstNonEmpty(@NonNull String a, @NonNull String b) {
 		return !Algorithms.isEmpty(a) ? a : b;
-	}
-
-	private static boolean claim(@NonNull OsmandApplication app, @NonNull String dayPref,
-	                             @NonNull String countPref, int cap) {
-		try {
-			android.content.SharedPreferences prefs = app.getSharedPreferences(
-					"cairodrive_providers", android.content.Context.MODE_PRIVATE);
-			int today = (int) (System.currentTimeMillis() / (24L * 60 * 60 * 1000));
-			synchronized (AzureRouteWeatherProvider.class) {
-				int day = prefs.getInt(dayPref, -1);
-				int count = day == today ? prefs.getInt(countPref, 0) : 0;
-				if (count >= cap) {
-					return false;
-				}
-				prefs.edit().putInt(dayPref, today).putInt(countPref, count + 1).apply();
-				return true;
-			}
-		} catch (Throwable t) {
-			return false;
-		}
 	}
 
 	/**

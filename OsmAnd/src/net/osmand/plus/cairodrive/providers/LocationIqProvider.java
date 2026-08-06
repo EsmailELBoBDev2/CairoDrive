@@ -112,7 +112,7 @@ public final class LocationIqProvider {
 			ApiHealth.recordSkipped(ApiHealth.Api.LOCATIONIQ, ApiHealth.Skip.NO_INTERNET);
 			return null;
 		}
-		if (!claim(app, PREF_REV_DAY, PREF_REV_COUNT, REVERSE_DAILY_CAP)) {
+		if (!ProviderBudget.claim(app, ApiHealth.Api.LOCATIONIQ, PREF_REV_DAY, PREF_REV_COUNT, REVERSE_DAILY_CAP)) {
 			ApiHealth.recordSkipped(ApiHealth.Api.LOCATIONIQ, ApiHealth.Skip.BUDGET_SPENT);
 			return null;
 		}
@@ -168,7 +168,7 @@ public final class LocationIqProvider {
 			}
 			lastTypingRequestMs = now;
 		}
-		if (!claim(app, PREF_AC_DAY, PREF_AC_COUNT, AUTOCOMPLETE_DAILY_CAP)) {
+		if (!ProviderBudget.claim(app, ApiHealth.Api.LOCATIONIQ, PREF_AC_DAY, PREF_AC_COUNT, AUTOCOMPLETE_DAILY_CAP)) {
 			ApiHealth.recordSkipped(ApiHealth.Api.LOCATIONIQ, ApiHealth.Skip.BUDGET_SPENT);
 			return out;
 		}
@@ -246,28 +246,6 @@ public final class LocationIqProvider {
 	private static String lang(@NonNull OsmandApplication app) {
 		String l = app.getLanguage();
 		return l != null && l.startsWith("ar") ? "ar" : "en";
-	}
-
-	private static boolean claim(@NonNull OsmandApplication app, @NonNull String dayPref,
-	                             @NonNull String countPref, int cap) {
-		try {
-			android.content.SharedPreferences prefs = app.getSharedPreferences(
-					"cairodrive_providers", android.content.Context.MODE_PRIVATE);
-			int today = (int) (System.currentTimeMillis() / (24L * 60 * 60 * 1000));
-			synchronized (LocationIqProvider.class) {
-				int day = prefs.getInt(dayPref, -1);
-				int count = day == today ? prefs.getInt(countPref, 0) : 0;
-				if (count >= cap) {
-					ApiHealth.recordBudget(ApiHealth.Api.LOCATIONIQ, count, cap);
-					return false;
-				}
-				prefs.edit().putInt(dayPref, today).putInt(countPref, count + 1).apply();
-				ApiHealth.recordBudget(ApiHealth.Api.LOCATIONIQ, count + 1, cap);
-				return true;
-			}
-		} catch (Throwable t) {
-			return false;
-		}
 	}
 
 	/** Same key-in-URL rule as everywhere else here: status code recorded, error body never read. */

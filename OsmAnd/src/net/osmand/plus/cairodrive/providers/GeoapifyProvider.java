@@ -185,7 +185,7 @@ public final class GeoapifyProvider {
 			ApiHealth.recordSkipped(ApiHealth.Api.GEOAPIFY, ApiHealth.Skip.NO_INTERNET);
 			return null;
 		}
-		if (!claim(app, PREF_REV_DAY, PREF_REV_COUNT, REVERSE_DAILY_CAP)) {
+		if (!ProviderBudget.claim(app, ApiHealth.Api.GEOAPIFY, PREF_REV_DAY, PREF_REV_COUNT, REVERSE_DAILY_CAP)) {
 			ApiHealth.recordSkipped(ApiHealth.Api.GEOAPIFY, ApiHealth.Skip.BUDGET_SPENT);
 			CairoDriveLog.log(TRACE_TAG, "geoapify reverse skipped - daily cap " + REVERSE_DAILY_CAP);
 			return null;
@@ -272,7 +272,7 @@ public final class GeoapifyProvider {
 			typingSent++;
 			logDebounce(now);
 		}
-		if (!claim(app, PREF_AC_DAY, PREF_AC_COUNT, AUTOCOMPLETE_DAILY_CAP)) {
+		if (!ProviderBudget.claim(app, ApiHealth.Api.GEOAPIFY, PREF_AC_DAY, PREF_AC_COUNT, AUTOCOMPLETE_DAILY_CAP)) {
 			ApiHealth.recordSkipped(ApiHealth.Api.GEOAPIFY, ApiHealth.Skip.BUDGET_SPENT);
 			return out;
 		}
@@ -336,7 +336,7 @@ public final class GeoapifyProvider {
 			ApiHealth.recordSkipped(ApiHealth.Api.GEOAPIFY, ApiHealth.Skip.NO_INTERNET);
 			return out;
 		}
-		if (!claim(app, PREF_NEARBY_DAY, PREF_NEARBY_COUNT, NEARBY_DAILY_CAP)) {
+		if (!ProviderBudget.claim(app, ApiHealth.Api.GEOAPIFY, PREF_NEARBY_DAY, PREF_NEARBY_COUNT, NEARBY_DAILY_CAP)) {
 			ApiHealth.recordSkipped(ApiHealth.Api.GEOAPIFY, ApiHealth.Skip.BUDGET_SPENT);
 			CairoDriveLog.log(TRACE_TAG, "geoapify nearby skipped - daily cap " + NEARBY_DAILY_CAP);
 			return out;
@@ -417,32 +417,6 @@ public final class GeoapifyProvider {
 	 *
 	 * <p>Keyed on the local calendar day so it resets overnight rather than 24h after first use.
 	 */
-	private static boolean claim(@NonNull OsmandApplication app, @NonNull String dayPref,
-	                             @NonNull String countPref, int cap) {
-		try {
-			android.content.SharedPreferences prefs = app.getSharedPreferences(
-					"cairodrive_providers", android.content.Context.MODE_PRIVATE);
-			int today = (int) (System.currentTimeMillis() / (24L * 60 * 60 * 1000));
-			synchronized (GeoapifyProvider.class) {
-				int day = prefs.getInt(dayPref, -1);
-				int count = day == today ? prefs.getInt(countPref, 0) : 0;
-				if (count >= cap) {
-					// Published on the refusal too. This is the exact moment the number matters,
-					// and it is the one moment no request is made and nothing else records it.
-					ApiHealth.recordBudget(ApiHealth.Api.GEOAPIFY, count, cap);
-					return false;
-				}
-				prefs.edit().putInt(dayPref, today).putInt(countPref, count + 1).apply();
-				ApiHealth.recordBudget(ApiHealth.Api.GEOAPIFY, count + 1, cap);
-				return true;
-			}
-		} catch (Throwable t) {
-			// A failed counter must not become a free pass: if the budget cannot be accounted for,
-			// no request is made.
-			return false;
-		}
-	}
-
 	/**
 	 * GET returning the body, or null on any failure.
 	 *

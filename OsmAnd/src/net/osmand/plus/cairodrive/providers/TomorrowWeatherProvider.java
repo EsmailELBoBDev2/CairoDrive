@@ -278,7 +278,7 @@ public final class TomorrowWeatherProvider {
 		if (lastPollMs != 0 && now - lastPollMs < POLL_INTERVAL_MS) {
 			return;
 		}
-		if (!claim(app)) {
+		if (!ProviderBudget.claim(app, ApiHealth.Api.TOMORROW, PREF_DAY, PREF_COUNT, DAILY_CAP)) {
 			ApiHealth.recordSkipped(ApiHealth.Api.TOMORROW, ApiHealth.Skip.BUDGET_SPENT);
 			return;
 		}
@@ -324,25 +324,6 @@ public final class TomorrowWeatherProvider {
 					+ " (independent second opinion)");
 		} catch (Throwable t) {
 			LOG.info("Tomorrow.io parse failed: " + t.getClass().getSimpleName());
-		}
-	}
-
-	private static boolean claim(@NonNull OsmandApplication app) {
-		try {
-			android.content.SharedPreferences prefs = app.getSharedPreferences(
-					"cairodrive_providers", android.content.Context.MODE_PRIVATE);
-			int today = (int) (System.currentTimeMillis() / (24L * 60 * 60 * 1000));
-			synchronized (TomorrowWeatherProvider.class) {
-				int day = prefs.getInt(PREF_DAY, -1);
-				int count = day == today ? prefs.getInt(PREF_COUNT, 0) : 0;
-				if (count >= DAILY_CAP) {
-					return false;
-				}
-				prefs.edit().putInt(PREF_DAY, today).putInt(PREF_COUNT, count + 1).apply();
-				return true;
-			}
-		} catch (Throwable t) {
-			return false;
 		}
 	}
 

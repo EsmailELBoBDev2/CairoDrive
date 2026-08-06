@@ -844,8 +844,28 @@ jobs:
           #
           # Task names are derived from APK_RELEASE_TASK (`:OsmAnd:assemble<Variant>Release`)
           # rather than hardcoded, because the variant changes with the abi/core inputs. If a
-          # future AGP renames these tasks, `-x` fails with "Task not found" - loud and one line
+          # future AGP renames this task, `-x` fails with "Task not found" - loud and one line
           # to fix, which is the right failure mode for an optimisation.
+          #
+          # EXCLUDE THE UMBRELLA TASK, NOT ITS PRODUCERS. This first went in as
+          #   -x lintVitalAnalyze${SUFFIX} -x lintVitalReport${SUFFIX}
+          # and run 232 failed on it in 32 s, AFTER a 17-minute bundle had already succeeded:
+          #
+          #   Some problems were found with the configuration of task
+          #   ':OsmAnd:lintVitalCairodriveOpenglArm64Release' (AndroidLintTextOutputTask)
+          #   property 'returnValueInputFile' ... An input file was expected to be present
+          #   but it doesn't exist.
+          #
+          # lintVital<Variant> CONSUMES what those two produce. Excluding only the producers
+          # left the consumer in the graph looking for report files nothing had written, so it
+          # failed validation rather than being skipped. Excluding the consumer instead takes
+          # both producers with it, because Gradle drops tasks that are required only by an
+          # excluded task - one -x instead of two, and the correct one.
+          #
+          # If a future Gradle stops pruning them, they run and the step is 1 min 9 s slower.
+          # That is the right way round: the failure mode of this line is a slow build, not a
+          # broken one. The old form had it backwards, and both jobs carried it - so the signed
+          # release job would have died exactly here, after spending a production approval.
           SUFFIX="${APK_RELEASE_TASK#:OsmAnd:assemble}"
           SKIP_NATIVE=""
           if [ "${NATIVE_CACHE_OK:-false}" = "true" ]; then
@@ -853,8 +873,7 @@ jobs:
           fi
           # shellcheck disable=SC2086
           ./gradlew --no-daemon --stacktrace ${SKIP_NATIVE} "${APK_RELEASE_TASK}" \
-            -x ":OsmAnd:lintVitalAnalyze${SUFFIX}" \
-            -x ":OsmAnd:lintVitalReport${SUFFIX}"
+            -x ":OsmAnd:lintVital${SUFFIX}"
 
       # Fails the build if the native routing library did not make it into the artifacts.
       # This is the guard that was missing: the app degrades SILENTLY without libosmand.so -
@@ -1649,12 +1668,17 @@ jobs:
           #
           # Task names are derived from APK_RELEASE_TASK (`:OsmAnd:assemble<Variant>Release`)
           # rather than hardcoded, because the variant changes with the abi/core inputs. If a
-          # future AGP renames these tasks, `-x` fails with "Task not found" - loud and one line
+          # future AGP renames this task, `-x` fails with "Task not found" - loud and one line
           # to fix, which is the right failure mode for an optimisation.
+          #
+          # EXCLUDE THE UMBRELLA TASK, NOT ITS PRODUCERS - see the long note in the dev job.
+          # Excluding lintVitalAnalyze/lintVitalReport while leaving lintVital<Variant> in the
+          # graph fails validation, because that task consumes report files the excluded tasks
+          # never wrote. Run 232 died on it in the dev job. This job carried the identical bug,
+          # so it would have failed the same way after spending a production approval.
           SUFFIX="${APK_RELEASE_TASK#:OsmAnd:assemble}"
           ./gradlew --no-daemon --stacktrace "${APK_RELEASE_TASK}" \
-            -x ":OsmAnd:lintVitalAnalyze${SUFFIX}" \
-            -x ":OsmAnd:lintVitalReport${SUFFIX}"
+            -x ":OsmAnd:lintVital${SUFFIX}"
 
       # Fails the build if the native routing library did not make it into the artifacts.
       # This is the guard that was missing: the app degrades SILENTLY without libosmand.so -
