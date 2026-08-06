@@ -863,6 +863,16 @@ public class CairoDriveLogger {
 				+ " mapMatching=" + BuildConfig.CAIRODRIVE_MAP_MATCHING
 				+ " speechLead=" + BuildConfig.CAIRODRIVE_SPEECH_LEAD
 				+ " rerouteCache=" + BuildConfig.CAIRODRIVE_REROUTE_CACHE
+				// Today's reroute-latency work. Without these a drive log cannot attribute a
+				// single number to any of it - CLAUDE.md's rule about reading the SESSION
+				// header exists precisely because a stale build once cost a whole drive.
+				+ " routeRace=" + BuildConfig.CAIRODRIVE_ROUTE_RACE
+				+ " earlyReroute=" + BuildConfig.CAIRODRIVE_EARLY_REROUTE
+				+ " tightenNearTurn=" + BuildConfig.CAIRODRIVE_TIGHTEN_NEAR_TURN
+				+ " wrongRoad=" + BuildConfig.CAIRODRIVE_WRONG_ROAD
+				+ " wrongRoadAct=" + BuildConfig.CAIRODRIVE_WRONG_ROAD_ACT
+				+ " earlyOffRouteVoice=" + BuildConfig.CAIRODRIVE_ANNOUNCE_EARLY_OFFROUTE
+				+ " altAlternatives=" + BuildConfig.CAIRODRIVE_ALTERNATE_ALTERNATIVES
 				+ " routeAlternatives=" + BuildConfig.CAIRODRIVE_ROUTE_ALTERNATIVES
 				+ " lockExternalApi=" + BuildConfig.CAIRODRIVE_LOCK_EXTERNAL_API
 				+ " interpolation=" + BuildConfig.CAIRODRIVE_LOCATION_INTERPOLATION);

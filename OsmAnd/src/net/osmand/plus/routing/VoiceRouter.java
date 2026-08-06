@@ -247,8 +247,12 @@ public class VoiceRouter {
 		// behaviour, it is letting an existing one reach the case it was written for. The prompt
 		// is still rate-limited by waitAnnouncedOffRoute below and still respects
 		// SPEAK_ROUTE_DEVIATION, so a driver who does not want it is unaffected.
-		double threshold = BuildConfig.CAIRODRIVE_ANNOUNCE_EARLY_OFFROUTE
-				? Math.min(atd.getOffRouteDistance(), router.getMaxAllowedDeviation())
+		float allowed = router.getMaxAllowedDeviation();
+		// allowed is -1 in DIRECT_TO mode, where there is no route to deviate from. Through a
+		// bare Math.min that sentinel becomes the threshold, and since distOrth is 0 there,
+		// `0 > -1` would fire the off-route prompt on every single fix.
+		double threshold = BuildConfig.CAIRODRIVE_ANNOUNCE_EARLY_OFFROUTE && allowed > 0
+				? Math.min(atd.getOffRouteDistance(), allowed)
 				: atd.getOffRouteDistance();
 		if (settings.SPEAK_ROUTE_DEVIATION.get() && dist > threshold) {
 			long ms = System.currentTimeMillis();
@@ -266,7 +270,14 @@ public class VoiceRouter {
 				}
 				lastAnnouncedOffRoute = ms;
 			// Avoid offRoute/onRoute loop, #16571:
-			} else if (announceBackOnRoute && (dist < 0.3 * atd.getOffRouteDistance())) {
+			//
+			// Scaled off THRESHOLD, not off the raw OFF_ROUTE_DISTANCE constant. With the two
+			// unrelated - 250 m for one, 25-120 m for the other - the branches stopped being
+			// mutually exclusive: a driver 60 m off route, past the rate limiter, was told
+			// "you are back on the route" while the app was still recalculating and still
+			// considered them off it. Upstream never hit this because the outer gate was 250 m
+			// and made this branch unreachable.
+			} else if (announceBackOnRoute && (dist < 0.3 * threshold)) {
 				announceBackOnRoute();
 			}
 		}

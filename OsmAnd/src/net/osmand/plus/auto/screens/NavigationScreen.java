@@ -372,7 +372,7 @@ public final class NavigationScreen extends BaseAndroidAutoScreen implements Sur
 		if (navigating) {
 			if (destinationTravelEstimate != null && destinationTravelEstimate.getRemainingTimeSeconds() >= 0) {
 				TravelEstimate estimate = destinationTravelEstimate;
-				if (isRerouting() && !Algorithms.isEmpty(steps)) {
+				if (isReroutingVisibly() && !Algorithms.isEmpty(steps)) {
 					// Say "recalculating" WITHOUT evicting the manoeuvre. The travel estimate is
 					// an independent section of NavigationTemplate, so setTripText reaches the
 					// driver while the turn, distance, road name and lanes stay on screen.
@@ -395,7 +395,7 @@ public final class NavigationScreen extends BaseAndroidAutoScreen implements Sur
 				}
 				builder.setDestinationTravelEstimate(estimate);
 			}
-			if (isRerouting() && Algorithms.isEmpty(steps)) {
+			if (isReroutingVisibly() && Algorithms.isEmpty(steps)) {
 				// ONLY when there is no manoeuvre left to show. Both setLoading(true) and a
 				// MessageInfo REPLACE the whole routing card - turn, distance, road name, lanes -
 				// and the API gives no way to combine them with a manoeuvre: RoutingInfo.Builder
@@ -478,6 +478,29 @@ public final class NavigationScreen extends BaseAndroidAutoScreen implements Sur
 
 	private boolean isRerouting() {
 		return rerouting || destinations == null;
+	}
+
+	/**
+	 * Should the head unit say a recalculation is under way?
+	 *
+	 * <p>Narrower than {@link #isRerouting()}, which is just "a calculation is running". Since
+	 * CAIRODRIVE_EARLY_REROUTE starts the search at half the deviation threshold - and
+	 * CAIRODRIVE_TIGHTEN_NEAR_TURN halves that again near a manoeuvre - a search can begin at
+	 * 12-30 m of offset, which is ordinary GPS wobble at a junction. Those searches are usually
+	 * DISCARDED and the driver never leaves the route.
+	 *
+	 * <p>Announcing them would put "Recalculating…" on screen for seconds at a time while the
+	 * driver is following the route correctly, which is worse than saying nothing: a label that
+	 * cries wolf stops being read. So the label waits for the deviation the ordinary distance
+	 * test confirms, even though the WORK started earlier - which is the whole point of starting
+	 * it earlier.
+	 */
+	private boolean isReroutingVisibly() {
+		try {
+			return isRerouting() && getApp().getRoutingHelper().isDeviatedFromRoute();
+		} catch (Throwable t) {
+			return isRerouting();
+		}
 	}
 
 	private void stopNavigation() {
