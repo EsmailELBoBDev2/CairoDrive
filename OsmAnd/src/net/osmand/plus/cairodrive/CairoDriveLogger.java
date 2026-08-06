@@ -204,6 +204,11 @@ public class CairoDriveLogger {
 	 */
 	private static final String SECRET_NAMES =
 			"accessToken|access_token|refresh_token|token|password|passwd|pwd|apikey|api_key"
+					// subscription-key is Azure Maps' spelling and the hyphen means the plain
+					// `key` alternative does NOT match it - \b sits before the whole group, so
+					// "subscription-key=" only matched from the hyphen if `key` were listed alone,
+					// and the leading word boundary prevents even that. Spelled out explicitly.
+					+ "|subscription-key|subscriptionkey"
 					+ "|key|secret|authorization|auth|orderId|deviceid|userid|email|sessionid";
 
 	/**

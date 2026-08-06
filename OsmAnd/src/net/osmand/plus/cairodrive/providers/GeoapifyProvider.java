@@ -61,7 +61,11 @@ import java.util.Locale;
 public final class GeoapifyProvider {
 
 	private static final Log LOG = PlatformUtil.getLog(GeoapifyProvider.class);
-	private static final String TRACE_TAG = "CD_GEOCODE";
+	/**
+	 * NO "CD_" prefix here: {@link CairoDriveLog#log} adds it. Passing "CD_GEOCODE" wrote every
+	 * line of this class under CD_CD_GEOCODE, so grepping the documented tag found nothing.
+	 */
+	private static final String TRACE_TAG = "GEOCODE";
 
 	private static final String REVERSE_API = "https://api.geoapify.com/v1/geocode/reverse";
 	private static final String AUTOCOMPLETE_API = "https://api.geoapify.com/v1/geocode/autocomplete";

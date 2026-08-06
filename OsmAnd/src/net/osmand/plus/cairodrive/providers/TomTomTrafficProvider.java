@@ -834,12 +834,17 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 		if (response.code != HttpURLConnection.HTTP_OK) {
 			// Note what is NOT logged: the URL. It carries the key in a query parameter, and the
 			// redaction in CairoDriveLogger only filters the logcat pump, not direct log() calls.
-			ApiHealth.recordFailure(ApiHealth.Api.TOMTOM_INCIDENTS, response.code, response.body);
+			// Code only, never the body - the key rides in this URL. See the note on the flow path.
+			ApiHealth.recordFailure(ApiHealth.Api.TOMTOM_INCIDENTS, response.code, null);
 			CairoDriveLogger.getInstance().log(TRACE_TAG, "incidents http=" + response.code
 					+ " mode=" + (following ? "nav" : "free")
 					+ " ms=" + elapsed + " bbox=" + bbox + " lang=" + language
 					+ " budget=" + used(app, PREF_INCIDENT_COUNT) + "/" + INCIDENT_DAILY_CAP
-					+ (Algorithms.isEmpty(response.body) ? "" : " body=" + trim(response.body, 200)));
+					// The body is deliberately NOT here. The key is a query parameter on this URL and
+					// this line goes into the drive log, which is pulled off the phone and pasted
+					// into chats. The status code is the actionable part; ApiHealth turns it into a
+					// sentence on the API status screen.
+					);
 			handleHttpFailure(response.code, language);
 			return;
 		}
@@ -1054,7 +1059,11 @@ public final class TomTomTrafficProvider implements CairoDriveProviders.Provider
 			Response response = request(url);
 			lastCode = response.code;
 			if (response.code != HttpURLConnection.HTTP_OK) {
-				ApiHealth.recordFailure(ApiHealth.Api.TOMTOM_FLOW, response.code, response.body);
+				// Code only, NEVER the body: the TomTom key is a query parameter on this URL, and the
+			// error body goes into ApiHealth.lastDetail -> the APISTATUS line -> the drive log that
+			// gets pulled off the phone and pasted into a chat. ClosureSyncHelper already refuses
+			// to do this for the same vendor; this was the one place that still did.
+			ApiHealth.recordFailure(ApiHealth.Api.TOMTOM_FLOW, response.code, null);
 				failures++;
 				handleHttpFailure(response.code, null);
 				continue;

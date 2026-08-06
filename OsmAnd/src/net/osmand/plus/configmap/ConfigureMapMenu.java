@@ -293,7 +293,13 @@ public class ConfigureMapMenu {
 							.show();
 					// Also into the drive log, so the same picture survives the dialog closing and
 					// can be read afterwards against the drive it belonged to.
-					CairoDriveLog.log("APISTATUS",
+					// Straight to the logger, NOT through CairoDriveLog: that helper prefixes "CD_"
+					// (so this read CD_APISTATUS while the periodic writer used APISTATUS - two
+					// tags for one record, and a grep finds half the data) and truncates at 400
+					// characters, which cuts roughly the last four providers off an eleven-row
+					// summary. The rows that get cut are the ones added most recently, i.e. the
+					// ones most likely to be what someone is looking for.
+					net.osmand.plus.cairodrive.CairoDriveLogger.getInstance().log("APISTATUS",
 							net.osmand.plus.cairodrive.providers.ApiHealth.summary()
 									.replace("\n", " | "));
 					return false;

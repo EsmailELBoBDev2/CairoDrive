@@ -65,7 +65,11 @@ import java.util.Locale;
 public final class TomorrowWeatherProvider {
 
 	private static final Log LOG = PlatformUtil.getLog(TomorrowWeatherProvider.class);
-	private static final String TRACE_TAG = "CD_WEATHER2";
+	/**
+	 * NO "CD_" prefix here: {@link CairoDriveLog#log} adds it. Passing "CD_WEATHER2" wrote every
+	 * line of this class under CD_CD_WEATHER2, so grepping the documented tag found nothing.
+	 */
+	private static final String TRACE_TAG = "WEATHER2";
 
 	private static final String REALTIME_API = "https://api.tomorrow.io/v4/weather/realtime";
 
@@ -221,6 +225,13 @@ public final class TomorrowWeatherProvider {
 		if (inFlight) {
 			return;
 		}
+		// Stamped on the ATTEMPT, before any early return in poll() below.
+		//
+		// It used to be set only after claim() succeeded inside the worker, so no internet or a
+		// spent budget left it at 0 - this guard never engaged again and a new Thread was built on
+		// EVERY GPS fix, roughly once a second, for the rest of the drive. inFlight capped how many
+		// ran at once, not how many were created.
+		lastPollMs = now;
 		double lat = location.getLatitude();
 		double lon = location.getLongitude();
 		synchronized (TomorrowWeatherProvider.class) {
@@ -268,7 +279,6 @@ public final class TomorrowWeatherProvider {
 			ApiHealth.recordSkipped(ApiHealth.Api.TOMORROW, ApiHealth.Skip.BUDGET_SPENT);
 			return;
 		}
-		lastPollMs = now;
 
 		// The particulate fields ride the SAME request for the SAME one unit of quota. That is the
 		// whole reason they are here: OpenWeather's dust decision rests on three signals, and two

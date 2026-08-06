@@ -95,12 +95,24 @@ public final class ApiHealth {
 			this.api = api;
 		}
 
+		/** When the last skip was recorded. Compared against lastAttemptMs to find the newer. */
+		public volatile long lastSkipMs;
+
 		public boolean everTried() {
 			return lastAttemptMs != 0 || lastSkip != null;
 		}
 
+		/**
+		 * Working AND not currently standing down.
+		 *
+		 * <p>The second half was missing and it hid the single most useful state on the screen. A
+		 * provider that succeeded once had okCount > 0 and lastOkMs >= lastAttemptMs forever, so a
+		 * later BUDGET_SPENT, NO_INTERNET or DISABLED never showed: Geoapify past its 120th reverse
+		 * lookup read "Working (120 ok, 0 failed)" on the dialog and in every APISTATUS line in the
+		 * drive log. That is the exact silence this class exists to break, reproduced inside it.
+		 */
 		public boolean healthy() {
-			return okCount > 0 && lastOkMs >= lastAttemptMs;
+			return okCount > 0 && lastOkMs >= lastAttemptMs && lastSkipMs <= lastOkMs;
 		}
 	}
 
@@ -134,6 +146,7 @@ public final class ApiHealth {
 		s.lastCode = 200;
 		s.lastDetail = null;
 		s.lastSkip = null;
+		s.lastSkipMs = 0;
 		s.okCount++;
 	}
 
@@ -160,6 +173,9 @@ public final class ApiHealth {
 	public static void recordSkipped(@NonNull Api api, @NonNull Skip skip) {
 		Status s = get(api);
 		s.lastSkip = skip;
+		// Timestamped so `healthy()` can tell a CURRENT stand-down from an old one. Without it a
+		// provider that ever worked reported "Working" while sitting out the rest of the day.
+		s.lastSkipMs = System.currentTimeMillis();
 	}
 
 	/**
@@ -174,7 +190,11 @@ public final class ApiHealth {
 	 */
 	@NonNull
 	public static String explain(@NonNull Status s) {
-		if (s.lastSkip != null && s.lastAttemptMs == 0) {
+		// A skip NEWER than the last attempt is the current state, whatever came before it. The
+		// old test - skip only when nothing was ever attempted - meant a spent budget was
+		// unreportable on any provider that had already worked once, which is every provider that
+		// can spend a budget.
+		if (s.lastSkip != null && s.lastSkipMs >= s.lastAttemptMs) {
 			return s.lastSkip.reason;
 		}
 		if (s.lastAttemptMs == 0) {

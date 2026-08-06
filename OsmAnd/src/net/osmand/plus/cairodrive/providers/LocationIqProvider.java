@@ -56,7 +56,11 @@ import java.util.Locale;
 public final class LocationIqProvider {
 
 	private static final Log LOG = PlatformUtil.getLog(LocationIqProvider.class);
-	private static final String TRACE_TAG = "CD_GEOCODE";
+	/**
+	 * NO "CD_" prefix here: {@link CairoDriveLog#log} adds it. Passing "CD_GEOCODE" wrote every
+	 * line of this class under CD_CD_GEOCODE, so grepping the documented tag found nothing.
+	 */
+	private static final String TRACE_TAG = "GEOCODE";
 
 	private static final String REVERSE_API = "https://us1.locationiq.com/v1/reverse";
 	private static final String AUTOCOMPLETE_API = "https://us1.locationiq.com/v1/autocomplete";

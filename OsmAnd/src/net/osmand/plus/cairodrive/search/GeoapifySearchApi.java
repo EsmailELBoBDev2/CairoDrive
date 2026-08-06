@@ -77,7 +77,11 @@ import java.util.List;
 public class GeoapifySearchApi extends SearchBaseAPI {
 
 	private static final Log LOG = PlatformUtil.getLog(GeoapifySearchApi.class);
-	private static final String TRACE_TAG = "CD_SEARCH2";
+	/**
+	 * NO "CD_" prefix here: {@link CairoDriveLog#log} adds it. Passing "CD_SEARCH2" wrote every
+	 * line of this class under CD_CD_SEARCH2, so grepping the documented tag found nothing.
+	 */
+	private static final String TRACE_TAG = "SEARCH2";
 
 	/**
 	 * Runs after Google (5) and before every offline provider (500 and below).
@@ -132,6 +136,15 @@ public class GeoapifySearchApi extends SearchBaseAPI {
 		}
 		if (phrase.getLastSelectedWord() == null
 				&& queryOf(phrase).length() < MIN_QUERY_LENGTH) {
+			return -1;
+		}
+		// A tapped CATEGORY with no known location cannot be answered. Places needs a centre, and
+		// without this guard search() fell through to the autocomplete branch and sent the
+		// category's NAME as free text - answering "Fuel" with places called Fuel, publishing them,
+		// and closing the gate on the offline index that would have answered correctly. Exactly
+		// what the comment in search() says must not happen.
+		if (phrase.getLastSelectedWord() != null
+				&& phrase.getSettings().getOriginalLocation() == null) {
 			return -1;
 		}
 		return SEARCH_PRIORITY;

@@ -65,7 +65,11 @@ import java.util.Locale;
 public final class AzureRouteWeatherProvider {
 
 	private static final Log LOG = PlatformUtil.getLog(AzureRouteWeatherProvider.class);
-	private static final String TRACE_TAG = "CD_ROUTEWX";
+	/**
+	 * NO "CD_" prefix here: {@link CairoDriveLog#log} adds it. Passing "CD_ROUTEWX" wrote every
+	 * line of this class under CD_CD_ROUTEWX, so grepping the documented tag found nothing.
+	 */
+	private static final String TRACE_TAG = "ROUTEWX";
 
 	private static final String ROUTE_WEATHER_API = "https://atlas.microsoft.com/weather/route/json";
 	/**
@@ -168,6 +172,18 @@ public final class AzureRouteWeatherProvider {
 		if (!routeDue && !alertsDue) {
 			return;
 		}
+		// Stamped HERE, before any early return below, not inside the worker after claim().
+		//
+		// They used to be set only on the success path, so no internet or a spent budget left them
+		// at 0 - the due-check above never engaged again and a new Thread was constructed on EVERY
+		// GPS fix for the rest of the drive. inFlight bounded concurrency, not creation rate. The
+		// timer is about how often this is ATTEMPTED, so it belongs with the attempt.
+		if (routeDue) {
+			lastPollMs = now;
+		}
+		if (alertsDue) {
+			lastAlertPollMs = now;
+		}
 		// Alerts do not need a route; route weather does. Working that out HERE rather than
 		// inside the worker keeps the thread from being started for a job that has nothing to do.
 		List<Location> ahead = null;
@@ -246,16 +262,17 @@ public final class AzureRouteWeatherProvider {
 		if (lastPollMs != 0 && now - lastPollMs < MIN_INTERVAL_MS) {
 			return -1;
 		}
+		// Query FIRST, budget second. Claiming before building meant a route too short to sample
+		// spent one of the day's slots and sent nothing.
+		String query = buildQuery(routeAhead, remainingMinutes);
+		if (query == null) {
+			CairoDriveLog.log(TRACE_TAG, "azure route weather: route too short to sample, no request");
+			return -1;
+		}
 		if (!claim(app, PREF_DAY, PREF_COUNT, ROUTE_DAILY_CAP)) {
 			ApiHealth.recordSkipped(ApiHealth.Api.AZURE_MAPS, ApiHealth.Skip.BUDGET_SPENT);
 			CairoDriveLog.log(TRACE_TAG, "azure route weather skipped - daily cap "
 					+ ROUTE_DAILY_CAP + " reached (alerts have their own budget and continue)");
-			return -1;
-		}
-		lastPollMs = now;
-
-		String query = buildQuery(routeAhead, remainingMinutes);
-		if (query == null) {
 			return -1;
 		}
 		String url = ROUTE_WEATHER_API + "?api-version=" + API_VERSION
@@ -398,7 +415,6 @@ public final class AzureRouteWeatherProvider {
 					+ ALERT_DAILY_CAP + " reached");
 			return null;
 		}
-		lastAlertPollMs = now;
 		String url = String.format(Locale.US, "%s?api-version=%s&query=%.5f,%.5f&subscription-key=%s",
 				SEVERE_ALERTS_API, API_VERSION, lat, lon, BuildConfig.CAIRODRIVE_AZURE_MAPS_KEY);
 		String body = get(url);
@@ -418,11 +434,15 @@ public final class AzureRouteWeatherProvider {
 			StringBuilder sb = new StringBuilder();
 			for (int i = 0; i < results.length() && sb.length() < 200; i++) {
 				JSONObject alert = results.getJSONObject(i);
-				String description = alert.optString("description", "");
-				if (Algorithms.isEmpty(description)) {
-					JSONObject d = alert.optJSONObject("description");
-					description = d != null ? d.optString("english", "") : "";
-				}
+				// `description` is an OBJECT - {localized, english} - not a string. Android's
+				// optString returns value.toString() for a non-string, i.e. the raw JSON text,
+				// which is never empty, so the object branch below used to be unreachable and an
+				// actual sandstorm warning was logged as {"localized":"...","english":"..."}.
+				// Object first, string only as the fallback.
+				JSONObject d = alert.optJSONObject("description");
+				String description = d != null
+						? firstNonEmpty(d.optString("localized", ""), d.optString("english", ""))
+						: alert.optString("description", "");
 				String category = alert.optString("category", "");
 				if (Algorithms.isEmpty(description) && Algorithms.isEmpty(category)) {
 					continue;
@@ -452,6 +472,11 @@ public final class AzureRouteWeatherProvider {
 	private static volatile long lastAlertPollMs;
 	@Nullable
 	private static volatile String lastAlertSummary;
+
+	@NonNull
+	private static String firstNonEmpty(@NonNull String a, @NonNull String b) {
+		return !Algorithms.isEmpty(a) ? a : b;
+	}
 
 	private static boolean claim(@NonNull OsmandApplication app, @NonNull String dayPref,
 	                             @NonNull String countPref, int cap) {
