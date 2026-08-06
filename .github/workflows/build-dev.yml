@@ -470,6 +470,42 @@ jobs:
             fi
           done
           [ "$found" = 0 ] && echo "No failing test XML found (tests passed, or never ran)."
+
+          # SLOWEST TESTS, printed whether or not anything failed.
+          #
+          # RouteTestingTest is wall-clock timed at @Test(timeout = 1500), so how close the
+          # slowest cases run to that ceiling is the one number that says whether this suite is
+          # healthy or one busy runner away from red. It is in the uploaded XML - and the XML is
+          # only reachable by downloading the artifact, which is not always possible: GitHub
+          # redirects artifact downloads to *.blob.core.windows.net, and an egress policy that
+          # denies that host makes the report unreadable no matter what credentials you hold.
+          # A number that decides whether a build is one step from failing should not depend on
+          # reaching a third-party storage host.
+          #
+          # So it goes in the log, near the end, where the tail is readable. Same reasoning as
+          # the provider keys in the summary.
+          echo "::group::Slowest tests (headroom against the 1500 ms routing timeout)"
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          rows = []
+          for f in glob.glob('**/build/test-results/**/TEST-*.xml', recursive=True):
+              try:
+                  root = ET.parse(f).getroot()
+              except Exception:
+                  continue
+              for case in root.iter('testcase'):
+                  try:
+                      rows.append((float(case.get('time') or 0), case.get('classname') or '',
+                                   case.get('name') or ''))
+                  except ValueError:
+                      pass
+          rows.sort(reverse=True)
+          if not rows:
+              print("no test XML found")
+          for t, cls, name in rows[:15]:
+              print("%8.3fs  %s.%s" % (t, cls.rsplit('.', 1)[-1], name[:80]))
+          PY
+          echo "::endgroup::"
           exit 0
 
       - name: Upload test reports
@@ -976,6 +1012,42 @@ jobs:
             fi
           done
           [ "$found" = 0 ] && echo "No failing test XML found (tests passed, or never ran)."
+
+          # SLOWEST TESTS, printed whether or not anything failed.
+          #
+          # RouteTestingTest is wall-clock timed at @Test(timeout = 1500), so how close the
+          # slowest cases run to that ceiling is the one number that says whether this suite is
+          # healthy or one busy runner away from red. It is in the uploaded XML - and the XML is
+          # only reachable by downloading the artifact, which is not always possible: GitHub
+          # redirects artifact downloads to *.blob.core.windows.net, and an egress policy that
+          # denies that host makes the report unreadable no matter what credentials you hold.
+          # A number that decides whether a build is one step from failing should not depend on
+          # reaching a third-party storage host.
+          #
+          # So it goes in the log, near the end, where the tail is readable. Same reasoning as
+          # the provider keys in the summary.
+          echo "::group::Slowest tests (headroom against the 1500 ms routing timeout)"
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          rows = []
+          for f in glob.glob('**/build/test-results/**/TEST-*.xml', recursive=True):
+              try:
+                  root = ET.parse(f).getroot()
+              except Exception:
+                  continue
+              for case in root.iter('testcase'):
+                  try:
+                      rows.append((float(case.get('time') or 0), case.get('classname') or '',
+                                   case.get('name') or ''))
+                  except ValueError:
+                      pass
+          rows.sort(reverse=True)
+          if not rows:
+              print("no test XML found")
+          for t, cls, name in rows[:15]:
+              print("%8.3fs  %s.%s" % (t, cls.rsplit('.', 1)[-1], name[:80]))
+          PY
+          echo "::endgroup::"
           exit 0
 
       # Release-signed APK of the same code that goes into the bundle, for sideload
