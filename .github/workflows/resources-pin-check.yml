@@ -10,27 +10,38 @@ name: Check the pinned OsmAnd-resources
 # something in routing.xml, and nobody notices because a pin never complains. This is the thing
 # that complains.
 #
-# It only REPORTS. Bumping the pin stays a human commit, which is the entire point of pinning -
-# an automation that pinned and then quietly unpinned itself would be worse than never pinning.
-# That also matches how upstream-sync.yml treats the code: it proposes a pull request and a
-# person decides.
+# It BUMPS THE PIN ITSELF, and the reason that is safe here is the branch topology rather than
+# trust:
+#
+#   - a push to `dev` builds debug-signed artifacts that Play rejects by construction, so an
+#     automatic commit on dev cannot reach a user;
+#   - that push runs the full build AND the test suite, so a resources change that breaks routing
+#     shows up as a red dev build within twenty minutes;
+#   - shipping still needs a `v*` tag AND the `production` environment's reviewer, which no
+#     automation here can satisfy.
+#
+# So the human gate stays exactly where it already was, and the chore in front of it disappears.
+# Every bump is still a COMMIT - which is the part that matters. Reproducibility never came from
+# a person typing the number; it came from the number being recorded in history, bisectable and
+# revertable. `latest` has neither property.
 
 on:
   schedule:
-    # Weekly. The resources repo moves slowly - a handful of commits a week - and the cost of
-    # being a few days late to notice is nil, whereas a daily issue-check is noise.
+    # Daily. When this filed an issue, weekly was right because each one was a chore; now that
+    # it bumps by itself the only cost of checking is a few seconds of runner time, and being
+    # a day behind beats being a week behind.
     #
     # On the DEFAULT branch or it never fires: GitHub reads `schedule:` only from the default
     # branch's copy of a workflow, and a cron on a feature branch is silently inert with no
     # error anywhere. upstream-sync.yml carries the same warning, learned the same way.
-    - cron: '23 4 * * 1'
+    - cron: '23 4 * * *'
   workflow_dispatch:
 
 permissions:
-  contents: read
-  # File the drift issue. Nothing else - this workflow must not be able to change the pin it
-  # is watching.
-  issues: write
+  # Push the pin bump to dev.
+  contents: write
+  # Fall back to a pull request if dev turns out to be branch-protected.
+  pull-requests: write
 
 concurrency:
   group: resources-pin-check
@@ -42,10 +53,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout
+      - name: Checkout dev
         uses: actions/checkout@v7
         with:
-          persist-credentials: false
+          ref: dev
+          # Needed: this job pushes the bump.
+          persist-credentials: true
 
       - name: Read the pin and compare
         id: compare
@@ -95,7 +108,7 @@ jobs:
             echo "::notice::OsmAnd-resources has moved. Pinned ${PINNED}, upstream ${UPSTREAM}."
           fi
 
-      - name: File the drift issue
+      - name: Bump the pin and push
         if: steps.compare.outputs.drift == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -103,45 +116,52 @@ jobs:
           UPSTREAM: ${{ steps.compare.outputs.upstream }}
         run: |
           set -euo pipefail
-          MARKER="resources-pin-drift"
-          # One open issue at a time, found by a marker in the body rather than by title, so
-          # renaming the issue does not produce a second one every week.
-          EXISTING="$(gh issue list --state open --search "\"${MARKER}\" in:body" \
-            --json number --jq '.[0].number // empty')"
-          if [ -n "${EXISTING}" ]; then
-            echo "Issue #${EXISTING} is already open; not filing another."
-            exit 0
+          git config user.name  "cairodrive-bot"
+          git config user.email "noreply@github.com"
+
+          # Both pins, in one commit. Bumping one and not the other is the failure the compare
+          # step above refuses to let stand, so it must not be introduced here either.
+          sed -i "s/${PINNED}/${UPSTREAM}/g" .github/workflows/build-dev.yml
+          COUNT="$(grep -c "ref: ${UPSTREAM}" .github/workflows/build-dev.yml || true)"
+          if [ "${COUNT}" -ne 2 ]; then
+            echo "::error::Expected 2 pins after the bump, found ${COUNT}. Refusing to push a half-applied change."
+            exit 1
           fi
-          # Written line by line into a file rather than a heredoc: a heredoc terminator has to
-          # sit at column 0, and column 0 inside a YAML block scalar ends the block. That is not
-          # a hypothetical - it is what this file failed to parse on the first attempt.
-          BODY=body.md
+
           {
-            echo 'The build pins `osmandapp/OsmAnd-resources` so that routing.xml - and therefore'
-            echo 'the routing profile inside a shipped APK - cannot change without a commit here.'
-            echo 'Upstream has since moved.'
+            echo "Bump OsmAnd-resources to ${UPSTREAM:0:12}"
             echo
-            echo '| | commit |'
-            echo '|---|---|'
-            echo "| pinned in \`.github/workflows/build-dev.yml\` | \`${PINNED}\` |"
-            echo "| upstream HEAD | \`${UPSTREAM}\` |"
+            echo "Automatic. Upstream resources moved; this is the commit that records it, so the"
+            echo "change is bisectable and revertable instead of arriving invisibly at build time."
             echo
-            echo "Compare: https://github.com/osmandapp/OsmAnd-resources/compare/${PINNED}...${UPSTREAM}"
+            echo "  was ${PINNED}"
+            echo "  now ${UPSTREAM}"
             echo
-            echo '**Nothing is broken.** The build is reproducible and keeps using the pinned'
-            echo 'commit. This exists only so the pin cannot rot unnoticed for months.'
+            echo "https://github.com/osmandapp/OsmAnd-resources/compare/${PINNED}...${UPSTREAM}"
             echo
-            echo 'To take the newer resources, change BOTH `ref:` lines in'
-            echo '`.github/workflows/build-dev.yml` in one commit, then let a dev build run before'
-            echo 'anything is signed - the routing TEST MAPS come from this repository too, so a'
-            echo 'resources bump can move the test suite as well as the app.'
+            echo "routing.xml, rendering_types, poi_types and the routing TEST MAPS all come from"
+            echo "this repository, so this can move the test suite as well as the app. The dev"
+            echo "build this push triggers is the check: it is debug-signed and cannot reach Play,"
+            echo "and shipping still needs a v* tag plus the production reviewer."
             echo
-            echo 'Read the compare link for changes to `routing/routing.xml` first: this fork'
-            echo 'patches that file at build time, and `patches/` aborts the build if upstream'
-            echo 'restructures what it edits.'
-            echo
-            echo "<!-- ${MARKER} -->"
-          } > "${BODY}"
-          gh issue create \
-            --title "OsmAnd-resources pin is behind upstream" \
-            --body-file "${BODY}"
+            echo "To undo: git revert this commit."
+          } > msg.txt
+
+          git add .github/workflows/build-dev.yml
+          git commit -F msg.txt
+          rm -f msg.txt
+
+          # Straight to dev when allowed - that push runs the full build and the tests. If dev is
+          # branch-protected the push is REJECTED rather than silently skipped, so fall back to a
+          # pull request instead of losing the bump.
+          if git push origin HEAD:dev; then
+            echo "Pushed the bump to dev; its build is the verification."
+          else
+            echo "::warning::Direct push to dev was rejected (branch protection). Opening a pull request instead."
+            BRANCH="auto/resources-pin-${UPSTREAM:0:12}"
+            git push -f origin "HEAD:${BRANCH}"
+            gh pr create --base dev --head "${BRANCH}" \
+              --title "Bump OsmAnd-resources to ${UPSTREAM:0:12}" \
+              --body "Automatic pin bump. See the commit message for the compare link and what it can affect." \
+              || echo "A pull request for this branch already exists."
+          fi
