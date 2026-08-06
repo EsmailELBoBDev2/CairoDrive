@@ -70,7 +70,11 @@ public class RouteCalculationProgress implements Serializable {
 	public MissingMapsCalculationResult missingMapsCalculationResult = null;
 	private int fastRoutingStatusOrdinal = FastRoutingState.Status.READY.ordinal(); // Two-way from/to JNI
 
-	private int hhIterationStep = HHIteration.HH_NOT_STARTED.ordinal();
+	// VOLATILE: written by the native engine through JNI as the calculation proceeds, and read by
+	// CairoDriveRoutePhases on a separate sampler thread. Without it that reader is entitled to
+	// see one cached value for the whole calculation and would attribute every millisecond to
+	// whichever phase it happened to observe first.
+	private volatile int hhIterationStep = HHIteration.HH_NOT_STARTED.ordinal();
 	private int hhTargetsDone, hhTargetsTotal;
 	private double hhCurrentStepProgress;
 	private int hhCalcCounter;
@@ -223,6 +227,17 @@ public class RouteCalculationProgress implements Serializable {
 		HHIteration(int approximate) {
 			this.approxStepPercent = approximate;
 		}
+	}
+
+	/**
+	 * The native engine's current phase, as an {@link HHIteration} ordinal.
+	 *
+	 * <p>Exists so the calculation can be attributed to SELECT_REGIONS / LOAD_POINTS /
+	 * START_END_POINT / ROUTING / DETAILED without patching C++ - the field is already written
+	 * live from native, it simply had no reader.
+	 */
+	public int getHHIterationStep() {
+		return hhIterationStep;
 	}
 
 	public void hhIteration(HHIteration step) {

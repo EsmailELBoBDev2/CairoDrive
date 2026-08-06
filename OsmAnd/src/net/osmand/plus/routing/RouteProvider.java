@@ -33,6 +33,7 @@ import net.osmand.plus.onlinerouting.engine.OnlineRoutingEngine.OnlineRoutingRes
 import net.osmand.plus.render.NativeOsmandLibrary;
 import net.osmand.plus.BuildConfig;
 import net.osmand.plus.cairodrive.CairoDriveLogger;
+import net.osmand.plus.cairodrive.CairoDriveRoutePhases;
 import net.osmand.plus.cairodrive.CairoDriveRouteRace;
 import net.osmand.plus.cairodrive.CairoDriveRoutingEngines;
 import net.osmand.plus.resources.ResourceManager;
@@ -949,6 +950,13 @@ public class RouteProvider {
 		boolean warmHHContext = router.isHHCalculationContextCached();
 		int reuseCount = env != null && env.getWarmEnvironment() != null ? env.getWarmEnvironment().reuseCount : 0;
 		long searchStartNanos = System.nanoTime();
+		// Attributes this calculation to the NATIVE engine's own phases by sampling the progress
+		// field it already publishes. Answers one question and only one: does LOAD_POINTS - the
+		// full Highway-Hierarchy index reload that happens on every single calculation - own the
+		// seconds, or not? That decides whether a native cache is worth its risk, and it is
+		// measured before anything is built rather than after.
+		CairoDriveRoutePhases phases =
+				CairoDriveRoutePhases.start(params != null ? params.calculationProgress : null);
 		try {
 			RouteResultPreparation.RouteCalcResult result = null;
 			try {
@@ -968,6 +976,11 @@ public class RouteProvider {
 					result = router.searchRoute(ctx, st, en, inters);
 				}
 			} finally {
+				// Before the timing line, so CD_ROUTE_PHASE sits beside the CD_ROUTE_TIMING it
+				// explains. Stops the sampler thread whatever happened, including a throw.
+				if (phases != null) {
+					phases.log();
+				}
 				logRouteCalculationTiming(params, router, ctx, result, warmHHContext, reuseCount,
 						setupNanos, System.nanoTime() - searchStartNanos);
 			}
