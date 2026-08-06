@@ -371,21 +371,40 @@ public final class NavigationScreen extends BaseAndroidAutoScreen implements Sur
 
 		if (navigating) {
 			if (destinationTravelEstimate != null && destinationTravelEstimate.getRemainingTimeSeconds() >= 0) {
-				builder.setDestinationTravelEstimate(destinationTravelEstimate);
+				TravelEstimate estimate = destinationTravelEstimate;
+				if (isRerouting() && !Algorithms.isEmpty(steps)) {
+					// Say "recalculating" WITHOUT evicting the manoeuvre. The travel estimate is
+					// an independent section of NavigationTemplate, so setTripText reaches the
+					// driver while the turn, distance, road name and lanes stay on screen.
+					//
+					// Rebuilt rather than mutated because TravelEstimate is immutable. Wrapped
+					// because a host that rejects the rebuild must cost the driver a label, never
+					// the manoeuvre card.
+					try {
+						estimate = new TravelEstimate.Builder(
+								destinationTravelEstimate.getRemainingDistance(),
+								destinationTravelEstimate.getArrivalTimeAtDestination())
+								.setRemainingTimeSeconds(
+										destinationTravelEstimate.getRemainingTimeSeconds())
+								.setTripText(CarText.create(getCarContext()
+										.getString(R.string.cairodrive_recalculating)))
+								.build();
+					} catch (Throwable t) {
+						estimate = destinationTravelEstimate;
+					}
+				}
+				builder.setDestinationTravelEstimate(estimate);
 			}
-			if (isRerouting()) {
-				// A bare setLoading(true) spinner replaced the whole routing panel - turn,
-				// distance, street name, lanes - with nothing, for the several seconds a
-				// recalculation takes. Silence is what makes a wait feel like a failure: the
-				// driver cannot tell "working on it" from "crashed", and this is the surface
-				// they are actually looking at.
+			if (isRerouting() && Algorithms.isEmpty(steps)) {
+				// ONLY when there is no manoeuvre left to show. Both setLoading(true) and a
+				// MessageInfo REPLACE the whole routing card - turn, distance, road name, lanes -
+				// and the API gives no way to combine them with a manoeuvre: RoutingInfo.Builder
+				// documents that adding anything alongside setLoading throws.
 				//
-				// The off-route VOICE cannot cover for it either. announceOffRoute is gated on
-				// AnnounceTimeDistances.OFF_ROUTE_DISTANCE, which is DEFAULT_SPEED * 20 - 200 to
-				// 250 m - while a reroute triggers at 50-120 m. So in the overwhelming majority
-				// of real deviations it is never spoken at all.
-				//
-				// Same shape as the `arrived` branch below, which the host already accepts.
+				// The moment content disappears, the wait becomes the only thing on screen. So
+				// the recalculating text goes in the travel estimate above, which is an
+				// independent section, and the manoeuvre stays up. This branch is the fallback
+				// for the one case where keeping it is not an option.
 				MessageInfo rerouting = new MessageInfo.Builder(
 						getCarContext().getString(R.string.cairodrive_recalculating)).build();
 				builder.setNavigationInfo(rerouting);
