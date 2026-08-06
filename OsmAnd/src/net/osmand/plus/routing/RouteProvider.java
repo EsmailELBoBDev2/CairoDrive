@@ -34,6 +34,7 @@ import net.osmand.plus.render.NativeOsmandLibrary;
 import net.osmand.plus.BuildConfig;
 import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.cairodrive.CairoDriveRouteRace;
+import net.osmand.plus.cairodrive.CairoDriveRoutingEngines;
 import net.osmand.plus.resources.ResourceManager;
 import net.osmand.plus.routing.GPXRouteParams.GPXRouteParamsBuilder;
 import net.osmand.plus.settings.backend.ApplicationMode;
@@ -1774,20 +1775,21 @@ public class RouteProvider {
 		}
 		try {
 			OnlineRoutingHelper helper = params.ctx.getOnlineRoutingHelper();
-			List<OnlineRoutingEngine> engines = helper.getEngines();
-			if (Algorithms.isEmpty(engines)) {
-				// Inert until an engine exists, exactly like the OSM OAuth wiring: the feature
-				// is present, costs nothing, and switches itself on when the key is there.
+			List<LatLon> racePath = getPathFromParams(params);
+			// Picks ONE provider - ORS first, GraphHopper as backup - honouring each one's daily
+			// cap and GraphHopper's 5-waypoint ceiling. Null means no key, no budget or no
+			// engine, and then this whole feature is inert exactly like the OSM OAuth wiring.
+			OnlineRoutingEngine engine =
+					CairoDriveRoutingEngines.pick(params.ctx, racePath.size());
+			if (engine == null) {
 				return null;
 			}
-			OnlineRoutingEngine engine = engines.get(0);
 			// The online side gets its OWN parameters. findOnlineRouteWith writes to them, and
 			// findVectorMapsRoute is reading the originals on the other thread.
 			RouteCalculationParams onlineParams = CairoDriveRouteRace.copyForOnline(params);
-			List<LatLon> path = getPathFromParams(params);
 			return CairoDriveRouteRace.race(
 					() -> findVectorMapsRoute(params, calcGPXRoute),
-					() -> findOnlineRouteWith(helper, engine, path, onlineParams),
+					() -> findOnlineRouteWith(helper, engine, racePath, onlineParams),
 					r -> r != null && r.isCalculated());
 		} catch (Throwable t) {
 			// A broken race must never cost a route. Fall through to the offline path.
