@@ -503,7 +503,25 @@ jobs:
           if not rows:
               print("no test XML found")
           for t, cls, name in rows[:15]:
-              print("%8.3fs  %s.%s" % (t, cls.rsplit('.', 1)[-1], name[:80]))
+              print("%8.3fs  %s.%s" % (t, cls.rsplit('.', 1)[-1], name[:110]))
+
+          # The TIMED tests, always, whatever their rank.
+          #
+          # The list above is the global slowest, and the routing cases are not the slowest -
+          # they are merely the only ones that FAIL when slow. On the first run that printed it
+          # the roadblock case came 15th of 15, one place from vanishing; a little faster and the
+          # one number worth watching would have dropped off its own report. Rank is the wrong
+          # selector for "is this close to its ceiling".
+          timed = [r for r in rows if 'RouteTesting' in r[1]]
+          if timed:
+              print("")
+              print("Routing tests against the 1500 ms @Test(timeout) ceiling:")
+              worst, wcls, wname = timed[0]
+              for t, cls, name in timed[:5]:
+                  print("%8.3fs  %5.1f%% of budget  %s" % (t, t / 1.5 * 100, name[:90]))
+              # One line a human can act on, and the one a future session should grep for.
+              print("HEADROOM: %.0f ms spare on the worst routing test (%.1f%% of 1500 ms used)"
+                    % ((1.5 - worst) * 1000, worst / 1.5 * 100))
           PY
           echo "::endgroup::"
           exit 0
@@ -1045,7 +1063,25 @@ jobs:
           if not rows:
               print("no test XML found")
           for t, cls, name in rows[:15]:
-              print("%8.3fs  %s.%s" % (t, cls.rsplit('.', 1)[-1], name[:80]))
+              print("%8.3fs  %s.%s" % (t, cls.rsplit('.', 1)[-1], name[:110]))
+
+          # The TIMED tests, always, whatever their rank.
+          #
+          # The list above is the global slowest, and the routing cases are not the slowest -
+          # they are merely the only ones that FAIL when slow. On the first run that printed it
+          # the roadblock case came 15th of 15, one place from vanishing; a little faster and the
+          # one number worth watching would have dropped off its own report. Rank is the wrong
+          # selector for "is this close to its ceiling".
+          timed = [r for r in rows if 'RouteTesting' in r[1]]
+          if timed:
+              print("")
+              print("Routing tests against the 1500 ms @Test(timeout) ceiling:")
+              worst, wcls, wname = timed[0]
+              for t, cls, name in timed[:5]:
+                  print("%8.3fs  %5.1f%% of budget  %s" % (t, t / 1.5 * 100, name[:90]))
+              # One line a human can act on, and the one a future session should grep for.
+              print("HEADROOM: %.0f ms spare on the worst routing test (%.1f%% of 1500 ms used)"
+                    % ((1.5 - worst) * 1000, worst / 1.5 * 100))
           PY
           echo "::endgroup::"
           exit 0
