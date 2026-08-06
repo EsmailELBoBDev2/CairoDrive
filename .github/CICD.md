@@ -192,6 +192,19 @@ supplied through the environment, or at the debug keystore when none is.
 The workflow files can only do half of this. The rest is clicking, and until it is done the
 signing keys are exactly as exposed as they were before. In order:
 
+> **VERIFIED NOT DONE, 2026-08-06.** Step 1 below has not been applied. Run 234 was
+> dispatched from branch `dev` with `sign=true`; the signed job started **five seconds**
+> later, asked nobody, and produced a release-signed AAB. Step 2 *has* been applied — the
+> keystore secrets are on the environment and the dev job cannot read them — so the half
+> that is done is the half that keeps keys out of dev builds, and the half that is missing
+> is the human in the loop. This repository is **public**, so the paid-plan caveat at the
+> end of step 1 does not apply: required reviewers are available and simply are not on.
+>
+> Of the two controls in step 1, **the deployment branch/tag rule is the more important
+> one and the one that cannot be argued with** — it is enforced by GitHub outside the
+> repository, so unlike anything written in a workflow file it cannot be edited away by
+> whoever is doing the dispatching.
+
 **1. Create the `production` environment.**
 Settings → Environments → *New environment* → name it `production` → Configure.
 

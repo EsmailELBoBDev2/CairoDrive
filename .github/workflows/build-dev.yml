@@ -1194,11 +1194,28 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------------
-  # Release build. `environment: production` is the gate: with required reviewers set on
-  # that environment (see .github/CICD.md) the job is held before its first step, so no
-  # code from the tag - including any *.gradle file - executes until a human approves it.
-  # The keystore secrets are stored on the environment, not on the repository, so this is
-  # also the only job in the repository that can read them.
+  # Release build. `environment: production` names the gate. Whether that gate actually
+  # HOLDS anything is a repository setting, not something this file can assert - and as of
+  # run 234 it holds nothing:
+  #
+  #   dispatched from branch `dev` with sign=true at 07:12:51, job started 07:12:56.
+  #   Five seconds. No approval was requested and none was given, and it produced a
+  #   fully release-signed AAB.
+  #
+  # So read the next sentence as the DESIGN, not as the current state: with required
+  # reviewers ticked on the production environment (.github/CICD.md §2a) the job is held
+  # before its first step, so no code from the ref - including any *.gradle file -
+  # executes until a human approves it. Neither that nor the deployment-branch rule is
+  # currently configured, so today the only thing standing between a `workflow_dispatch`
+  # and a Play-signed artifact is write access to this repository.
+  #
+  # This repository is PUBLIC, so the "required reviewers need a paid plan" escape in
+  # CICD.md §2a does not apply here - the setting is available and simply is not on.
+  #
+  # The keystore secrets ARE on the environment rather than the repository, which is the
+  # half that works: no dev build can read them, proven by the dev job building unsigned.
+  # That is worth keeping separate from the gate, because it is the part that already
+  # holds.
   #
   # The steps below duplicate the dev job rather than sharing it: GitHub has no include
   # for steps short of a composite action, and a reusable workflow would have to be handed
