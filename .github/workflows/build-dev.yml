@@ -885,6 +885,77 @@ jobs:
           ls -lh artifacts
           echo "stamp=${STAMP}" >> "$GITHUB_OUTPUT"
 
+      # WHERE THE SIZE ACTUALLY IS. Printed into the log because it cannot be obtained any
+      # other way from here: reading it off the artifact means downloading it, and GitHub
+      # redirects artifact downloads to *.blob.core.windows.net, which an egress policy denies.
+      # An asset audit ran entirely against the source checkout for that reason and had to
+      # report "unmeasurable" for the two largest single files in the app.
+      #
+      # The specific question this is meant to answer: proguard-rules.pro:5 is
+      # `-keep class net.osmand.** { *; }`, so R8 is enabled and shrinks essentially none of
+      # this app's own code - only third-party libraries. Narrowing that keep is by a wide
+      # margin the biggest remaining size lever AND the most dangerous one, because the app
+      # reaches its own classes from JNI (libosmand.so), from Rhino running the *_tts.js voice
+      # scripts, through AIDL, and through getIdentifier in ~20 places - none of which R8 can
+      # see. Whether it is worth a session depends on how big classes.dex actually is next to
+      # assets/ and lib/, and nobody has that number.
+      #
+      # Compressed sizes, because that is what the download costs and what Play reports.
+      - name: Artifact size breakdown
+        if: always()
+        working-directory: android
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for f in artifacts/*.aab artifacts/*.apk; do
+            echo "::group::$(basename "$f") - $(du -h "$f" | cut -f1)"
+            python3 - "$f" <<'PY'
+          import sys, zipfile, collections
+          # Group by top-level area rather than listing thousands of entries: the decision this
+          # informs is "dex or assets or native", not which individual icon is largest.
+          def bucket(name):
+              if name.endswith('.dex') or '/dex/' in name:
+                  return 'dex (app + libraries, after R8)'
+              for prefix in ('lib/', 'base/lib/'):
+                  if name.startswith(prefix):
+                      return 'lib/ (native .so)'
+              for prefix in ('assets/', 'base/assets/'):
+                  if name.startswith(prefix):
+                      return 'assets/'
+                  # keep going
+              for prefix in ('res/', 'base/res/'):
+                  if name.startswith(prefix):
+                      return 'res/'
+              if name.endswith('resources.arsc') or name.endswith('resources.pb'):
+                  return 'resources table'
+              return 'other'
+
+          with zipfile.ZipFile(sys.argv[1]) as z:
+              infos = z.infolist()
+              tot_c = sum(i.compress_size for i in infos)
+              by = collections.Counter()
+              cnt = collections.Counter()
+              for i in infos:
+                  b = bucket(i.filename)
+                  by[b] += i.compress_size
+                  cnt[b] += 1
+              print("%-34s %10s %8s  %s" % ("area", "compressed", "share", "files"))
+              for area, size in by.most_common():
+                  print("%-34s %9.2fM %7.1f%%  %d"
+                        % (area, size / 1e6, size * 100.0 / max(1, tot_c), cnt[area]))
+              print("%-34s %9.2fM" % ("TOTAL", tot_c / 1e6))
+
+              # The ten largest single entries, which is where a surprise usually hides -
+              # World_basemap_mini.obf and astro/stars.db are both fetched at build time from
+              # builder.osmand.net and have never been sized by anyone working on this repo.
+              print("")
+              print("largest single entries:")
+              for i in sorted(infos, key=lambda x: -x.compress_size)[:10]:
+                  print("  %8.2fM  %s" % (i.compress_size / 1e6, i.filename[:100]))
+          PY
+            echo "::endgroup::"
+          done
+
       - name: Upload bundle
         uses: actions/upload-artifact@v7
         with:
