@@ -3,6 +3,7 @@ package net.osmand.plus.cairodrive;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import net.osmand.plus.helpers.CairoDriveLog;
 import net.osmand.router.RouteCalculationProgress;
 import net.osmand.router.RouteCalculationProgress.HHIteration;
 
