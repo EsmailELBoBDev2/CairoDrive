@@ -128,7 +128,6 @@ public final class CairoDriveRoutingEngines {
 		if (ensured) {
 			return;
 		}
-		ensured = true;
 		try {
 			OnlineRoutingHelper helper = app.getOnlineRoutingHelper();
 			if (hasOrsKey() && findByName(helper, ORS_NAME) == null) {
@@ -158,10 +157,15 @@ public final class CairoDriveRoutingEngines {
 			if (!hasOrsKey() && !hasGraphhopperKey() && !hasGeoapifyKey()) {
 				CairoDriveLog.log(TRACE_TAG, "no online routing key in this build - race inert");
 			}
+			// Set only on a clean pass. Setting it up-front would be a latch on FAILURE: called
+			// from startup, before the routing helper is ready, one throw would mark the work
+			// done for the life of the process and no reroute would ever get an engine.
+			ensured = true;
 		} catch (Throwable t) {
-			// Never fatal. Without an engine the race simply does not run and the app routes
-			// locally, which is what it did before any of this existed.
-			CairoDriveLog.log(TRACE_TAG, "could not configure engines: " + t);
+			// Never fatal, and deliberately retryable - pick() calls this again on the next
+			// reroute, by which time the helper exists. Without an engine the race simply does
+			// not run and the app routes locally, as it did before any of this existed.
+			CairoDriveLog.log(TRACE_TAG, "could not configure engines, will retry: " + t);
 		}
 	}
 

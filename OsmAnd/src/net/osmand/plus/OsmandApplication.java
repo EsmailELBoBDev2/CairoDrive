@@ -288,6 +288,16 @@ public class OsmandApplication extends MultiDexApplication {
 			CairoDriveLogger.getInstance().log("CD_PROVIDERS", "install failed", t);
 		}
 
+		// Build the online routing engines from the build keys, here rather than lazily, because
+		// the lazy path runs on the NAVIGATION thread: the first reroute of a drive would pay a
+		// SharedPreferences write on the one code path where latency is the entire point of the
+		// feature. Doing it once at startup costs nothing measurable and the engine is ready
+		// before the car moves.
+		//
+		// Safe to be wrong about the ordering here: if the routing helper is not ready yet this
+		// logs and returns, and the next reroute reconfigures. It is idempotent either way.
+		net.osmand.plus.cairodrive.CairoDriveRoutingEngines.ensureConfigured(this);
+
 		LifecycleObserver appLifecycleObserver = new DefaultLifecycleObserver() {
 			@Override
 			public void onStart(@NonNull LifecycleOwner owner) {
