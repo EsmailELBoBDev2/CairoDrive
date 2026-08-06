@@ -942,14 +942,19 @@ jobs:
       # An asset audit ran entirely against the source checkout for that reason and had to
       # report "unmeasurable" for the two largest single files in the app.
       #
-      # The specific question this is meant to answer: proguard-rules.pro:5 is
-      # `-keep class net.osmand.** { *; }`, so R8 is enabled and shrinks essentially none of
-      # this app's own code - only third-party libraries. Narrowing that keep is by a wide
-      # margin the biggest remaining size lever AND the most dangerous one, because the app
-      # reaches its own classes from JNI (libosmand.so), from Rhino running the *_tts.js voice
-      # scripts, through AIDL, and through getIdentifier in ~20 places - none of which R8 can
-      # see. Whether it is worth a session depends on how big classes.dex actually is next to
-      # assets/ and lib/, and nobody has that number.
+      # The specific question this is meant to answer: whether classes.dex is worth attacking at
+      # all next to assets/ and lib/. It is the counterpart to the R8 usage summary below, which
+      # says what R8 removed but not what the removal is worth.
+      #
+      # The blanket `-keep class net.osmand.** { *; }` that made R8 a no-op on this app's own
+      # code has been narrowed - proguard-rules.pro carries the replacement and names the
+      # evidence for every rule - but it is still what an ordinary build gets, because
+      # CAIRODRIVE_R8_SHRINK defaults to false. Two of the four hazards that motivated the
+      # blanket keep turned out not to exist: the voice scripts run in Rhino's SAFE scope and so
+      # cannot name a Java class at all, and both AIDL services are removed in this fork. A
+      # third, getIdentifier, is a resources question rather than a code one and is governed by
+      # shrinkResources, which stays false. What is left is JNI and reflection, and those are
+      # what the narrowed rules are about.
       #
       # Compressed sizes, because that is what the download costs and what Play reports.
       - name: Artifact size breakdown
@@ -1006,6 +1011,75 @@ jobs:
           PY
             echo "::endgroup::"
           done
+
+      # The other half of the size question, and the one the breakdown above cannot answer:
+      # classes.dex is "app + libraries, after R8", but until now R8 was handed
+      # `-keep class net.osmand.** { *; }` and so removed none of the app. cairodrive.gradle now
+      # makes it write -printusage/-printseeds/-printconfiguration next to the dex on EVERY
+      # build, whatever CAIRODRIVE_R8_SHRINK says, and this reads the first of them.
+      #
+      # Summarised, never printed whole: usage.txt on a shrinking build of this app is tens of
+      # thousands of lines and a GitHub log is not where that belongs. What is worth having in
+      # the log is the two counts and which packages moved, because that is what says whether a
+      # narrowed keep did anything and where the remaining fat is. The full files are in
+      # OsmAnd/build/outputs/r8/ if a run needs them - configuration.txt in particular is the
+      # only way to read AAPT2's generated keep rules, which is what the narrowed configuration
+      # relies on for manifest and layout classes.
+      #
+      # `if: always()` for the same reason the breakdown has it: a failure after R8 is exactly
+      # when this number is worth reading.
+      - name: R8 usage summary
+        if: always()
+        working-directory: android
+        run: |
+          set -euo pipefail
+          USAGE="OsmAnd/build/outputs/r8/usage.txt"
+          if [ ! -f "${USAGE}" ]; then
+            echo "no ${USAGE} - R8 did not run (no release variant built), or the report rules were not applied"
+            exit 0
+          fi
+          for f in OsmAnd/build/outputs/r8/*.txt; do
+            echo "$(basename "$f"): $(wc -l < "$f") lines, $(du -h "$f" | cut -f1)"
+          done
+          python3 - "${USAGE}" <<'PY'
+          import sys, collections
+          # -printusage lists what R8 REMOVED. Its shape: an unindented line is a class - with a
+          # trailing ':' the class survived and the indented lines under it are the members that
+          # did not, without one the whole class went. Indented lines carrying '(' are methods.
+          classes_gone, methods_gone, fields_gone = 0, 0, 0
+          by_pkg = collections.Counter()
+          current = None
+          for raw in open(sys.argv[1], encoding='utf-8', errors='replace'):
+              line = raw.rstrip('\n')
+              if not line.strip():
+                  continue
+              if line[0] not in ' \t':
+                  name = line.rstrip(':')
+                  current = name.rsplit('.', 1)[0] if '.' in name else '(default)'
+                  if not line.endswith(':'):
+                      classes_gone += 1
+                      by_pkg[current] += 1
+              else:
+                  if '(' in line:
+                      methods_gone += 1
+                  else:
+                      fields_gone += 1
+                  if current:
+                      by_pkg[current] += 1
+          print("removed by R8: %d whole classes, %d methods, %d fields"
+                % (classes_gone, methods_gone, fields_gone))
+          print("")
+          # Packages, not classes: the question this answers is "did the app's own code shrink,
+          # or only its libraries", and a package name says that at a glance.
+          print("%-64s %s" % ("package", "removed items"))
+          for pkg, n in by_pkg.most_common(25):
+              print("%-64s %d" % (pkg[:64], n))
+          own = sum(n for p, n in by_pkg.items() if p.startswith('net.osmand'))
+          total = sum(by_pkg.values())
+          print("")
+          print("net.osmand share: %d of %d removed items (%.1f%%)"
+                % (own, total, own * 100.0 / max(1, total)))
+          PY
 
       - name: Upload bundle
         uses: actions/upload-artifact@v7
