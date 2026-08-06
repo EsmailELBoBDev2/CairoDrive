@@ -10,6 +10,7 @@ import net.osmand.ResultMatcher;
 import net.osmand.data.LatLon;
 import net.osmand.data.ValueHolder;
 import net.osmand.plus.NavigationService;
+import net.osmand.plus.BuildConfig;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.R;
 import net.osmand.plus.auto.NavigationSession;
@@ -291,6 +292,7 @@ public class RoutingHelper {
 		// change and forced a re-fetch that can be forty minutes away on a spent ladder.
 		net.osmand.plus.cairodrive.providers.CairoDriveProviders.resetRouteState();
 		net.osmand.plus.cairodrive.providers.TrafficAwareRouting.onRouteCleared(app);
+		net.osmand.plus.cairodrive.CairoDriveEarlyReroute.reset();
 		net.osmand.plus.cairodrive.providers.SunGlareProvider.reset(app);
 		// TomTomTrafficProvider is DELIBERATELY absent from this list. Its published data is
 		// already dropped by resetRouteState() above; the only thing it could additionally clear is
@@ -576,6 +578,24 @@ public class RoutingHelper {
 					if (offRouteHysteresis.shouldRecalculate(currentLocation, offRoute)) {
 						log.info("Recalculate route, because correlation  : " + distOrth); //$NON-NLS-1$
 						calculateRoute = !settings.DISABLE_OFFROUTE_RECALC.get();
+						// If a calculation for this same deviation is already running, it IS the
+						// answer - dispatching a second would queue behind it on the single
+						// routing thread and arrive later than doing nothing at all.
+						if (calculateRoute
+								&& net.osmand.plus.cairodrive.CairoDriveEarlyReroute.confirm()) {
+							calculateRoute = false;
+						}
+					} else if (offRoute && BuildConfig.CAIRODRIVE_EARLY_REROUTE
+							&& !settings.DISABLE_OFFROUTE_RECALC.get()
+							&& net.osmand.plus.cairodrive.CairoDriveEarlyReroute
+									.shouldStart(System.currentTimeMillis())) {
+						// Off route, but the hysteresis is still gathering evidence. That wait is
+						// 3-12 s and nothing uses it. Start the calculation now from the position
+						// the driver is ACTUALLY at - nothing is predicted here - and let the
+						// decision to install it stay exactly where it was.
+						net.osmand.plus.cairodrive.CairoDriveEarlyReroute.started(
+								currentLocation, System.currentTimeMillis());
+						calculateRoute = true;
 					}
 				}
 				// 3. Identify wrong movement direction

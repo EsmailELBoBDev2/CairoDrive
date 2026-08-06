@@ -407,6 +407,28 @@ def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim
 //
 // Do NOT turn this on by pointing it at OsmAnd's online-with-fallback: that path waits out a
 // 30 s connect and 60 s read before it starts calculating locally. See CairoDriveRouteRace.
+// Start the reroute while the deviation is still being CONFIRMED, and install it only if the
+// confirmation arrives.
+//
+// ON, because unlike everything else tried for offline reroute latency this one predicts nothing.
+// The driver's wrong position is OBSERVED - they are standing at it. There is no junction model,
+// no guessed exit, no precomputed alternative that might be for the wrong road. It is the same
+// calculation the app was going to run, started at the first evidence instead of the last.
+//
+// The hysteresis is not weakened. It still decides whether the route moves; it just decides at
+// the END of the calculation instead of the start, on exactly the evidence it would have had. A
+// deviation that evaporates installs nothing and costs only CPU nobody was using.
+//
+// What it buys: CairoDriveOffRoute waits 3-12 s for consecutive off-route fixes before the search
+// even begins, and that wait is dead time today. On a confirmed deviation the answer is already
+// running - up to the whole detection window off the driver's wait.
+//
+// What it costs: calculations begun for deviations that never confirm. Bounded by a 20 s minimum
+// interval. Read CD_EARLY_REROUTE USED against DISCARDED on the next drive - if DISCARDED
+// dominates, this is burning battery for nothing and should come out.
+def earlyRerouteEnv = System.getenv("CAIRODRIVE_EARLY_REROUTE")
+def earlyReroute = earlyRerouteEnv?.trim() ? earlyRerouteEnv.trim() : "true"
+
 def routeRaceEnv = System.getenv("CAIRODRIVE_ROUTE_RACE")
 def routeRace = routeRaceEnv?.trim() ? routeRaceEnv.trim() : "true"
 
@@ -943,6 +965,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_MAP_MATCHING", mapMatching
 			buildConfigField "boolean", "CAIRODRIVE_REROUTE_CACHE", rerouteCache
 			buildConfigField "boolean", "CAIRODRIVE_ROUTE_RACE", routeRace
+			buildConfigField "boolean", "CAIRODRIVE_EARLY_REROUTE", earlyReroute
 			buildConfigField "int", "CAIRODRIVE_LOCATION_INTERPOLATION", locationInterpolation
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_DETAILS", placesDetails
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_PHOTOS", placesPhotos
@@ -1003,6 +1026,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_MAP_MATCHING", mapMatching
 			buildConfigField "boolean", "CAIRODRIVE_REROUTE_CACHE", rerouteCache
 			buildConfigField "boolean", "CAIRODRIVE_ROUTE_RACE", routeRace
+			buildConfigField "boolean", "CAIRODRIVE_EARLY_REROUTE", earlyReroute
 			buildConfigField "int", "CAIRODRIVE_LOCATION_INTERPOLATION", locationInterpolation
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_DETAILS", placesDetails
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_PHOTOS", placesPhotos

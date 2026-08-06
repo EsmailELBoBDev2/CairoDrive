@@ -10,6 +10,7 @@ import net.osmand.PlatformUtil;
 import net.osmand.data.LatLon;
 import net.osmand.plus.BuildConfig;
 import net.osmand.plus.OsmandApplication;
+import net.osmand.plus.cairodrive.CairoDriveEarlyReroute;
 import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.R;
 import net.osmand.plus.helpers.CairoDriveLog;
@@ -1129,6 +1130,14 @@ class RouteRecalculationHelper {
 			if (res.isCalculated() || res.hasMissingMaps()) {
 				if (params.alternateResultListener != null) {
 					params.alternateResultListener.onRouteCalculated(res);
+				} else if (!CairoDriveEarlyReroute.mayInstall(
+						routingHelper.isDeviatedFromRoute(), System.currentTimeMillis(),
+						routingHelper.getLastFixedLocation())) {
+					// An early start whose deviation never confirmed. The hysteresis has not been
+					// weakened by starting sooner - it is applied here instead, on exactly the
+					// evidence it would have had. The calculation is thrown away, which is the
+					// entire cost of being early, and the route is untouched.
+					routingThreadHelper.putCachedRoute(params, res);
 				} else {
 					routingThreadHelper.setNewRoute(prev, res, params.start);
 					routingThreadHelper.putCachedRoute(params, res);
