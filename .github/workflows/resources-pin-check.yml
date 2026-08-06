@@ -1,0 +1,147 @@
+name: Check the pinned OsmAnd-resources
+
+# The build checks out osmandapp/OsmAnd-resources at a PINNED commit, because that checkout is
+# not incidental: routing.xml comes from it and is then patched with this fork's narrow-street
+# rules, as do rendering_types, poi_types and the routing test maps. Unpinned, an upstream push
+# could change the routing profile inside a SHIPPED APK with no commit in this repository, and
+# make two builds of the same commit differ.
+#
+# Pinning has one failure mode, and it is silent: the pin rots. Months pass, upstream fixes
+# something in routing.xml, and nobody notices because a pin never complains. This is the thing
+# that complains.
+#
+# It only REPORTS. Bumping the pin stays a human commit, which is the entire point of pinning -
+# an automation that pinned and then quietly unpinned itself would be worse than never pinning.
+# That also matches how upstream-sync.yml treats the code: it proposes a pull request and a
+# person decides.
+
+on:
+  schedule:
+    # Weekly. The resources repo moves slowly - a handful of commits a week - and the cost of
+    # being a few days late to notice is nil, whereas a daily issue-check is noise.
+    #
+    # On the DEFAULT branch or it never fires: GitHub reads `schedule:` only from the default
+    # branch's copy of a workflow, and a cron on a feature branch is silently inert with no
+    # error anywhere. upstream-sync.yml carries the same warning, learned the same way.
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # File the drift issue. Nothing else - this workflow must not be able to change the pin it
+  # is watching.
+  issues: write
+
+concurrency:
+  group: resources-pin-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Compare the pin against upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Read the pin and compare
+        id: compare
+        run: |
+          set -euo pipefail
+
+          # Associate each pin with ITS checkout by walking forward from the repository line to
+          # the next `ref:` in the same step, stopping at the next step boundary.
+          #
+          # The obvious version - grep for the ref with a few lines of leading context - was
+          # written first and silently found NOTHING, because there is a long comment between
+          # `repository:` and `ref:` and the context window did not reach. A checker that
+          # reports "no pin" when a pin is right there is worse than no checker: it would have
+          # failed this workflow every week for a reason that was not true. Caught by running
+          # it against the real file before shipping, which is the only reason it is not still
+          # in here.
+          #
+          # There are two pins, one per job, and they MUST agree: a bump applied to the dev job
+          # but not the release job means the signed build that reaches Play uses different
+          # routing data from the one that was tested.
+          mapfile -t RESOURCE_PINS < <(awk '
+            /repository: *osmandapp\/OsmAnd-resources/ { inblock = 1; next }
+            inblock && /^ *- name:/                    { inblock = 0 }
+            inblock && match($0, /ref: *[0-9a-f]{40}/) {
+              s = substr($0, RSTART, RLENGTH); sub(/ref: */, "", s); print s; inblock = 0
+            }
+          ' .github/workflows/build-dev.yml | sort -u)
+
+          if [ "${#RESOURCE_PINS[@]}" -eq 0 ]; then
+            echo "::error::No pinned OsmAnd-resources ref found in build-dev.yml. Either the pin was removed - which silently makes the build unreproducible again - or the checkout was restructured and this check needs updating."
+            exit 1
+          fi
+          if [ "${#RESOURCE_PINS[@]}" -gt 1 ]; then
+            echo "::error::The OsmAnd-resources pins disagree: ${RESOURCE_PINS[*]}. The two jobs would build against different routing data."
+            exit 1
+          fi
+
+          PINNED="${RESOURCE_PINS[0]}"
+          UPSTREAM="$(git ls-remote https://github.com/osmandapp/OsmAnd-resources HEAD | awk '{print $1}')"
+          echo "pinned=${PINNED}"   >> "$GITHUB_OUTPUT"
+          echo "upstream=${UPSTREAM}" >> "$GITHUB_OUTPUT"
+          if [ "${PINNED}" = "${UPSTREAM}" ]; then
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+            echo "Pin is current: ${PINNED}"
+          else
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::OsmAnd-resources has moved. Pinned ${PINNED}, upstream ${UPSTREAM}."
+          fi
+
+      - name: File the drift issue
+        if: steps.compare.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PINNED: ${{ steps.compare.outputs.pinned }}
+          UPSTREAM: ${{ steps.compare.outputs.upstream }}
+        run: |
+          set -euo pipefail
+          MARKER="resources-pin-drift"
+          # One open issue at a time, found by a marker in the body rather than by title, so
+          # renaming the issue does not produce a second one every week.
+          EXISTING="$(gh issue list --state open --search "\"${MARKER}\" in:body" \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "${EXISTING}" ]; then
+            echo "Issue #${EXISTING} is already open; not filing another."
+            exit 0
+          fi
+          # Written line by line into a file rather than a heredoc: a heredoc terminator has to
+          # sit at column 0, and column 0 inside a YAML block scalar ends the block. That is not
+          # a hypothetical - it is what this file failed to parse on the first attempt.
+          BODY=body.md
+          {
+            echo 'The build pins `osmandapp/OsmAnd-resources` so that routing.xml - and therefore'
+            echo 'the routing profile inside a shipped APK - cannot change without a commit here.'
+            echo 'Upstream has since moved.'
+            echo
+            echo '| | commit |'
+            echo '|---|---|'
+            echo "| pinned in \`.github/workflows/build-dev.yml\` | \`${PINNED}\` |"
+            echo "| upstream HEAD | \`${UPSTREAM}\` |"
+            echo
+            echo "Compare: https://github.com/osmandapp/OsmAnd-resources/compare/${PINNED}...${UPSTREAM}"
+            echo
+            echo '**Nothing is broken.** The build is reproducible and keeps using the pinned'
+            echo 'commit. This exists only so the pin cannot rot unnoticed for months.'
+            echo
+            echo 'To take the newer resources, change BOTH `ref:` lines in'
+            echo '`.github/workflows/build-dev.yml` in one commit, then let a dev build run before'
+            echo 'anything is signed - the routing TEST MAPS come from this repository too, so a'
+            echo 'resources bump can move the test suite as well as the app.'
+            echo
+            echo 'Read the compare link for changes to `routing/routing.xml` first: this fork'
+            echo 'patches that file at build time, and `patches/` aborts the build if upstream'
+            echo 'restructures what it edits.'
+            echo
+            echo "<!-- ${MARKER} -->"
+          } > "${BODY}"
+          gh issue create \
+            --title "OsmAnd-resources pin is behind upstream" \
+            --body-file "${BODY}"
