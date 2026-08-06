@@ -59,6 +59,12 @@ public class CairoDriveOffRoute {
 	/** Longest a genuine deviation may go unannounced, whatever the counters say. */
 	private static final long MAX_SUPPRESSION_MS = 12_000;
 
+	/** Past this multiple of the off-route threshold, two fixes are enough. */
+	private static final double STRONG_RATIO = 2.5;
+
+	/** And past this, one is - the deviation is many times any plausible GPS error. */
+	private static final double OVERWHELMING_RATIO = 4.0;
+
 	/** Consecutive ON-route fixes that clear accumulated off-route evidence. */
 	private static final int ON_ROUTE_FIXES_TO_FORGET = 2;
 
@@ -82,6 +88,15 @@ public class CairoDriveOffRoute {
 	 * @return true to recalculate
 	 */
 	public boolean shouldRecalculate(@NonNull Location location, boolean offRoute) {
+		return shouldRecalculate(location, offRoute, 0, 0);
+	}
+
+	/**
+	 * @param devM       how far off the route this fix is
+	 * @param allowableM the threshold at which it counts as off route at all
+	 */
+	public boolean shouldRecalculate(@NonNull Location location, boolean offRoute,
+	                                 double devM, double allowableM) {
 		if (!isEnabled()) {
 			return offRoute;
 		}
@@ -108,10 +123,18 @@ public class CairoDriveOffRoute {
 			return false;
 		}
 		consecutiveOnRouteFixes = 0;
+		// START THE BACKSTOP CLOCK FIRST. It used to be started below, AFTER the accuracy
+		// rejection - so on a sustained run of fixes worse than MAX_TRUSTED_ACCURACY_M the clock
+		// never started and the 12 s timeout could never fire. Suppression was unbounded, in
+		// exactly the conditions the timeout was written for, and the comment on the rejection
+		// claimed the opposite.
+		if (firstOffRouteTime == 0) {
+			firstOffRouteTime = System.currentTimeMillis();
+		}
 		if (location.hasAccuracy() && location.getAccuracy() > MAX_TRUSTED_ACCURACY_M) {
-			// Unusable fix. Still not counted as evidence - but see the hard timeout below, which
-			// is what stops a long run of them from suppressing a reroute forever.
-			return false;
+			// Unusable fix: no evidence. But the clock above is running now, so a long run of
+			// these can no longer hold a real deviation back indefinitely.
+			return System.currentTimeMillis() - firstOffRouteTime > MAX_SUPPRESSION_MS;
 		}
 		consecutiveOffRouteFixes++;
 		// HARD TIMEOUT. However noisy the GPS, however the counter is behaving, a deviation that
@@ -119,11 +142,8 @@ public class CairoDriveOffRoute {
 		// that makes the whole mechanism safe to enable: the failure mode that took it off by
 		// default was a genuine wrong turn going unannounced for kilometres, and no combination
 		// of the rules above can now delay a reroute past this.
-		if (firstOffRouteTime == 0) {
-			firstOffRouteTime = System.currentTimeMillis();
-		}
 		boolean timedOut = System.currentTimeMillis() - firstOffRouteTime > MAX_SUPPRESSION_MS;
-		if (!timedOut && consecutiveOffRouteFixes < requiredFixes(location)) {
+		if (!timedOut && consecutiveOffRouteFixes < requiredFixes(location, devM, allowableM)) {
 			return false;
 		}
 		// Debounce checked AFTER the evidence test, not before. Checking it first meant a fix that
@@ -149,11 +169,42 @@ public class CairoDriveOffRoute {
 	}
 
 	private int requiredFixes(@NonNull Location location) {
+		return requiredFixes(location, 0, 0);
+	}
+
+	/**
+	 * How many consecutive off-route fixes must corroborate, given how far off the driver is.
+	 *
+	 * <p>Accuracy alone was the only input, so a driver 400 m off the route had to wait exactly as
+	 * long as one 51 m off. That is over-confirming the obvious: this whole mechanism exists to
+	 * reject GPS WOBBLE, and wobble is bounded by accuracy. {@code allowableM} is already twice an
+	 * accuracy-derived tolerance, so a fix several times beyond it is not noise by any reading of
+	 * the error model - it is a driver on a different road.
+	 *
+	 * <p>This is deliberately NOT a flat reduction. Near the threshold, where the fork's history
+	 * says the danger is, the count is untouched; it relaxes only where the evidence is
+	 * overwhelming. That distinction matters, because a blind reduction here is what produced
+	 * "reroute after reroute while trying to turn around" and took the feature off by default.
+	 */
+	private int requiredFixes(@NonNull Location location, double devM, double allowableM) {
+		int base;
 		if (!location.hasAccuracy()) {
-			return MIN_CONSECUTIVE_FIXES;
+			base = MIN_CONSECUTIVE_FIXES;
+		} else {
+			int scaled = (int) (location.getAccuracy() / ACCURACY_PER_REQUIRED_FIX_M);
+			base = Math.min(MAX_CONSECUTIVE_FIXES, Math.max(MIN_CONSECUTIVE_FIXES, scaled));
 		}
-		int scaled = (int) (location.getAccuracy() / ACCURACY_PER_REQUIRED_FIX_M);
-		return Math.min(MAX_CONSECUTIVE_FIXES, Math.max(MIN_CONSECUTIVE_FIXES, scaled));
+		if (allowableM <= 0 || devM <= 0) {
+			return base;
+		}
+		double ratio = devM / allowableM;
+		if (ratio >= OVERWHELMING_RATIO) {
+			return 1;   // several times past a threshold that is itself 2x the tolerance
+		}
+		if (ratio >= STRONG_RATIO) {
+			return Math.min(base, 2);
+		}
+		return base;
 	}
 
 	private boolean enoughTravelledSinceLastReroute(@NonNull Location location) {

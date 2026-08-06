@@ -590,7 +590,7 @@ public class RoutingHelper {
 					boolean actOnWrongRoad = wrongRoad
 							&& net.osmand.plus.cairodrive.CairoDriveWrongRoad.mayAct();
 					if (offRouteHysteresis.shouldRecalculate(currentLocation,
-							offRoute || actOnWrongRoad)) {
+							offRoute || actOnWrongRoad, distOrth, allowableDeviation)) {
 						log.info("Recalculate route, because correlation  : " + distOrth); //$NON-NLS-1$
 						calculateRoute = !settings.DISABLE_OFFROUTE_RECALC.get();
 						// If a calculation for this same deviation is already running, it IS the
