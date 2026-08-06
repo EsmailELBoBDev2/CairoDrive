@@ -671,8 +671,21 @@ def renderScale = renderScaleEnv?.trim() ? renderScaleEnv.trim() : "1.0"
 // Flip it with CAIRODRIVE_R8_SHRINK=true, read the R8 usage summary the dev workflow prints,
 // and DRIVE it before it goes anywhere near a signed run. The three -print* reports below are
 // what makes that judgeable rather than hopeful.
+// DEFAULT FLIPPED TO TRUE once the JNI guard existed, and only because of it.
+//
+// The paragraph above is the reason this was false: a keep rule one class short cannot fail
+// a build, an install or a smoke test, it throws when the path is first taken. That argument
+// was correct and it is now answered rather than overruled. -dontobfuscate means removal is
+// R8's only possible failure mode; -printusage lists precisely what it removed; and
+// .github/check_r8_jni.py fails the build if any of the 35 classes core-legacy resolves by
+// name appears in that list. The failure moved from a Cairo road to a CI log.
+//
+// What the guard does NOT cover, so that the limit is written down next to the flag: it
+// checks the JNI surface, which is enumerable from native/src. It cannot see a class this
+// fork reaches by reflection from Java. There are 5 Class.forName sites, all with string
+// literals the narrow rules name explicitly.
 def r8ShrinkEnv = System.getenv("CAIRODRIVE_R8_SHRINK")
-def r8Shrink = r8ShrinkEnv?.trim() ? r8ShrinkEnv.trim() : "false"
+def r8Shrink = r8ShrinkEnv?.trim() ? r8ShrinkEnv.trim() : "true"
 
 // R8's own account of what it did, written beside the dex. Generated here rather than written
 // into proguard-rules.pro because a relative path in a proguard file resolves against a working

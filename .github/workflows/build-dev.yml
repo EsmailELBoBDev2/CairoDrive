@@ -1100,6 +1100,29 @@ jobs:
                 % (own, total, own * 100.0 / max(1, total)))
           PY
 
+      # Fails the build if R8 removed anything the native library resolves by NAME.
+      #
+      # This is the guard that makes CAIRODRIVE_R8_SHRINK safe to have on. -dontobfuscate
+      # means R8 cannot rename, so removal is its only failure mode, and -printusage lists
+      # exactly what it removed - so the question "did the keep rules miss something JNI
+      # needs" has a deterministic build-time answer instead of being discovered as a
+      # NoSuchMethodError somewhere on the Ring Road.
+      #
+      # The manifest is generated from core-legacy's native/src at the pinned CORE_LEGACY_REF,
+      # not hand-written - see the header of .github/r8-jni-classes.txt to regenerate it.
+      # Runs whatever the flag says: with shrinking off it should pass trivially, and a
+      # failure THERE would mean the manifest or the parser is wrong rather than the rules.
+      - name: Verify R8 kept every JNI-facing class
+        if: always()
+        run: |
+          set -euo pipefail
+          USAGE="OsmAnd/build/outputs/r8/usage.txt"
+          if [ ! -f "${USAGE}" ]; then
+            echo "no ${USAGE} - R8 did not run, nothing to verify"
+            exit 0
+          fi
+          python3 .github/check_r8_jni.py "${USAGE}" .github/r8-jni-classes.txt
+
       - name: Upload bundle
         uses: actions/upload-artifact@v7
         with:
@@ -1735,6 +1758,29 @@ jobs:
             ls -laR OsmAnd/libs 2>/dev/null || echo "OsmAnd/libs does not exist - ndk-build did not run"
             exit 1
           fi
+
+      # Fails the build if R8 removed anything the native library resolves by NAME.
+      #
+      # This is the guard that makes CAIRODRIVE_R8_SHRINK safe to have on. -dontobfuscate
+      # means R8 cannot rename, so removal is its only failure mode, and -printusage lists
+      # exactly what it removed - so the question "did the keep rules miss something JNI
+      # needs" has a deterministic build-time answer instead of being discovered as a
+      # NoSuchMethodError somewhere on the Ring Road.
+      #
+      # The manifest is generated from core-legacy's native/src at the pinned CORE_LEGACY_REF,
+      # not hand-written - see the header of .github/r8-jni-classes.txt to regenerate it.
+      # Runs whatever the flag says: with shrinking off it should pass trivially, and a
+      # failure THERE would mean the manifest or the parser is wrong rather than the rules.
+      - name: Verify R8 kept every JNI-facing class
+        if: always()
+        run: |
+          set -euo pipefail
+          USAGE="OsmAnd/build/outputs/r8/usage.txt"
+          if [ ! -f "${USAGE}" ]; then
+            echo "no ${USAGE} - R8 did not run, nothing to verify"
+            exit 0
+          fi
+          python3 .github/check_r8_jni.py "${USAGE}" .github/r8-jni-classes.txt
 
       - name: Stage artifacts
         id: stage

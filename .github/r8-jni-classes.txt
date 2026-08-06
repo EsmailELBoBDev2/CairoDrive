@@ -1,0 +1,56 @@
+# The net.osmand classes the NATIVE library reaches by name, and therefore the exact
+# set R8 must not remove. Nothing here is hand-typed: regenerate with
+#
+#   grep -rhoE '"net/osmand/[A-Za-z0-9/$_]+"' <core-legacy>/native/src | tr -d '\"' | sort -u
+#
+# against the core-legacy revision pinned in build-dev.yml (CORE_LEGACY_REF).
+#
+# Why this file has to exist. -dontobfuscate is set, so R8 cannot rename anything and the
+# ONLY failure mode available to it is removal. That makes "did R8 delete something the
+# native side needs" a question with a deterministic answer, because R8's -printusage
+# writes exactly what it removed. Checking that list against this one turns a
+# NoSuchMethodError on a Cairo road into a red build four minutes after the push.
+#
+# Two of these are NOT greppable from the Java side and would be missed by any
+# call-site search: java_wrap.cpp:173-182 does GetObjectClass on an object it is handed
+# and reads the fields 'interrupted' (Z) and 'renderedState' (I) off whatever class comes
+# back. Line 1230 shows that object is a RenderingContext, so keeping that class with its
+# fields covers it - but only because someone went and looked.
+#
+# Generated 2026-08-06 from CORE_LEGACY_REF=071503e280d77c2a959d3690845f5e56b2c7e4b3
+# Count at generation: 35
+net.osmand.NativeLibrary$NativeDirectionPoint
+net.osmand.NativeLibrary$NativeGpxPointApproximation
+net.osmand.NativeLibrary$NativeGpxRouteApproximationResult
+net.osmand.NativeLibrary$NativeRouteSearchResult
+net.osmand.NativeLibrary$RenderedObject
+net.osmand.NativeLibrary$RenderingGenerationResult
+net.osmand.RenderingContext
+net.osmand.Reshaper
+net.osmand.binary.BinaryMapRouteReaderAdapter$RouteRegion
+net.osmand.binary.BinaryMapRouteReaderAdapter$RouteSubregion
+net.osmand.binary.RouteDataObject
+net.osmand.render.RenderingRule
+net.osmand.render.RenderingRuleProperty
+net.osmand.render.RenderingRuleSearchRequest
+net.osmand.render.RenderingRuleStorageProperties
+net.osmand.render.RenderingRulesStorage
+net.osmand.router.GeneralRouter
+net.osmand.router.GeneralRouter$RouteAttributeContext
+net.osmand.router.GeneralRouter$RouteAttributeEvalRule
+net.osmand.router.GeneralRouter$RouteAttributeExpression
+net.osmand.router.GeneralRouter$RoutingParameter
+net.osmand.router.HHRouteDataStructure$HHRoutingConfig
+net.osmand.router.NativeTransportRoute
+net.osmand.router.NativeTransportRouteResultSegment
+net.osmand.router.NativeTransportRoutingResult
+net.osmand.router.NativeTransportStop
+net.osmand.router.PrecalculatedRouteDirection
+net.osmand.router.RouteCalculationProgress
+net.osmand.router.RoutePlannerFrontEnd$RouteCalculationMode
+net.osmand.router.RouteSegmentResult
+net.osmand.router.RoutingConfiguration
+net.osmand.router.RoutingContext
+net.osmand.router.TransportRoutingConfiguration
+net.osmand.router.TurnType
+net.osmand.util.TransliterationHelper
