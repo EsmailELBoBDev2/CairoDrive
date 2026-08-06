@@ -688,16 +688,23 @@ jobs:
           for t, cls, name in rows[:15]:
               print("%8.3fs  %s.%s" % (t, cls.rsplit('.', 1)[-1], name[:110]))
 
-          # WHAT THE WHOLE SUITE COSTS. Printed because the next optimisation on the list -
-          # moving :OsmAnd-java:test and :OsmAnd-java:routingTest into a job that runs BESIDE
-          # the app build instead of inside it - is worth doing or not doing entirely on this
-          # number, and it is not otherwise recoverable: the tests run inside the AAB step, so
-          # the step timing the API returns is tests + NDK + R8 + bundle as one figure.
+          # WHAT THE WHOLE SUITE COSTS, and it has already earned its place.
           #
-          # Deliberately NOT acted on yet. Splitting the job duplicates ~120 lines of setup and
-          # lets a red suite ship an artifact, which is a real trade; making it against a
-          # guess is how the nine performance findings nearly got optimised at 0.2% of a frame.
-          # One run prints this, then the decision is arithmetic.
+          # It was added to decide one thing: whether to move :OsmAnd-java:test and
+          # :OsmAnd-java:routingTest into a job running BESIDE the app build. That number was
+          # not otherwise recoverable - the tests run inside the AAB step, so the timing the
+          # API returns is tests + NDK + R8 + bundle as one figure - and splitting the job
+          # costs ~120 lines of duplicated setup and lets a red suite ship an artifact.
+          #
+          # FIRST RUN ANSWERED IT: 62.1s across 444 cases, of which 40.2s was three *NativeTest
+          # classes re-running their parents byte for byte (see OsmAnd-java/build.gradle). With
+          # those excluded the suite is ~22s. Moving 22 seconds into a job that costs a minute
+          # of checkout and Gradle configuration to start is a LOSS, so the split is DECIDED
+          # AGAINST rather than merely deferred. Do not re-raise it without a new number here.
+          #
+          # The same line also found the real cause of the flaky routing timeout, which is why
+          # it stays: HEADROOM went negative, and the per-class breakdown showed the identical
+          # test case running 0.563s in one class and 1.534s in its duplicate.
           #
           # The per-testcase times above are summed rather than read off <testsuite time=>,
           # because a suite that fails to START (a class-level error) records a suite time with
@@ -1395,16 +1402,23 @@ jobs:
           for t, cls, name in rows[:15]:
               print("%8.3fs  %s.%s" % (t, cls.rsplit('.', 1)[-1], name[:110]))
 
-          # WHAT THE WHOLE SUITE COSTS. Printed because the next optimisation on the list -
-          # moving :OsmAnd-java:test and :OsmAnd-java:routingTest into a job that runs BESIDE
-          # the app build instead of inside it - is worth doing or not doing entirely on this
-          # number, and it is not otherwise recoverable: the tests run inside the AAB step, so
-          # the step timing the API returns is tests + NDK + R8 + bundle as one figure.
+          # WHAT THE WHOLE SUITE COSTS, and it has already earned its place.
           #
-          # Deliberately NOT acted on yet. Splitting the job duplicates ~120 lines of setup and
-          # lets a red suite ship an artifact, which is a real trade; making it against a
-          # guess is how the nine performance findings nearly got optimised at 0.2% of a frame.
-          # One run prints this, then the decision is arithmetic.
+          # It was added to decide one thing: whether to move :OsmAnd-java:test and
+          # :OsmAnd-java:routingTest into a job running BESIDE the app build. That number was
+          # not otherwise recoverable - the tests run inside the AAB step, so the timing the
+          # API returns is tests + NDK + R8 + bundle as one figure - and splitting the job
+          # costs ~120 lines of duplicated setup and lets a red suite ship an artifact.
+          #
+          # FIRST RUN ANSWERED IT: 62.1s across 444 cases, of which 40.2s was three *NativeTest
+          # classes re-running their parents byte for byte (see OsmAnd-java/build.gradle). With
+          # those excluded the suite is ~22s. Moving 22 seconds into a job that costs a minute
+          # of checkout and Gradle configuration to start is a LOSS, so the split is DECIDED
+          # AGAINST rather than merely deferred. Do not re-raise it without a new number here.
+          #
+          # The same line also found the real cause of the flaky routing timeout, which is why
+          # it stays: HEADROOM went negative, and the per-class breakdown showed the identical
+          # test case running 0.563s in one class and 1.534s in its duplicate.
           #
           # The per-testcase times above are summed rather than read off <testsuite time=>,
           # because a suite that fails to START (a class-level error) records a suite time with

@@ -75,6 +75,35 @@ masquerading as a Play build has wasted a drive before.
 
 ---
 
+## The routing test suite — settled, do not re-derive
+
+`RouteTestingTest` carries `@Test(timeout = 1500)`, a WALL-CLOCK gate on a shared CI runner. It
+failed the build once at 1.534 s (102.3% of budget) and the cause was not the routing.
+
+The root `build.gradle:33` sets `isAndroidBuild=true` for **every** test task in this repo.
+`RouterUtilTest.getNativeLibPath():49` returns null whenever that property is set, and
+`RouteTestingTest:78` gates `useNative` on it — so `RouteTestingNativeTest`,
+`ApproximationNativeTest` and `RouteResultPreparationNativeTest` re-ran their parents **byte for
+byte**. Measured: **40.2 s of a 62.1 s suite**. Worse, the duplicate is where the flake landed —
+case 69 ran 0.563 s in `RouteTestingTest` and 1.534 s in the copy, identical inputs and code
+path, because by then the JVM had ~300 route calculations of garbage behind it.
+
+Excluded in `OsmAnd-java/build.gradle`, not deleted: they become real tests again under
+upstream's own conditions (`core-legacy/binaries` present, `isAndroidBuild` unset). A `doFirst`
+names them in the build log every run, so the exclusion is never silent.
+
+**Two decisions follow, both closed:**
+
+| | Decision | Why |
+|---|---|---|
+| Move the suite to a job beside the app build | **No** | ~22 s after the exclusion. Starting a parallel job costs a minute of checkout and Gradle configuration, so the split is a net loss — and it would let a red suite ship an artifact |
+| Raise the 1500 ms timeout | **Not needed** | The surviving copy sits at 37.5% of budget. The ceiling was never the problem |
+
+The build now prints `SUITE COST` with a per-class breakdown and a `HEADROOM:` line on every
+run. If that headroom goes negative again, read those two lines before theorising.
+
+---
+
 ## Things that have gone wrong here before
 
 - **Debug-signed vs signed.** The `build` job is debug-signed; Play rejects it with "signed with

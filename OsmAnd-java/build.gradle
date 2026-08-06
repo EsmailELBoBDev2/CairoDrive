@@ -177,6 +177,47 @@ tasks.register('routingTest', Test) {
 	classpath = sourceSets.test.runtimeClasspath
 	filter {
 		includeTestsMatching 'net.osmand.router.*'
+
+		// THE *NativeTest CLASSES TEST NOTHING HERE, AND THEY ARE WHERE THE FLAKE LANDS.
+		//
+		// Each of the three is its parent plus an isNative() that returns true, and
+		// RouteTestingTest:78 reads
+		//     useNative = isNative() && getNativeLibPath() != null && !te.isIgnoreNative()
+		// RouterUtilTest.getNativeLibPath():49 returns null outright when
+		// isAndroidEnvironment(), and isAndroidEnvironment():45 is true whenever the system
+		// property isAndroidBuild is set - which the ROOT build.gradle:33 sets for EVERY test
+		// task in this repository, unconditionally. So useNative is false in every run this
+		// project can produce, and all three classes re-run their parents byte for byte.
+		//
+		// Measured on run 228, from the SUITE COST line the reporter now prints:
+		//     RouteResultPreparationNativeTest  17.2s
+		//     ApproximationNativeTest           11.9s
+		//     RouteTestingNativeTest            11.1s
+		//     ------------------------------------------
+		//     40.2s of a 62.1s suite, spent proving what the other 21.9s already proved.
+		//
+		// And the duplication is not merely wasteful, it is the FAILURE. Case 69 ran 0.563s in
+		// RouteTestingTest - 37.5% of the 1500 ms @Test(timeout) - and 1.534s in
+		// RouteTestingNativeTest, 102.3%, which failed the build. Identical inputs, identical
+		// code path, 2.7x the wall clock, because by then the JVM had ~300 route calculations
+		// of garbage behind it. A wall-clock deadline on a shared runner cannot survive that,
+		// and no amount of heap tuning fixes a test that is queued behind its own duplicate.
+		//
+		// Excluded rather than deleted: the classes are upstream's, and they become real tests
+		// again the moment core-legacy/binaries exists and isAndroidBuild is not set - which is
+		// how upstream runs them. Excluding here keeps that intact and keeps the sync diff to
+		// this file, which is already this fork's.
+		//
+		// Not silent: the doFirst below names them in the build log every run. A test that
+		// stops running without saying so is how a suite quietly stops meaning anything.
+		excludeTestsMatching 'net.osmand.router.*NativeTest'
+	}
+
+	doFirst {
+		logger.lifecycle("routingTest: excluding *NativeTest - isAndroidBuild is set "
+				+ "(root build.gradle:33), so getNativeLibPath() returns null and those three "
+				+ "classes re-run their parents byte for byte. See the comment in "
+				+ "OsmAnd-java/build.gradle for the measurement.")
 	}
 }
 
