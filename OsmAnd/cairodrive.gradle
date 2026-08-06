@@ -844,8 +844,29 @@ android {
 			//
 			// Deliberately NOT paired with shrinkResources. That one is genuinely dangerous
 			// here: this app resolves resources by name at runtime via getIdentifier in 20
-			// places, R8 cannot see those references, and it would strip icons and rendering
-			// styles that are very much in use. Upstream leaves it off for the same reason.
+			// places (counted, 2026-08-06), R8 cannot see those references, and it would strip
+			// icons and rendering styles that are very much in use. Upstream leaves it off for
+			// the same reason.
+			//
+			// IT DID NOT MOVE WHEN CAIRODRIVE_R8_SHRINK DID, and the difference is the whole
+			// point. R8 removing a class it should not have raises NoSuchMethodError, which
+			// means the removal is visible in -printusage and .github/check_r8_jni.py can fail
+			// the build over it. shrinkResources removing an icon raises NOTHING: getIdentifier
+			// returns 0, the app carries on, and a blank square appears on a map somewhere in
+			// Cairo with not a line in the log to say which resource went. There is no
+			// equivalent guard to write, because there is no exception to catch.
+			//
+			// So it needs a different mechanism before it can be judged at all: a wrapper that
+			// logs CD_RES with the resource name every time getIdentifier returns 0, shipped
+			// and driven FIRST, so that a later build with shrinking on produces a list of
+			// exactly what it broke instead of a vague "some icons look wrong". Five of the 20
+			// call sites ask for android-package resources (status_bar_height,
+			// config_showNavigationBar, right_icon) and are irrelevant - those live in the
+			// framework, not in this APK.
+			//
+			// Worth keeping in proportion before anyone spends a drive on it: res/ is 13.22M of
+			// a 126.77M bundle (run 233), and the dynamic lookups target the icon set, which is
+			// most of what shrinking could remove. World_basemap_mini.obf alone is 38.92M.
 			resConfigs "en", "ar"
 		}
 	}

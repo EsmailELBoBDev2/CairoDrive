@@ -205,6 +205,15 @@ is a key-exposure question (settled - see below), not a data-collection one.
 
 ## Needs a human, not a build
 
+**CLOSED 2026-08-06 — the owner confirmed `الاتجاهات` reads correctly.** He is a native
+Arabic speaker who drives this daily in Cairo, which is the exact bar this item was waiting
+for, so it is settled rather than merely unchanged. Do not re-raise it.
+
+The original note is kept below because the *reasoning* still applies to the next string
+somebody wants to change.
+
+---
+
 The Arabic strings in B2 are an agent's, not a translator's — `الاتجاهات` for Navigate.
 
 Checked before leaving it: `context_menu_item_directions_to` ("الاتجاهات إلى") is dead — no Java
