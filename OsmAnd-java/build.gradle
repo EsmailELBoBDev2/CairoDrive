@@ -127,27 +127,68 @@ publishing {
 	}
 }
 
-// The routing tests are WALL-CLOCK timed - RouteTestingTest declares @Test(timeout = 1500) and
-// each case runs up to three full route calculations inside it. That budget is only meaningful if
-// the JVM running it is not being squeezed by something else.
+// The routing tests are WALL-CLOCK timed: RouteTestingTest declares @Test(timeout = 1500), and
+// the budget covers THREE full route calculations, not one - the planRoadDirection loop at
+// RouteTestingTest:111 runs -1, 0, 1 with builder.build() and fe.buildRoutingContext() both
+// INSIDE it, so each iteration throws away the routing context and re-reads the .obf. For an
+// HH case that means rebuilding the whole highway-hierarchy network index three times.
+//
+// That is why these two sit at 76.6% and 71.3% of their ceiling on a green run. The ceiling is
+// not tight against one calculation; it is tight against three.
 //
 // Every test in this module shares ONE forked JVM, and Gradle's default heap for a test JVM is
-// 512 MB - the `org.gradle.jvmargs=-Xmx6g` that CI writes applies to the Gradle DAEMON, not to
-// this fork. The search tests in the same JVM now exercise the spatial pipeline that arrived with
-// the upstream merge, and 74. "HH-routing via roadblock" began timing out on the first build after
-// that merge. Re-running the last pre-merge commit on the same day PASSED, which rules out the
-// runner being slow and rules out the routing code, the test, and its data - none of which changed.
+// 512 MB - the `org.gradle.jvmargs=-Xmx6g` CI writes configures the Gradle DAEMON, not this fork.
+// 74. "HH-routing via roadblock" began timing out on the first build after the upstream merge;
+// re-running the last pre-merge commit the same day PASSED, which ruled out the runner, the
+// routing code, the test and its data - none of which had changed.
 //
-// Stated honestly: heap pressure is the best-supported explanation, not a proven one. There is no
-// OutOfMemoryError in the log, and the per-test timings that would settle it live in an artifact
-// this environment cannot fetch. What is certain is that a timed test sharing an unbounded-demand
-// JVM with unrelated tests is an unmanaged variable, and this removes it.
+// CORRECTION to what this comment said before: it blamed "the spatial pipeline tests that arrived
+// with the merge". Those classes - HSTQuadTree*Test, OsmGpxRegionsJoinTest - contain no @Test
+// methods at all, only main(), so Gradle never executes them. The heavy co-resident allocator is
+// SearchUICoreTest, which gunzips a .obf per parameterised case. The heap change was right; the
+// reason given for it was not, and a wrong reason in a comment is how the next person reaches a
+// wrong conclusion confidently.
 //
-// Not forkEvery = 1: a fresh JVM per class would isolate the tests but start each one in the
-// interpreter, and losing JIT warmup on a compute-heavy routing test could push it FURTHER over
-// its 1.5 s budget. Isolating memory without discarding warmup is the change that can only help.
+// -Xms matches -Xmx deliberately. Setting only maxHeapSize leaves JDK 17's INITIAL heap at the
+// default 1/64 of RAM, so the JVM spends the early tests growing the heap - full GCs and resize
+// pauses landing inside a wall-clock budget.
 tasks.withType(Test).configureEach {
 	maxHeapSize = "2g"
+	jvmArgs '-Xms2g'
+}
+
+// The routing tests get their own JVM, and this is the fix the earlier `forkEvery = 1` idea was
+// reaching for without getting right.
+//
+// forkEvery = 1 would have bought nothing here: RouteTestingTest is @Parameterized, so all 84
+// cases are ONE class and therefore one JVM whatever forkEvery says - it cannot isolate case 69
+// from case 68. What it WOULD have done is discard JIT warmup between classes, on compute-heavy
+// tests, against a wall-clock deadline.
+//
+// A separate task isolates the thing that actually contaminates them - a heap that has been
+// holding SearchUICoreTest's decompressed maps - while keeping every routing test in one warm
+// JVM together. There are ~500 route calculations in this task; warmup is not in short supply.
+//
+// check.dependsOn keeps it enforced: nothing can build the app while skipping these.
+tasks.register('routingTest', Test) {
+	description = 'Routing tests, isolated from the memory-heavy search tests.'
+	group = 'verification'
+	testClassesDirs = sourceSets.test.output.classesDirs
+	classpath = sourceSets.test.runtimeClasspath
+	filter {
+		includeTestsMatching 'net.osmand.router.*'
+	}
+}
+
+tasks.named('test') {
+	// Excluded here so they run once, in routingTest, rather than in both.
+	filter {
+		excludeTestsMatching 'net.osmand.router.*'
+	}
+}
+
+tasks.named('check') {
+	dependsOn 'routingTest'
 }
 
 dependencies {
