@@ -443,6 +443,23 @@ def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim
 // Flip ACT only when a drive shows: fewer than one firing per hour that never went on to confirm,
 // a median lead over the distance test above 3 s, and `degraded` dominating the gated= histogram.
 // Read CD_WRONGROAD summary for all three.
+// Judge a deviation more strictly near a turn.
+//
+// The 50-120 m off-route threshold answers "is this GPS noise or a real deviation?", and away
+// from junctions that caution is correct - there is nothing for the driver to get wrong on a
+// straight road, so an offset is probably error. Beside a turn the prior inverts: there IS
+// something to get wrong, and they may just have got it wrong.
+//
+// Halving the threshold within 40 m of a manoeuvre is not invented here - Mapbox's
+// ToleranceUtils.dynamicRerouteDistanceTolerance does exactly this and has shipped for years.
+//
+// Chosen over the cleverer heading-based missed-turn test because it needs no bearing: it keeps
+// working in stop-and-go traffic and on degraded fixes, which are more than half of this
+// device's, where a heading test must go silent. And it buys its seconds on EVERY deviation
+// rather than only on missed turns sharper than 40 degrees.
+def tightenNearTurnEnv = System.getenv("CAIRODRIVE_TIGHTEN_NEAR_TURN")
+def tightenNearTurn = tightenNearTurnEnv?.trim() ? tightenNearTurnEnv.trim() : "true"
+
 def wrongRoadEnv = System.getenv("CAIRODRIVE_WRONG_ROAD")
 def wrongRoad = wrongRoadEnv?.trim() ? wrongRoadEnv.trim() : "true"
 def wrongRoadActEnv = System.getenv("CAIRODRIVE_WRONG_ROAD_ACT")
@@ -990,6 +1007,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_EARLY_REROUTE", earlyReroute
 			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD", wrongRoad
 			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD_ACT", wrongRoadAct
+			buildConfigField "boolean", "CAIRODRIVE_TIGHTEN_NEAR_TURN", tightenNearTurn
 			buildConfigField "int", "CAIRODRIVE_LOCATION_INTERPOLATION", locationInterpolation
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_DETAILS", placesDetails
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_PHOTOS", placesPhotos
@@ -1053,6 +1071,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_EARLY_REROUTE", earlyReroute
 			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD", wrongRoad
 			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD_ACT", wrongRoadAct
+			buildConfigField "boolean", "CAIRODRIVE_TIGHTEN_NEAR_TURN", tightenNearTurn
 			buildConfigField "int", "CAIRODRIVE_LOCATION_INTERPOLATION", locationInterpolation
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_DETAILS", placesDetails
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_PHOTOS", placesPhotos

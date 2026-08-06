@@ -563,6 +563,25 @@ public class RoutingHelper {
 				if (allowableDeviation <= 0) {
 					allowableDeviation = getDefaultAllowedDeviation(settings, route.getAppMode(), posTolerance);
 				}
+				// TIGHTEN THE THRESHOLD NEAR A MANOEUVRE. The 50-120 m default answers "is this
+				// GPS noise or a real deviation?", and away from junctions that caution is right:
+				// there is nothing for the driver to get wrong on a straight road, so an offset is
+				// probably error. Beside a turn the prior inverts - there IS something to get
+				// wrong, and they may just have got it wrong.
+				//
+				// Halving it there is not a guess; Mapbox ships exactly this
+				// (ToleranceUtils.dynamicRerouteDistanceTolerance halves the off-route radius
+				// within 40 m of an intersection) and has for years.
+				//
+				// Why this and not the heading test that looks cleverer: it needs no bearing, so
+				// it keeps working in the stop-and-go and the degraded fixes that are more than
+				// half of this device's, where a heading test must go silent. It buys the same
+				// seconds on EVERY deviation rather than only on missed turns above 40 degrees.
+				double manoeuvreM = distanceToNextManoeuvre();
+				boolean nearManoeuvre = manoeuvreM >= 0 && manoeuvreM <= NEAR_MANOEUVRE_M;
+				if (nearManoeuvre && BuildConfig.CAIRODRIVE_TIGHTEN_NEAR_TURN) {
+					allowableDeviation *= NEAR_MANOEUVRE_TOLERANCE_MULT;
+				}
 
 				// 2. Analyze if we need to recalculate route
 				// >100m off current route (sideways) or parameter (for Straight line)
@@ -1056,6 +1075,38 @@ public class RoutingHelper {
 	private static final float MIN_POS_TOLERANCE_GOOD_FIX = 25;
 	/** 2.5 sigma of a 68%-radius accuracy figure is ~99%: generous, without being uniform. */
 	private static final float POS_TOLERANCE_GOOD_FIX_FACTOR = 2.5f;
+
+	/**
+	 * Within this distance of the next manoeuvre, a deviation is judged more strictly.
+	 *
+	 * <p>Mapbox uses 40 m for the same purpose. Kept identical rather than re-derived: it is a
+	 * shipped number from a system that has driven far more kilometres than this fork ever will.
+	 */
+	private static final double NEAR_MANOEUVRE_M = 40;
+
+	/** Half, also Mapbox's figure. */
+	private static final double NEAR_MANOEUVRE_TOLERANCE_MULT = 0.5;
+
+	/** Reused so the per-fix check allocates nothing; only ever touched on the location thread. */
+	private final NextDirectionInfo nearTurnProbe = new NextDirectionInfo();
+
+	/**
+	 * Metres to the next spoken manoeuvre, or -1 when there is none to speak of.
+	 *
+	 * <p>{@code toSpeak=true} deliberately: a manoeuvre the driver was never told about is not one
+	 * they can be judged for missing.
+	 */
+	private double distanceToNextManoeuvre() {
+		try {
+			NextDirectionInfo n = getNextRouteDirectionInfo(nearTurnProbe, true);
+			if (n == null || n.directionInfo == null || n.distanceTo < 0) {
+				return -1;
+			}
+			return n.distanceTo;
+		} catch (Throwable t) {
+			return -1;
+		}
+	}
 
 	private static float getDefaultAllowedDeviation(OsmandSettings settings, ApplicationMode mode, float posTolerance) {
 		if (mode.getRouteService() == RouteService.DIRECT_TO) {
