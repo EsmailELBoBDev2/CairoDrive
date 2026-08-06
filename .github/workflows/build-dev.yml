@@ -503,6 +503,8 @@ jobs:
           LOCATIONIQ_KEY: ${{ secrets.LOCATIONIQ_KEY }}
           AZURE_MAPS_KEY: ${{ secrets.AZURE_MAPS_KEY }}
           TOMORROW_KEY: ${{ secrets.TOMORROW_KEY }}
+          OSM_OAUTH_ID: ${{ secrets.OSM_OAUTH_ID }}
+          MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
         run: |
           # WARN, never fail: a build with no keys is a legitimate configuration and the app is
           # written to degrade to offline behaviour. What is NOT legitimate is not knowing.
@@ -521,7 +523,9 @@ jobs:
                       "GEOAPIFY_KEY:addresses and autocomplete" \
                       "LOCATIONIQ_KEY:address fallback (second geocoder)" \
                       "AZURE_MAPS_KEY:weather along the route" \
-                      "TOMORROW_KEY:independent visibility check"; do
+                      "TOMORROW_KEY:independent visibility check" \
+                      "OSM_OAUTH_ID:OSM edits under THIS app's client, not upstream's" \
+                      "MAPILLARY_TOKEN:Mapillary photos under THIS app's token"; do
             name="${pair%%:*}"; what="${pair#*:}"
             if [ -n "${!name:-}" ]; then
               echo "  present : ${name}  (${what})"
@@ -600,6 +604,19 @@ jobs:
           CAIRODRIVE_LOCATIONIQ_KEY: ${{ secrets.LOCATIONIQ_KEY }}
           CAIRODRIVE_AZURE_MAPS_KEY: ${{ secrets.AZURE_MAPS_KEY }}
           CAIRODRIVE_TOMORROW_KEY: ${{ secrets.TOMORROW_KEY }}
+          # Wired but UNSET, and that is the point of wiring them. cairodrive.gradle:572-585
+          # and :496 already read these, and no workflow passed them - so the override path
+          # was unreachable in every CI build and the app kept shipping upstream's OSM OAuth
+          # client id, upstream's plaintext client secret (no_translate.xml:70-71) and
+          # upstream's Mapillary token (TileSourceManager.java:40). Heavy use throttles
+          # OSMAND'S token, not ours, and the shared osmand-oauth:// scheme means a real
+          # OsmAnd install on the same phone can be offered our authorization code.
+          # GitHub resolves a missing secret to an empty string, so these are inert until
+          # the secrets exist - at which point the feature works with no code change.
+          CAIRODRIVE_OSM_OAUTH_ID: ${{ secrets.OSM_OAUTH_ID }}
+          CAIRODRIVE_OSM_OAUTH_SECRET: ${{ secrets.OSM_OAUTH_SECRET }}
+          CAIRODRIVE_OSM_OAUTH_REDIRECT: ${{ secrets.OSM_OAUTH_REDIRECT }}
+          CAIRODRIVE_MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
           APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
           BUNDLE_TASK: ${{ steps.variant.outputs.bundle_task }}
         run: |
@@ -786,6 +803,19 @@ jobs:
           CAIRODRIVE_LOCATIONIQ_KEY: ${{ secrets.LOCATIONIQ_KEY }}
           CAIRODRIVE_AZURE_MAPS_KEY: ${{ secrets.AZURE_MAPS_KEY }}
           CAIRODRIVE_TOMORROW_KEY: ${{ secrets.TOMORROW_KEY }}
+          # Wired but UNSET, and that is the point of wiring them. cairodrive.gradle:572-585
+          # and :496 already read these, and no workflow passed them - so the override path
+          # was unreachable in every CI build and the app kept shipping upstream's OSM OAuth
+          # client id, upstream's plaintext client secret (no_translate.xml:70-71) and
+          # upstream's Mapillary token (TileSourceManager.java:40). Heavy use throttles
+          # OSMAND'S token, not ours, and the shared osmand-oauth:// scheme means a real
+          # OsmAnd install on the same phone can be offered our authorization code.
+          # GitHub resolves a missing secret to an empty string, so these are inert until
+          # the secrets exist - at which point the feature works with no code change.
+          CAIRODRIVE_OSM_OAUTH_ID: ${{ secrets.OSM_OAUTH_ID }}
+          CAIRODRIVE_OSM_OAUTH_SECRET: ${{ secrets.OSM_OAUTH_SECRET }}
+          CAIRODRIVE_OSM_OAUTH_REDIRECT: ${{ secrets.OSM_OAUTH_REDIRECT }}
+          CAIRODRIVE_MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
           APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
           APK_RELEASE_TASK: ${{ steps.variant.outputs.apk_release_task }}
         run: |
@@ -1330,6 +1360,19 @@ jobs:
           CAIRODRIVE_LOCATIONIQ_KEY: ${{ secrets.LOCATIONIQ_KEY }}
           CAIRODRIVE_AZURE_MAPS_KEY: ${{ secrets.AZURE_MAPS_KEY }}
           CAIRODRIVE_TOMORROW_KEY: ${{ secrets.TOMORROW_KEY }}
+          # Wired but UNSET, and that is the point of wiring them. cairodrive.gradle:572-585
+          # and :496 already read these, and no workflow passed them - so the override path
+          # was unreachable in every CI build and the app kept shipping upstream's OSM OAuth
+          # client id, upstream's plaintext client secret (no_translate.xml:70-71) and
+          # upstream's Mapillary token (TileSourceManager.java:40). Heavy use throttles
+          # OSMAND'S token, not ours, and the shared osmand-oauth:// scheme means a real
+          # OsmAnd install on the same phone can be offered our authorization code.
+          # GitHub resolves a missing secret to an empty string, so these are inert until
+          # the secrets exist - at which point the feature works with no code change.
+          CAIRODRIVE_OSM_OAUTH_ID: ${{ secrets.OSM_OAUTH_ID }}
+          CAIRODRIVE_OSM_OAUTH_SECRET: ${{ secrets.OSM_OAUTH_SECRET }}
+          CAIRODRIVE_OSM_OAUTH_REDIRECT: ${{ secrets.OSM_OAUTH_REDIRECT }}
+          CAIRODRIVE_MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
           APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
           CAIRODRIVE_KEYSTORE_FILE: ${{ steps.keystore.outputs.path }}
           CAIRODRIVE_KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -1475,6 +1518,19 @@ jobs:
           CAIRODRIVE_LOCATIONIQ_KEY: ${{ secrets.LOCATIONIQ_KEY }}
           CAIRODRIVE_AZURE_MAPS_KEY: ${{ secrets.AZURE_MAPS_KEY }}
           CAIRODRIVE_TOMORROW_KEY: ${{ secrets.TOMORROW_KEY }}
+          # Wired but UNSET, and that is the point of wiring them. cairodrive.gradle:572-585
+          # and :496 already read these, and no workflow passed them - so the override path
+          # was unreachable in every CI build and the app kept shipping upstream's OSM OAuth
+          # client id, upstream's plaintext client secret (no_translate.xml:70-71) and
+          # upstream's Mapillary token (TileSourceManager.java:40). Heavy use throttles
+          # OSMAND'S token, not ours, and the shared osmand-oauth:// scheme means a real
+          # OsmAnd install on the same phone can be offered our authorization code.
+          # GitHub resolves a missing secret to an empty string, so these are inert until
+          # the secrets exist - at which point the feature works with no code change.
+          CAIRODRIVE_OSM_OAUTH_ID: ${{ secrets.OSM_OAUTH_ID }}
+          CAIRODRIVE_OSM_OAUTH_SECRET: ${{ secrets.OSM_OAUTH_SECRET }}
+          CAIRODRIVE_OSM_OAUTH_REDIRECT: ${{ secrets.OSM_OAUTH_REDIRECT }}
+          CAIRODRIVE_MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
           APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
           CAIRODRIVE_KEYSTORE_FILE: ${{ steps.keystore.outputs.path }}
           CAIRODRIVE_KEYSTORE_PASSWORD: ${{ secrets.CAIRODRIVE_KEYSTORE_PASSWORD || secrets.ANDROID_KEYSTORE_PASSWORD }}

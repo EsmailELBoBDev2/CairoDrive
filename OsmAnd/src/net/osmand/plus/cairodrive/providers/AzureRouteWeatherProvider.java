@@ -125,12 +125,20 @@ public final class AzureRouteWeatherProvider {
 	 * <p>Own counters mean route polling cannot starve alerts however long the drive runs.
 	 *
 	 * <p>The numbers are sized against real use, not against the allowance. A heavy day is roughly
-	 * four hours navigating (24 route polls) and eight hours driving (16 alert polls); these leave
-	 * better than 2x headroom on both. Against Azure's 250,000/month Gen2 free tier the pair costs
-	 * about 1% - so the old cap was not buying safety, it was buying a broken feature.
+	 * four hours navigating and eight hours driving. Against Azure's 250,000/month Gen2 free tier
+	 * the pair costs about 1% - so the old cap was not buying safety, it was buying a broken
+	 * feature.
+	 *
+	 * <p><b>Sized to outlast the longest drive on record, not the typical one.</b> These were 60
+	 * and 20, which at the intervals below is exactly 10 hours of continuous cover each. The
+	 * owner drives about six hours typically and has been past twelve - so the caps were set just
+	 * under the worst case they exist for, and the feature would have gone quiet on precisely the
+	 * long day when route weather and a sandstorm warning matter most. 78 and 26 carry 13 hours,
+	 * an hour past the longest drive rather than two short of it. At 0.014% of the monthly free
+	 * tier per day the extra costs nothing that can be measured.
 	 */
-	private static final int ROUTE_DAILY_CAP = 60;
-	private static final int ALERT_DAILY_CAP = 20;
+	private static final int ROUTE_DAILY_CAP = 78;
+	private static final int ALERT_DAILY_CAP = 26;
 
 	/** A route is re-checked no more often than this. Azure refreshes the data every 5 minutes. */
 	private static final long MIN_INTERVAL_MS = 10 * 60 * 1000L;
