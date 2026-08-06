@@ -390,6 +390,24 @@ def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim
 // The only real risk is serving a STALE route, so it borrows the warm-environment cache's
 // discipline: keyed on start cell + destination + profile, dropped whenever the loaded map set
 // changes, expired after 90 s. CD_REROUTE reports `cache HIT ageMs=`.
+// Race the online route calculation against the local one and take whichever answers first.
+//
+// OFF by default, and unlike most flags here that is not caution about correctness - the worst
+// case of this feature is provably the current behaviour, because the offline calculation is
+// always running and nothing waits for the network. It is off because nobody has DRIVEN it yet,
+// and because it is inert anyway until an online engine exists.
+//
+// What it is for: an 8 km Cairo reroute takes 4-8 s on the POCO C85, and six measured
+// hypotheses established that this is simply what the hardware costs - so the only remaining
+// lever is not computing it locally at all. A server answers in a few hundred milliseconds when
+// the network is good, and this arrangement takes that win WITHOUT taking the loss when it is
+// not, because the local calculation was never paused to find out.
+//
+// Do NOT turn this on by pointing it at OsmAnd's online-with-fallback: that path waits out a
+// 30 s connect and 60 s read before it starts calculating locally. See CairoDriveRouteRace.
+def routeRaceEnv = System.getenv("CAIRODRIVE_ROUTE_RACE")
+def routeRace = routeRaceEnv?.trim() ? routeRaceEnv.trim() : "false"
+
 def rerouteCacheEnv = System.getenv("CAIRODRIVE_REROUTE_CACHE")
 def rerouteCache = rerouteCacheEnv?.trim() ? rerouteCacheEnv.trim() : "true"
 
@@ -893,6 +911,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_SPEECH_LEAD", speechLead
 			buildConfigField "boolean", "CAIRODRIVE_MAP_MATCHING", mapMatching
 			buildConfigField "boolean", "CAIRODRIVE_REROUTE_CACHE", rerouteCache
+			buildConfigField "boolean", "CAIRODRIVE_ROUTE_RACE", routeRace
 			buildConfigField "int", "CAIRODRIVE_LOCATION_INTERPOLATION", locationInterpolation
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_DETAILS", placesDetails
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_PHOTOS", placesPhotos
@@ -950,6 +969,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_SPEECH_LEAD", speechLead
 			buildConfigField "boolean", "CAIRODRIVE_MAP_MATCHING", mapMatching
 			buildConfigField "boolean", "CAIRODRIVE_REROUTE_CACHE", rerouteCache
+			buildConfigField "boolean", "CAIRODRIVE_ROUTE_RACE", routeRace
 			buildConfigField "int", "CAIRODRIVE_LOCATION_INTERPOLATION", locationInterpolation
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_DETAILS", placesDetails
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_PHOTOS", placesPhotos

@@ -4,7 +4,10 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import net.osmand.plus.helpers.CairoDriveLog;
+import net.osmand.plus.routing.RouteCalculationParams;
+import net.osmand.router.RouteCalculationProgress;
 
+import java.util.ArrayList;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -187,6 +190,58 @@ public final class CairoDriveRouteRace {
 			// Never blocks: the losing task is a daemon and is left to finish on its own.
 			pool.shutdown();
 		}
+	}
+
+	/**
+	 * A copy of the calculation parameters for the ONLINE side to scribble on.
+	 *
+	 * <p>This method is the reason the race can be wired in at all.
+	 * {@code RouteProvider.findOnlineRoute} writes to the parameters it is given - it assigns
+	 * {@code gpxFile}, {@code gpxRoute} and {@code initialCalculation}, and it sets
+	 * {@code intermediates} to null - while {@code findVectorMapsRoute} is reading the same
+	 * object on another thread. Sharing one instance between the two would be a data race whose
+	 * victim is the OFFLINE route, which is the one result that must always be trustworthy.
+	 *
+	 * <p>A shallow copy is correct here and a deep one would be wrong. The fields the online
+	 * side mutates are all references or primitives on THIS object, so replacing them affects
+	 * only the copy. The objects still shared - {@code ctx}, {@code mode}, {@code start},
+	 * {@code end} - are read-only for both sides.
+	 *
+	 * <p>Two fields are deliberately NOT copied across:
+	 * <ul>
+	 *   <li>{@code calculationProgress} gets a fresh instance. It carries {@code isCancelled}
+	 *       and the progress counters the UI reads; letting the online request drive the same
+	 *       object would make the progress bar jump and, worse, let one side's cancellation
+	 *       stop the other.</li>
+	 *   <li>The listeners are left null. They fire callbacks into route handling, and the
+	 *       losing side of a race must be silent - it is a calculation whose result is about to
+	 *       be thrown away.</li>
+	 * </ul>
+	 */
+	@NonNull
+	public static RouteCalculationParams copyForOnline(@NonNull RouteCalculationParams src) {
+		RouteCalculationParams p = new RouteCalculationParams();
+		p.start = src.start;
+		p.end = src.end;
+		p.intermediates = src.intermediates == null ? null : new ArrayList<>(src.intermediates);
+		p.currentLocation = src.currentLocation;
+		p.ctx = src.ctx;
+		p.mode = src.mode;
+		p.gpxRoute = src.gpxRoute;
+		p.previousToRecalculate = src.previousToRecalculate;
+		p.onlyStartPointChanged = src.onlyStartPointChanged;
+		p.cairoDriveDispatchedAt = src.cairoDriveDispatchedAt;
+		p.fast = src.fast;
+		p.leftSide = src.leftSide;
+		p.startTransportStop = src.startTransportStop;
+		p.targetTransportStop = src.targetTransportStop;
+		p.inPublicTransportMode = src.inPublicTransportMode;
+		p.extraIntermediates = src.extraIntermediates;
+		p.initialCalculation = src.initialCalculation;
+		p.gpxFile = src.gpxFile;
+		// Fresh, not shared - see the note above.
+		p.calculationProgress = new RouteCalculationProgress();
+		return p;
 	}
 
 	@Nullable

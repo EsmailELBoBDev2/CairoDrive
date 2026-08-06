@@ -31,7 +31,9 @@ import net.osmand.plus.onlinerouting.OnlineRoutingHelper;
 import net.osmand.plus.onlinerouting.engine.OnlineRoutingEngine;
 import net.osmand.plus.onlinerouting.engine.OnlineRoutingEngine.OnlineRoutingResponse;
 import net.osmand.plus.render.NativeOsmandLibrary;
+import net.osmand.plus.BuildConfig;
 import net.osmand.plus.cairodrive.CairoDriveLogger;
+import net.osmand.plus.cairodrive.CairoDriveRouteRace;
 import net.osmand.plus.resources.ResourceManager;
 import net.osmand.plus.routing.GPXRouteParams.GPXRouteParamsBuilder;
 import net.osmand.plus.settings.backend.ApplicationMode;
@@ -454,7 +456,14 @@ public class RouteProvider {
 				if (calcGPXRoute && !params.gpxRoute.calculateOsmAndRoute) {
 					res = gpxRouteHelper.calculateGpxRoute(params);
 				} else if (params.mode.getRouteService() == RouteService.OSMAND) {
-					res = findVectorMapsRoute(params, calcGPXRoute);
+					// CairoDrive: optionally race an online calculation alongside the local one
+					// and take whichever answers first. Returns null when the race is switched
+					// off or no online engine is configured, and then this is exactly the
+					// upstream line it replaced.
+					res = raceOnlineWithOffline(params, calcGPXRoute);
+					if (res == null) {
+						res = findVectorMapsRoute(params, calcGPXRoute);
+					}
 					if (params.calculationProgress.missingMapsCalculationResult != null) {
 						res.setMissingMapsCalculationResult(params.calculationProgress.missingMapsCalculationResult);
 					}
@@ -1744,6 +1753,81 @@ public class RouteProvider {
 		RouteExporter exporter = new RouteExporter(name, originalRoute, locations, null, points);
 
 		return exporter.exportRoute();
+	}
+
+	/**
+	 * CairoDrive: run the local calculation and an online one at the same time, and use whichever
+	 * answers first. See {@link CairoDriveRouteRace} for why this is a race and not the
+	 * online-with-fallback that upstream already has - in short, the fallback only starts the
+	 * local calculation AFTER a 30 s connect plus 60 s read timeout has expired, which on a bad
+	 * Cairo connection is about ten times slower than simply staying offline.
+	 *
+	 * @return null when the race is off, when no online engine is configured, or when anything
+	 *         at all goes wrong - in every one of those cases the caller runs the ordinary
+	 *         offline calculation and behaviour is bit-for-bit what it was before.
+	 */
+	@Nullable
+	private RouteCalculationResult raceOnlineWithOffline(@NonNull RouteCalculationParams params,
+	                                                     boolean calcGPXRoute) {
+		if (!BuildConfig.CAIRODRIVE_ROUTE_RACE) {
+			return null;
+		}
+		try {
+			OnlineRoutingHelper helper = params.ctx.getOnlineRoutingHelper();
+			List<OnlineRoutingEngine> engines = helper.getEngines();
+			if (Algorithms.isEmpty(engines)) {
+				// Inert until an engine exists, exactly like the OSM OAuth wiring: the feature
+				// is present, costs nothing, and switches itself on when the key is there.
+				return null;
+			}
+			OnlineRoutingEngine engine = engines.get(0);
+			// The online side gets its OWN parameters. findOnlineRouteWith writes to them, and
+			// findVectorMapsRoute is reading the originals on the other thread.
+			RouteCalculationParams onlineParams = CairoDriveRouteRace.copyForOnline(params);
+			List<LatLon> path = getPathFromParams(params);
+			return CairoDriveRouteRace.race(
+					() -> findVectorMapsRoute(params, calcGPXRoute),
+					() -> findOnlineRouteWith(helper, engine, path, onlineParams),
+					r -> r != null && r.isCalculated());
+		} catch (Throwable t) {
+			// A broken race must never cost a route. Fall through to the offline path.
+			CairoDriveLogger.getInstance().log("ROUTE_RACE", "race setup failed, offline only", t);
+			return null;
+		}
+	}
+
+	/**
+	 * The online half of the race. Deliberately separate from {@link #findOnlineRoute}: that one
+	 * reads the engine out of the profile and writes its results back into the SHARED params,
+	 * both of which are wrong here.
+	 */
+	@Nullable
+	private RouteCalculationResult findOnlineRouteWith(@NonNull OnlineRoutingHelper helper,
+	                                                   @NonNull OnlineRoutingEngine engine,
+	                                                   @NonNull List<LatLon> path,
+	                                                   @NonNull RouteCalculationParams params)
+			throws IOException, JSONException {
+		OnlineRoutingResponse response = helper.calculateRouteOnline(engine, path, params);
+		if (response == null) {
+			return null;
+		}
+		if (response.getGpxFile() != null) {
+			// A GPX answer has to be turned into a route through gpxRouteHelper, which mutates
+			// params further. That is safe on this copy and nowhere else.
+			GPXRouteParamsBuilder builder =
+					new GPXRouteParamsBuilder(response.getGpxFile(), params.ctx.getSettings());
+			builder.setCalculatedRouteTimeSpeed(response.hasCalculatedTimeSpeed());
+			params.gpxFile = response.getGpxFile();
+			params.gpxRoute = builder.build(params.ctx);
+			return gpxRouteHelper.calculateGpxRoute(params);
+		}
+		List<Location> route = response.getRoute();
+		List<RouteDirectionInfo> directions = response.getDirections();
+		if (!Algorithms.isEmpty(route) && !Algorithms.isEmpty(directions)) {
+			params.intermediates = null;
+			return new RouteCalculationResult(route, directions, params, null, false);
+		}
+		return null;
 	}
 
 	private RouteCalculationResult findOnlineRoute(RouteCalculationParams params) throws IOException, JSONException {
