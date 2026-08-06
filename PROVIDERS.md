@@ -15,6 +15,29 @@
 
 ---
 
+## WHAT HAS CHANGED SINCE THIS WAS WRITTEN — 2026-08-06
+
+This document is a snapshot of research, and it is kept as one. The analysis below is not
+edited, because the REASONS are the durable part. But four of its statements about the TREE
+are now false, and a session acting on them would delete working code or re-do finished work.
+Check here first.
+
+| Statement in this document | Status on 2026-08-06 |
+|---|---|
+| §0.1 "There are no TomTom or HERE integrations in this repo" | **Superseded.** Both exist now. TomTom flow + incidents: `TomTomTrafficProvider.java`, `TrafficOverlayHelper.java`, `ClosureSyncHelper.java`. HERE: `TrafficOverlayHelper:70-74`, `ClosureSyncHelper.fetchHere:112-155`. §0.1 was accurate when written and is a record of that, not a claim about today |
+| §4 / p.93 "delete the inherited `YandexTrafficAdapter`" | **Done.** The file is gone. What remains is upstream tile-source parsing (`TileSourceManager.java:38,837`, `RULE_YANDEX_TRAFFIC`) and a comment at `MapTileLayer.java:199-208`; `rule=yandex_traffic` now falls through to plain raster. Leave that alone — it is upstream format compatibility and removing it only widens the sync diff |
+| §4 "also drop `GoogleTrafficLayer` and `GoogleTrafficHelper` — dead-but-flippable code" | **The premise is stale.** It is no longer dead-but-flippable: it is wired into `RoutingHelper:284,305,513,636,679`, `RouteRecalculationHelper:175,218`, `MapLayers:147-153`, `TrafficDetourHelper` and `TrafficAwareRouting`. Removing it is multi-file surgery on the live reroute path, not a deletion. The §19.2 ToS argument for dropping it is unchanged and still worth answering — but it is now a decision, not a cleanup. Default remains off (`GOOGLE_TRAFFIC_ON_ROUTE = false`) |
+| §4 "**HERE — Drop**" | **Contradicted by the tree.** `TrafficOverlayHelper.java:68` argues the opposite in a comment: HERE is "a genuinely INDEPENDENT source… a real second opinion", where TomTom and Google partly share upstream feeds. The code is gated on `CAIRODRIVE_HERE_KEY`, which IS wired from `secrets.HERE_API_KEY` in all four env blocks of `build-dev.yml`, so it fires today if that secret is set. **Two documents in this repo now disagree and neither is obviously right. This needs the owner's decision, not a unilateral edit.** Nothing has been deleted pending that |
+
+One item from §5 that is NOT done and was not obvious: the OSM OAuth and Mapillary token
+overrides (`cairodrive.gradle:566-579, 490`) are read by gradle but **no workflow sets them and
+no such repository secret exists**, so the override path is unreachable in every CI build and
+the app ships upstream's credentials. That is §5's "Build 0" being un-shippable via CI rather
+than dead code — the gradle side is correct and should stay. `GetMapillaryUserAsyncTask` (retired
+v3 API, can only fail) is also still present.
+
+---
+
 ## 0. Ground truth corrections — read before anything else
 
 Three premises in the brief and in the upstream research are wrong. Everything downstream depends on them.
