@@ -149,6 +149,15 @@ public class RoutingHelper {
 		this.route = route;
 		// Evidence of deviating from the previous route says nothing about this one.
 		offRouteHysteresis.reset();
+		// Rebuild the set of roads this route uses. WITHOUT THIS LINE the road-identity detector
+		// is dead code: onRouteChanged was only ever reached from clearCurrentRoute, with null,
+		// so its id set was permanently null and evaluate() returned false on every fix. The
+		// feature shipped inert and its own summary counters could never have said so.
+		net.osmand.plus.cairodrive.CairoDriveWrongRoad.onRouteChanged(route);
+		// An early calculation belongs to the deviation from the OLD route. Once a new route is
+		// installed the question it was answering no longer exists, and leaving the latch raised
+		// would make confirm() suppress the next genuine dispatch.
+		net.osmand.plus.cairodrive.CairoDriveEarlyReroute.reset();
 		// N6: the same argument. A Viterbi history is about a journey that no longer exists, and
 		// while BROKEN_CHAIN_GAP_MS would recover on its own, it would do so only after 20 s of
 		// driving on stale hypotheses. No-op when map matching is off.
@@ -292,6 +301,10 @@ public class RoutingHelper {
 		// change and forced a re-fetch that can be forty minutes away on a spent ladder.
 		net.osmand.plus.cairodrive.providers.CairoDriveProviders.resetRouteState();
 		net.osmand.plus.cairodrive.providers.TrafficAwareRouting.onRouteCleared(app);
+		// Write the gate histogram before the counters are lost. A zero firing count says
+		// nothing on its own - "degraded fixes dominated" and "the feature never ran" look
+		// identical in a log without it, and only one of those is a bug.
+		net.osmand.plus.cairodrive.CairoDriveWrongRoad.logSummary();
 		net.osmand.plus.cairodrive.CairoDriveEarlyReroute.reset();
 		net.osmand.plus.cairodrive.CairoDriveWrongRoad.onRouteChanged(null);
 		net.osmand.plus.cairodrive.providers.SunGlareProvider.reset(app);
