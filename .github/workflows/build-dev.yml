@@ -967,6 +967,23 @@ jobs:
           xargs -a /tmp/native-files sha256sum > native-cache.sha256
           cat native-cache.sha256
 
+          # The patch that produces CD_HHLOAD rewrites core-legacy sources before ndk-build.
+          # Verify it actually reached the compiled library. Until now this was checked ONLY
+          # on the cache-HIT path, so a fresh build - the very run that compiles the patched
+          # sources - never confirmed it carried. A silently unpatched .so ships an APK that
+          # emits no CD_HHLOAD, and the drive that was meant to measure the load cost comes
+          # back with nothing. Failing here is the difference between a red build and a
+          # wasted trip.
+          for so in $(grep -o '[^ ]*libosmand\.so' /tmp/native-files); do
+            if ! strings -a "${so}" | grep -q 'CD_HHLOAD'; then
+              echo "::error::${so} was built WITHOUT cairodrive_native_diag.py - the patch did"
+              echo "::error::not reach the compiled library. CD_HHLOAD will be absent from the"
+              echo "::error::drive log. Check the 'Patch OsmAnd-core-legacy diagnostics' step."
+              exit 1
+            fi
+          done
+          echo "libosmand.so carries the native diagnostics patch (CD_HHLOAD present)."
+
       - name: Stage artifacts
         id: stage
         working-directory: android
@@ -1146,6 +1163,15 @@ jobs:
       # failure THERE would mean the manifest or the parser is wrong rather than the rules.
       - name: Verify R8 kept every JNI-facing class
         if: always()
+        # WITHOUT THIS the step is a silent no-op. The repository is checked out at android/,
+        # so an unqualified OsmAnd/build/outputs/r8/usage.txt resolves against the workspace
+        # root, is never found, and the `R8 did not run, nothing to verify` branch exits 0.
+        # It ran that way in run 249 while the sibling `R8 usage summary` step - which HAS
+        # this line - read the same path fine and reported R8 removing 12,572 net.osmand
+        # items. So the one guard CLAUDE.md names as the sole reason CAIRODRIVE_R8_SHRINK is
+        # safe to leave on had been verifying nothing, in both jobs, and a missed keep rule
+        # does not fail a build or a smoke test - it throws on a Cairo road.
+        working-directory: android
         run: |
           set -euo pipefail
           USAGE="OsmAnd/build/outputs/r8/usage.txt"
@@ -1822,6 +1848,15 @@ jobs:
       # failure THERE would mean the manifest or the parser is wrong rather than the rules.
       - name: Verify R8 kept every JNI-facing class
         if: always()
+        # WITHOUT THIS the step is a silent no-op. The repository is checked out at android/,
+        # so an unqualified OsmAnd/build/outputs/r8/usage.txt resolves against the workspace
+        # root, is never found, and the `R8 did not run, nothing to verify` branch exits 0.
+        # It ran that way in run 249 while the sibling `R8 usage summary` step - which HAS
+        # this line - read the same path fine and reported R8 removing 12,572 net.osmand
+        # items. So the one guard CLAUDE.md names as the sole reason CAIRODRIVE_R8_SHRINK is
+        # safe to leave on had been verifying nothing, in both jobs, and a missed keep rule
+        # does not fail a build or a smoke test - it throws on a Cairo road.
+        working-directory: android
         run: |
           set -euo pipefail
           USAGE="OsmAnd/build/outputs/r8/usage.txt"
