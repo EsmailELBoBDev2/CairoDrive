@@ -51,22 +51,12 @@ public final class CairoDriveMapMatching {
 	private static final boolean BUILD_DEFAULT = resolveBuildFlag();
 
 	private static volatile boolean enabled = BUILD_DEFAULT;
-	private static volatile String disabledReason;
 
 	private CairoDriveMapMatching() {
 	}
 
 	public static boolean isEnabled() {
 		return enabled;
-	}
-
-	/** True when the build asked for matching but the runtime latched it off. */
-	public static boolean isDisabledAtRuntime() {
-		return BUILD_DEFAULT && !enabled;
-	}
-
-	public static String getDisabledReason() {
-		return disabledReason;
 	}
 
 	/**
@@ -78,7 +68,9 @@ public final class CairoDriveMapMatching {
 			return;
 		}
 		enabled = false;
-		disabledReason = reason;
+		// The reason is LOGGED rather than stored. It used to be kept in a field alongside two
+		// accessors that nothing ever called, so the only path it could reach a human by was
+		// this line anyway.
 		CairoDriveLogger.getInstance().log("CD_MATCH", "disabled reason=" + reason);
 	}
 

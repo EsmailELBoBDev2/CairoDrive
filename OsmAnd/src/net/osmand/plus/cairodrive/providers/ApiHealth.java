@@ -98,10 +98,6 @@ public final class ApiHealth {
 		/** When the last skip was recorded. Compared against lastAttemptMs to find the newer. */
 		public volatile long lastSkipMs;
 
-		public boolean everTried() {
-			return lastAttemptMs != 0 || lastSkip != null;
-		}
-
 		/**
 		 * Working AND not currently standing down.
 		 *

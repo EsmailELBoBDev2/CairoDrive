@@ -411,17 +411,23 @@ def mapMatching = mapMatchingEnv?.trim() ? mapMatchingEnv.trim() : "true"
 def speechLeadEnv = System.getenv("CAIRODRIVE_SPEECH_LEAD")
 def speechLead = speechLeadEnv?.trim() ? speechLeadEnv.trim() : "true"
 
-// B3. ON by default now, at the owner's request, so the drive starts with it applied.
+// B3, the glance style, has NO build flag - deliberately, and this note is here because there
+// used to be one that did nothing.
 //
-// This one is only a DEFAULT: the style is gated on the `cairodriveDriving` rendering property,
-// read live in SurfaceRenderer.glanceStyleOn(), so it can be flipped in Configure map mid-drive
-// without a rebuild. That makes it the one item here that gives a clean A/B inside a single
-// drive - toggle it while watching CD_FRAME avgOver.
+// `CAIRODRIVE_GLANCE_STYLE` was read into a local that no buildConfigField and no Java ever
+// consumed, under a comment claiming "ON by default now, at the owner's request". Both halves
+// were false: the switch was inert, and the real default is OFF. The style is gated on the
+// `cairodriveDriving` RENDERING property (SurfaceRenderer.glanceStyleOn():602), which
+// patches/cairodrive_driving_style.py:27 documents as false unless the user turns it on. So the
+// build could not have shipped it on, and setting the environment variable changed nothing.
+//
+// That is the right design - a rendering property flips in Configure map mid-drive, which makes
+// this the one item that gives a clean A/B inside a single drive - but it means there is nothing
+// for gradle to decide. CD_FRAME reports `glanceStyle=` from the live property, so the drive log
+// still says which way it actually ran.
 //
 // Note the asymmetry with the ICONS, which are desaturated at build time by
-// patches/cairodrive_glance_icons.py: turning this switch off does NOT bring their colour back.
-def glanceStyleEnv = System.getenv("CAIRODRIVE_GLANCE_STYLE")
-def glanceStyle = glanceStyleEnv?.trim() ? glanceStyleEnv.trim() : "true"
+// patches/cairodrive_glance_icons.py: turning the property off does NOT bring their colour back.
 
 // ALL ON at the owner's explicit direction. Each still carries its own flag and its own
 // log tag, so a bad one is identifiable from the drive log and removable with one
@@ -584,15 +590,24 @@ def tomtomTraffic = tomtomTrafficEnv?.trim() ? tomtomTrafficEnv.trim() : "true"
 def weatherHazardEnv = System.getenv("CAIRODRIVE_WEATHER_HAZARD")
 def weatherHazard = weatherHazardEnv?.trim() ? weatherHazardEnv.trim() : "true"
 
-// No key, no quota, no network - so it costs nothing to leave available. Still defaults off so it
-// arrives on its own drive like everything else.
+// No key, no quota, no network - so it costs nothing to leave available.
+//
+// Defaults ON, with the rest of the "ALL ON at the owner's explicit direction" block above. The
+// comment here said "Still defaults off" while the line below set "true"; they were written at
+// different times and the comment was never updated. Stating it correctly matters because the
+// one-feature-per-drive rule is judged against what these defaults actually are.
 def sunGlareEnv = System.getenv("CAIRODRIVE_SUN_GLARE")
 def sunGlare = sunGlareEnv?.trim() ? sunGlareEnv.trim() : "true"
 
 // The one that changes BEHAVIOUR rather than pixels: a reported closure ahead makes the OFFLINE
 // router go around it, via the impassable-roads nogo points RouteProvider already feeds the native
-// engine. Off by default and separately gated from the traffic provider, because a bad closure
-// applied as a permanent nogo is the worst failure mode in this whole stack.
+// engine. Separately gated from the traffic provider, because a bad closure applied as a permanent
+// nogo is the worst failure mode in this whole stack.
+//
+// It defaults ON, with the rest of the block above. The comment used to say "Off by default"
+// next to a line setting "true", which is the most dangerous shape a stale comment can take:
+// anyone reading it would conclude the riskiest feature here was not armed on the next drive.
+// It is. Watch CD_CLOSURE on that drive specifically.
 def trafficRoutingEnv = System.getenv("CAIRODRIVE_TRAFFIC_ROUTING")
 def trafficRouting = trafficRoutingEnv?.trim() ? trafficRoutingEnv.trim() : "true"
 

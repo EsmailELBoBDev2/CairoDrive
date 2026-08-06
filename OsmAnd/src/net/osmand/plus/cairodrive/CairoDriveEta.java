@@ -120,10 +120,6 @@ public class CairoDriveEta {
 		return observedDistanceM >= MIN_DISTANCE_M && modelledTimeS > 0;
 	}
 
-	public synchronized double getObservedDistanceM() {
-		return observedDistanceM;
-	}
-
 	/**
 	 * Pure. Returns the input unchanged until warmed up, so every caller that asks at the same
 	 * moment gets the same answer and the arrival time cannot contradict the time-to-next-turn.

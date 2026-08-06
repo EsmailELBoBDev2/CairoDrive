@@ -105,6 +105,15 @@ env:
   # and for the one condition that would send it back to fat.
   ABI: ${{ inputs.abi || 'arm64' }}
   CORE: ${{ inputs.core || 'opengl' }}
+  # The pinned OsmAnd-core-legacy commit, hoisted here for ONE reason: the native build cache
+  # keys on it. Two copies of the SHA - one in `ref:`, one in the cache key - can drift apart,
+  # and the failure that produces is the worst one available: a cache entry keyed on the old
+  # SHA restored into a checkout of the new one, shipping a stale libosmand.so inside an APK
+  # that nothing in the build ever compiled. One value, used by both, cannot skew.
+  #
+  # Why it is pinned at all is a separate and stronger argument - see the comment at the
+  # `Checkout OsmAnd-core-legacy` step. Bump deliberately: read the diff, then update here.
+  CORE_LEGACY_REF: 071503e280d77c2a959d3690845f5e56b2c7e4b3
 
 jobs:
   # ---------------------------------------------------------------------------------
@@ -187,8 +196,11 @@ jobs:
           # would turn every Cairo street label into empty boxes.
           python3 android/patches/cairodrive_trim_assets.py resources
           # B3. Injects the glance style, gated on a rendering property - so this runs
-          # unconditionally and does nothing until `cairodriveDriving` is on. That property now
-          # DEFAULTS on, and can still be flipped in Configure map mid-drive without a rebuild.
+          # unconditionally and does nothing until `cairodriveDriving` is on. That property is
+          # FALSE by default (OsmAnd defaults an undeclared boolean rendering property to false,
+          # and the script only declares it - patches/cairodrive_driving_style.py:205-208), and
+          # is flipped in Configure map mid-drive without a rebuild. This comment used to claim
+          # the opposite; there was never a build flag that could have made it true.
           # Applying it always keeps the two CI jobs producing identical styles.
           python3 android/patches/cairodrive_driving_style.py resources/rendering_styles/default.render.xml
           # B3, icons. Desaturates the POI icons the glance style still draws, keeping shape and
@@ -241,7 +253,7 @@ jobs:
           # checkout will contain.
           #
           # Bump deliberately: read the diff, then update this SHA.
-          ref: 071503e280d77c2a959d3690845f5e56b2c7e4b3
+          ref: ${{ env.CORE_LEGACY_REF }}
           path: core-legacy
           persist-credentials: false
 
@@ -250,11 +262,169 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: gradle
-          cache-dependency-path: |
-            android/**/*.gradle
-            android/**/*.gradle.kts
-            android/gradle/wrapper/gradle-wrapper.properties
+          # `cache: gradle` was here and it was doing NOTHING. On run 217, a completed job,
+          # "Set up JDK 17" took 7 s and "Post Set up JDK 17" took 1 s - neither figure is
+          # compatible with restoring or saving a few hundred MB of Gradle state. It was
+          # costing a step and buying no seconds, which is worse than absent because it reads
+          # like the dependencies are cached.
+          #
+          # Replaced by the explicit cache below, which is narrower on purpose - see there.
+
+      # Downloaded artifacts ONLY: modules-2 is the resolved dependency store and wrapper is
+      # the Gradle distribution itself. Both are content-addressed and immutable, which is why
+      # a restore-keys prefix match is safe here in a way it is not for the native library.
+      #
+      # `caches/build-cache-1` - Gradle's TASK OUTPUT cache, which org.gradle.caching=true
+      # populates - is deliberately NOT included. That directory holds compiled artifacts
+      # rather than downloads, any branch can write to a GitHub cache, and the whole reason
+      # the release job carries no cache at all is that a signed build must not consume one.
+      # Keeping this cache to downloads means nothing that ships was restored from it.
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/wrapper
+          key: gradle-deps-v1-${{ runner.os }}-${{ hashFiles('android/**/*.gradle', 'android/**/*.gradle.kts', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          # A near-miss is still most of the dependency graph: a build file changes far more
+          # often than the dependency set inside it, and re-resolving a handful of new
+          # coordinates costs seconds against re-downloading all of them.
+          restore-keys: |
+            gradle-deps-v1-${{ runner.os }}-
+
+      # ---------------------------------------------------------------------------------
+      # Native build cache. ndk-build compiles the C++ routing core from scratch on every
+      # run and it is ~8 minutes of a ~17 minute build - by a wide margin the largest single
+      # cost here, and one that repeats identically on every push because the inputs almost
+      # never change.
+      #
+      # The danger is equally clear: a wrong hit ships a stale libosmand.so inside an APK
+      # while every log line still says the build succeeded, and the app degrades SILENTLY
+      # without a correct one (6.8s reroutes instead of sub-second, only visible in a drive
+      # log). So the key names every input that can change the output, there are NO
+      # restore-keys, and the restored files are verified before anything downstream uses
+      # them. A prefix match is precisely how a stale .so would ship, which is why the one
+      # convenience feature of actions/cache is deliberately not used.
+      #
+      # `OsmAnd/obj` - ndk-build's intermediates - is NOT cached. It is hundreds of MB of
+      # object files whose only purpose is to make a REBUILD incremental, and there is no
+      # rebuild here: on a hit the compile is skipped outright, on a miss it runs clean.
+      # Caching it would trade the entire win for upload time.
+      #
+      # This exists in the dev job ONLY. See the note in the release job for why.
+      # ---------------------------------------------------------------------------------
+      - name: Read NDK revision
+        id: ndk
+        run: |
+          set -euo pipefail
+          # The compiler version is an input to the .so as surely as the sources are, and the
+          # runner image bumps it without warning. Read from source.properties rather than
+          # from the path, because the path is a symlink on some images.
+          props="${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-}}/source.properties"
+          if [ -f "${props}" ]; then
+            rev="$(awk -F= '/^Pkg.Revision/ {gsub(/ /,"",$2); print $2}' "${props}")"
+          else
+            rev=""
+          fi
+          if [ -z "${rev}" ]; then
+            # No revision means no trustworthy key, and the correct response is to lose the
+            # cache rather than to guess. `unknown` collides with nothing and simply misses.
+            echo "::warning::Could not read NDK Pkg.Revision - the native cache will miss."
+            rev="unknown"
+          fi
+          echo "rev=${rev}" >> "$GITHUB_OUTPUT"
+          echo "NDK revision: ${rev}"
+
+      # Cache B first, because it pays off even when Cache A misses: configure.sh downloads
+      # and unpacks skia, protobuf and friends, ~4 minutes that has nothing to do with our
+      # sources. Keyed on the core-legacy SHA alone - that checkout is what decides which
+      # externals exist and at which versions.
+      - name: Cache core-legacy externals
+        uses: actions/cache@v4
+        with:
+          path: core-legacy/externals
+          key: externals-v1-${{ runner.os }}-${{ env.CORE_LEGACY_REF }}
+
+      - name: Cache native libraries
+        id: cache-native
+        uses: actions/cache@v4
+        with:
+          # Both directories, because they are one output split in two: ndk-build writes
+          # libosmand.so AND libc++_shared.so into libs/<abi>/, then cleanupDuplicatesInCore
+          # MOVES the latter to libc++/<abi>/ (build-common.gradle:358-380) because the two
+          # source sets have different jniLibs.srcDirs. Caching only `libs` would restore an
+          # APK with no C++ runtime for libosmand.so to link against.
+          path: |
+            android/OsmAnd/libs/*/libosmand.so
+            android/OsmAnd/libc++/*/libc++_shared.so
+            android/OsmAnd/native-cache.sha256
+          # Every input to the compile, and nothing else:
+          #   CORE_LEGACY_REF - the C++ sources themselves
+          #   ABI             - which architectures ndk-build is told to produce
+          #   NDK revision    - the compiler
+          #   jni/*.mk        - the flags and the module list
+          #   old-ndk-build.sh- the invocation, including the -j level
+          # No restore-keys, on purpose. See the block comment above.
+          key: nativeso-v1-${{ runner.os }}-${{ env.ABI }}-${{ env.CORE_LEGACY_REF }}-${{ steps.ndk.outputs.rev }}-${{ hashFiles('android/OsmAnd/jni/*.mk', 'android/OsmAnd/old-ndk-build.sh') }}
+
+      # A restored .so is treated as untrusted input until it has been checked, because the
+      # cost of a bad one is silent and only shows up on a drive. Two things are verified:
+      # the files exist for every ABI this flavor must produce, and each one still matches
+      # the digest recorded when it was built. A truncated cache upload passes an `-f` test
+      # and fails this one.
+      - name: Verify restored native libraries
+        if: steps.cache-native.outputs.cache-hit == 'true'
+        working-directory: android
+        run: |
+          set -euo pipefail
+          case "${ABI}" in
+            arm64)   expected="arm64-v8a" ;;
+            armv7)   expected="armeabi-v7a" ;;
+            armonly) expected="arm64-v8a armeabi-v7a" ;;
+            x86)     expected="x86 x86_64" ;;
+            fat)     expected="arm64-v8a armeabi-v7a x86 x86_64" ;;
+            *)       echo "::error::Unknown ABI flavor '${ABI}' - add it to this case."; exit 1 ;;
+          esac
+          bad=0
+          for abi in ${expected}; do
+            for f in "OsmAnd/libs/${abi}/libosmand.so" "OsmAnd/libc++/${abi}/libc++_shared.so"; do
+              if [ ! -f "${f}" ]; then
+                echo "::error::cache hit but ${f} is missing."
+                bad=1
+              fi
+            done
+          done
+          if [ "${bad}" -eq 0 ] && [ -f OsmAnd/native-cache.sha256 ]; then
+            if (cd OsmAnd && sha256sum -c native-cache.sha256); then
+              echo "Native libraries restored and verified - skipping the ~8 minute NDK build."
+            else
+              echo "::error::restored native libraries do not match their recorded digests."
+              bad=1
+            fi
+          elif [ "${bad}" -eq 0 ]; then
+            echo "::error::cache hit but no digest manifest - refusing to trust it."
+            bad=1
+          fi
+          if [ "${bad}" -ne 0 ]; then
+            # Do not fail the build on a bad cache entry: fall back to compiling, which is
+            # the pre-cache behaviour and always correct. Only the time saving is lost.
+            #
+            # Delete the .so files INDIVIDUALLY. `rm -rf OsmAnd/libs` is the obvious line and
+            # it is wrong: that directory also holds gnu-trove-osmand.jar and
+            # icu4j-49_1_patched.jar, two TRACKED dependencies that build-common.gradle:414
+            # pulls in by fileTree. Removing them turns a harmless cache miss into a compile
+            # failure in a completely unrelated part of the build.
+            # It cannot be REPAIRED from here: GitHub cache entries are immutable per key, and
+            # this run hit the primary key, so actions/cache will not save the good libraries
+            # it is about to build. Every run on this key stays correct and stays slow until a
+            # human deletes the entry, so say that rather than silently paying 8 minutes a run.
+            echo "::warning::Discarding the restored native libraries and building them. This cache entry is now poisoned for every run on the same key - delete it under Actions > Caches, or bump the nativeso-vN prefix in this workflow."
+            rm -f OsmAnd/libs/*/libosmand.so OsmAnd/libc++/*/libc++_shared.so \
+                  OsmAnd/native-cache.sha256
+            echo "NATIVE_CACHE_OK=false" >> "$GITHUB_ENV"
+          else
+            echo "NATIVE_CACHE_OK=true" >> "$GITHUB_ENV"
+          fi
 
       - name: Resolve variant names
         id: variant
@@ -432,7 +602,20 @@ jobs:
           CAIRODRIVE_TOMORROW_KEY: ${{ secrets.TOMORROW_KEY }}
           APK_NUMBER_VERSION: ${{ steps.variant.outputs.version_code }}
           BUNDLE_TASK: ${{ steps.variant.outputs.bundle_task }}
-        run: ./gradlew --no-daemon --stacktrace "${BUNDLE_TASK}"
+        run: |
+          set -euo pipefail
+          # `-x`, not an `onlyIf` on the task. onlyIf would make buildOsmAndCore UP-TO-DATE and
+          # let cleanupDuplicatesInCore keep depending on a task that produced nothing this run;
+          # -x removes it from the graph, which is what actually happened - the .so came from the
+          # cache. NATIVE_CACHE_OK is only ever `true` after the verify step above passed both
+          # the existence and the digest check, so there is no path where this skips the compile
+          # without a verified library on disk.
+          SKIP_NATIVE=""
+          if [ "${NATIVE_CACHE_OK:-false}" = "true" ]; then
+            SKIP_NATIVE="-x :OsmAnd:buildOsmAndCore"
+          fi
+          # shellcheck disable=SC2086
+          ./gradlew --no-daemon --stacktrace ${SKIP_NATIVE} "${BUNDLE_TASK}"
 
       # A failing :OsmAnd-java:test says only "There were failing tests, see the report at
       # file:///home/runner/..." - a path on a runner that no longer exists by the time anyone
@@ -504,6 +687,29 @@ jobs:
               print("no test XML found")
           for t, cls, name in rows[:15]:
               print("%8.3fs  %s.%s" % (t, cls.rsplit('.', 1)[-1], name[:110]))
+
+          # WHAT THE WHOLE SUITE COSTS. Printed because the next optimisation on the list -
+          # moving :OsmAnd-java:test and :OsmAnd-java:routingTest into a job that runs BESIDE
+          # the app build instead of inside it - is worth doing or not doing entirely on this
+          # number, and it is not otherwise recoverable: the tests run inside the AAB step, so
+          # the step timing the API returns is tests + NDK + R8 + bundle as one figure.
+          #
+          # Deliberately NOT acted on yet. Splitting the job duplicates ~120 lines of setup and
+          # lets a red suite ship an artifact, which is a real trade; making it against a
+          # guess is how the nine performance findings nearly got optimised at 0.2% of a frame.
+          # One run prints this, then the decision is arithmetic.
+          #
+          # The per-testcase times above are summed rather than read off <testsuite time=>,
+          # because a suite that fails to START (a class-level error) records a suite time with
+          # no cases and would flatter the total.
+          print("")
+          print("SUITE COST: %.1fs across %d test cases in %d classes"
+                % (sum(r[0] for r in rows), len(rows), len({r[1] for r in rows})))
+          by_cls = {}
+          for t, cls, _ in rows:
+              by_cls[cls] = by_cls.get(cls, 0.0) + t
+          for cls, t in sorted(by_cls.items(), key=lambda kv: -kv[1])[:8]:
+              print("   %7.1fs  %s" % (t, cls))
 
           # The TIMED tests, always, whatever their rank.
           #
@@ -590,7 +796,12 @@ jobs:
           # future AGP renames these tasks, `-x` fails with "Task not found" - loud and one line
           # to fix, which is the right failure mode for an optimisation.
           SUFFIX="${APK_RELEASE_TASK#:OsmAnd:assemble}"
-          ./gradlew --no-daemon --stacktrace "${APK_RELEASE_TASK}" \
+          SKIP_NATIVE=""
+          if [ "${NATIVE_CACHE_OK:-false}" = "true" ]; then
+            SKIP_NATIVE="-x :OsmAnd:buildOsmAndCore"
+          fi
+          # shellcheck disable=SC2086
+          ./gradlew --no-daemon --stacktrace ${SKIP_NATIVE} "${APK_RELEASE_TASK}" \
             -x ":OsmAnd:lintVitalAnalyze${SUFFIX}" \
             -x ":OsmAnd:lintVitalReport${SUFFIX}"
 
@@ -632,6 +843,27 @@ jobs:
             ls -laR OsmAnd/libs 2>/dev/null || echo "OsmAnd/libs does not exist - ndk-build did not run"
             exit 1
           fi
+
+      # Records what the NEXT run will check the cache against. Written only when the compile
+      # actually ran, so a manifest can never describe files it did not see produced. The step
+      # above has already asserted every required .so exists, which is why this one needs no
+      # error handling of its own beyond `set -e`.
+      #
+      # actions/cache saves at the END of the job, so leaving this file on disk is enough -
+      # there is no explicit save step that could fall out of step with it.
+      - name: Record native library digests
+        if: env.NATIVE_CACHE_OK != 'true'
+        working-directory: android/OsmAnd
+        run: |
+          set -euo pipefail
+          # Relative paths, so `sha256sum -c` works from this same directory on the next run
+          # no matter where the workspace lives. libc++_shared.so has already been MOVED to
+          # libc++/ by cleanupDuplicatesInCore at this point; libs/ is searched too so that a
+          # future change to that task cannot silently drop it from the manifest.
+          find libs libc++ -name 'libosmand.so' -o -name 'libc++_shared.so' \
+            | sort -u > /tmp/native-files
+          xargs -a /tmp/native-files sha256sum > native-cache.sha256
+          cat native-cache.sha256
 
       - name: Stage artifacts
         id: stage
@@ -836,8 +1068,11 @@ jobs:
           # would turn every Cairo street label into empty boxes.
           python3 android/patches/cairodrive_trim_assets.py resources
           # B3. Injects the glance style, gated on a rendering property - so this runs
-          # unconditionally and does nothing until `cairodriveDriving` is on. That property now
-          # DEFAULTS on, and can still be flipped in Configure map mid-drive without a rebuild.
+          # unconditionally and does nothing until `cairodriveDriving` is on. That property is
+          # FALSE by default (OsmAnd defaults an undeclared boolean rendering property to false,
+          # and the script only declares it - patches/cairodrive_driving_style.py:205-208), and
+          # is flipped in Configure map mid-drive without a rebuild. This comment used to claim
+          # the opposite; there was never a build flag that could have made it true.
           # Applying it always keeps the two CI jobs producing identical styles.
           python3 android/patches/cairodrive_driving_style.py resources/rendering_styles/default.render.xml
           # B3, icons. Desaturates the POI icons the glance style still draws, keeping shape and
@@ -890,7 +1125,7 @@ jobs:
           # checkout will contain.
           #
           # Bump deliberately: read the diff, then update this SHA.
-          ref: 071503e280d77c2a959d3690845f5e56b2c7e4b3
+          ref: ${{ env.CORE_LEGACY_REF }}
           path: core-legacy
           persist-credentials: false
 
@@ -905,6 +1140,13 @@ jobs:
           # cache that every unapproved push build on that branch has been writing to. The
           # reviewer's approval covers the source at that commit, not a cache entry planted
           # before it. A signed build reuses nothing an unsigned one produced.
+          #
+          # The native-library cache the dev job uses is absent here for the same reason, only
+          # sharper: the cached object is a BINARY that ships inside the reviewer-approved,
+          # signed APK. GitHub caches are writable from any branch of the repository and keyed
+          # on inputs an attacker controls the same way the legitimate build does, so a signed
+          # build restoring one would put an unreviewed .so into the Play upload. This job pays
+          # the ~8 minutes and compiles it. That is the whole point of the production gate.
           distribution: 'temurin'
 
       - name: Resolve variant names
@@ -1081,6 +1323,29 @@ jobs:
               print("no test XML found")
           for t, cls, name in rows[:15]:
               print("%8.3fs  %s.%s" % (t, cls.rsplit('.', 1)[-1], name[:110]))
+
+          # WHAT THE WHOLE SUITE COSTS. Printed because the next optimisation on the list -
+          # moving :OsmAnd-java:test and :OsmAnd-java:routingTest into a job that runs BESIDE
+          # the app build instead of inside it - is worth doing or not doing entirely on this
+          # number, and it is not otherwise recoverable: the tests run inside the AAB step, so
+          # the step timing the API returns is tests + NDK + R8 + bundle as one figure.
+          #
+          # Deliberately NOT acted on yet. Splitting the job duplicates ~120 lines of setup and
+          # lets a red suite ship an artifact, which is a real trade; making it against a
+          # guess is how the nine performance findings nearly got optimised at 0.2% of a frame.
+          # One run prints this, then the decision is arithmetic.
+          #
+          # The per-testcase times above are summed rather than read off <testsuite time=>,
+          # because a suite that fails to START (a class-level error) records a suite time with
+          # no cases and would flatter the total.
+          print("")
+          print("SUITE COST: %.1fs across %d test cases in %d classes"
+                % (sum(r[0] for r in rows), len(rows), len({r[1] for r in rows})))
+          by_cls = {}
+          for t, cls, _ in rows:
+              by_cls[cls] = by_cls.get(cls, 0.0) + t
+          for cls, t in sorted(by_cls.items(), key=lambda kv: -kv[1])[:8]:
+              print("   %7.1fs  %s" % (t, cls))
 
           # The TIMED tests, always, whatever their rank.
           #

@@ -180,11 +180,6 @@ public class GooglePlacesDetailsApi {
 		public LatLon location;
 		public final List<String> reviews = new ArrayList<>();
 		public final List<String> photoNames = new ArrayList<>();
-
-		public boolean hasAnything() {
-			return phone != null || rating != null || hoursToday != null || summary != null
-					|| !reviews.isEmpty() || !photoNames.isEmpty();
-		}
 	}
 
 	public interface DetailsCallback {
