@@ -141,6 +141,47 @@ def layers(rows):
             name, sum(vals) / len(vals), sum(vals) / len(vals) / 1000.0, len(vals)))
 
 
+def hhload(rows):
+    section("HH INDEX LOAD - the fixed cost, and whether a smaller map would cut it")
+    lines = rows.get("CD_HHLOAD", [])
+    if not lines:
+        print("  no CD_HHLOAD lines.")
+        print("  Either this build predates patches/cairodrive_native_diag.py, or the native")
+        print("  library was restored from a cache built before it. The workflow greps the .so")
+        print("  for CD_HHLOAD and rebuilds when absent, so a green build should always have it.")
+        return
+    ds = [kv(l) for l in lines]
+    pts = [num(d, "pts", 0) for d in ds]
+    loads = [num(d, "loadMs", 0) for d in ds]
+    print("  calculations: %d" % len(ds))
+    print("  HH points in the loaded region: %d" % max(pts))
+    print("  load time: mean %.0f ms, max %.0f ms" % (sum(loads) / len(loads), max(loads)))
+    print("  retained if ever cached: ~%.0f MB at ~400 B/point" % (max(pts) * 400.0 / 1e6))
+
+    searches = [num(kv(l), "search") for l in rows.get("CD_ROUTE_TIMING", []) if "search=" in l]
+    searches = [x for x in searches if x]
+    if not searches:
+        print("  no CD_ROUTE_TIMING search= to compare against - cannot judge.")
+        return
+    full = sum(searches) / len(searches)
+    mean_load = sum(loads) / len(loads)
+    share = mean_load / full if full else 0
+    print("  mean search = %.0f ms  ->  the load is %.0f%% of it" % (full, 100 * share))
+    print("  (LOWER BOUND: the per-point acceptLine filter is billed after this line is printed)")
+    if share >= 0.5:
+        print("  ==> THE LOAD IS THE BOTTLENECK. A smaller .obf cuts it roughly in proportion to")
+        print("      the road network removed. Cairo-only instead of Egypt is the cheapest lever")
+        print("      available - no code change at all.")
+        print("      BUT: the custom map must KEEP its Highway-Hierarchy index, and Egypt must be")
+        print("      REMOVED, not joined. Check fast= above on the next drive after switching -")
+        print("      FAILED_NO_HH_ROUTING_DATA means the cut lost the index and it is now SLOWER.")
+    elif share >= 0.2:
+        print("  ==> Worth something, not everything. A smaller map buys at most %.0f%%." % (100 * share))
+    else:
+        print("  ==> NOT the bottleneck. A smaller .obf would buy under %.0f%% - the seconds are" % (100 * share))
+        print("      elsewhere, and the native HH cache idea is dead for good. Close the question.")
+
+
 def routing(rows):
     section("ROUTE TIMING - where a 4-8 s reroute actually goes")
     lines = rows.get("CD_ROUTE_TIMING", [])
@@ -155,6 +196,25 @@ def routing(rows):
     if any("java" in e for e in engines):
         print("  *** engine contains `java`: libosmand.so did NOT load. Every reroute is on the")
         print("      Java router - 6.8 s average, 39 s worst, measured. Say so loudly.")
+    # engine= is computed from isHHRoutingConfigured() and stays hh-cpp even when the map has NO
+    # Highway-Hierarchy section at all - routing then falls through to the native C++ A* and the
+    # seconds go up with nothing in engine= to say why. fast= is the only tell. This matters most
+    # for a self-built .obf: OsmAndMapCreator extracts usually have no HH index.
+    fasts = defaultdict(int)
+    for d in ds:
+        fasts[d.get("fast", "?")] += 1
+    bad_fast = {k: v for k, v in fasts.items() if k.startswith("FAILED")}
+    if bad_fast:
+        print("  *** fast=%s" % bad_fast)
+        if any("NO_HH_ROUTING_DATA" in k for k in bad_fast):
+            print("      The loaded map has NO Highway-Hierarchy index. Routing is on the native")
+            print("      A*, not HH. engine= still says hh-cpp and is LYING. If a custom .obf was")
+            print("      installed, this is why - the HH section did not survive the cut.")
+        if any("UNSUPPORTED_PARAMETERS" in k for k in bad_fast):
+            print("      A routing parameter in use is not covered by the map's profileParams.")
+            print("      This fork's avoid_narrow_streets work is the usual cause.")
+    else:
+        print("  fast: %s" % dict(fasts))
     finds = [num(d, "find", 0) for d in ds if d.get("engine") == "hh-cpp"]
     if finds and max(finds) > 0:
         print("  *** PREDICTION FALSIFIED: find>0 on an hh-cpp line (max %.2f). The static reading" % max(finds))
@@ -427,6 +487,7 @@ def main():
     frames(rows)
     presentation(rows)
     layers(rows)
+    hhload(rows)
     routing(rows)
     reroute(rows)
     matching(rows)

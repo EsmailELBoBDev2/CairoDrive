@@ -52,13 +52,57 @@ back.
 hypotheses were measured on-device and all six were wrong: cold start, warming the routing
 context, the native memory cap (256 vs 1024 - no difference), this fork's 31 priority rules
 (gated by `avoid_narrow_streets`, and disabling them made it *slower*), a stale map (it was
-current), and a silent A* fallback (there is none). `routingTime` is only ~15-20% of `search`;
-the rest is inside the native engine and is not attributable from the app side.
+current), and a silent A* fallback (there is none).
 
+**One of those six has a hole, and it is the cheapest open experiment in the project.** The rules
+test disabled the RULES in `routing.xml` while the PARAMETER stayed set. Those are different
+tests. `filterPointsBasedOnConfiguration` (`hhRoutePlanner.cpp:1431-1512`) runs on EVERY query and
+sweeps EVERY point in the region calling `router->acceptLine()` - but only when the parameter map
+is non-empty, and `RouteProvider:869-876` puts a boolean in only when it is TRUE. So disabling the
+rules kept the sweep AND lost the route quality, which is a plausible mechanism for "slower".
+Clearing the PARAMETER is what empties the map and skips the sweep entirely. That has never been
+measured. It is a settings toggle, reversible in the UI, and it costs one drive.
 
-If `engine=` contains **`java`**, `libosmand.so` did not load and every reroute is back to the
-Java router: **6.8 s average, 39 s worst**, measured. Say so immediately and loudly. C++ search
-times are ~200–400 ms.
+So there are **TWO** fixed per-query costs stacked, not one: the HH index read, and this
+parameter sweep. `CD_ROUTE_PHASE` bills both to `LOAD_POINTS` - the next phase mark is not until
+after the filter - so they cannot be told apart from a single log. Toggling the parameter across
+two drives is what separates them.
+
+If the sweep IS the cost, the fix is not to abandon `avoid_narrow_streets`: OsmAnd's
+`generate-hh-routing.sh` takes `--routing_params`, so the parameter can be BAKED into a custom
+map's precomputed shortcuts, which also clears `unsupportedParams`.
+
+**`routingTime` is NOT a duration and the "15-20% of search" note it produced was a unit error.**
+`ctx.routingTime` is the accumulated ROUTING COST - the route's estimated DRIVING time in seconds -
+printed raw while `setup/search/pre/find/load` all go through `ms(nanos)`. `RoutingHelper:375`
+prints the same value as `+ " sec"`. Seconds-of-travel over milliseconds-of-work lands near 15-20%
+on any route, forever, for arithmetic reasons. The field is now named **`routeCostSec=`**. That
+old note sent one whole investigation down the wrong path; do not resurrect it.
+
+What IS established (four agents, 2026-08-06, code-verified against the pinned
+`CORE_LEGACY_REF`): the cost is **fixed per query, not per metre**. `initHHPoints` /
+`readPointBox` read **every** Highway-Hierarchy point in the selected region on every single
+calculation - there is no spatial pruning, the road quad-tree prunes by bbox and the HH point tree
+is the one descent that does not - and it is **~9 O(N) passes**, not one: allocate+parse+insert,
+region merge, `markSegmentsNotLoaded`, `groupByClusters` x2 with sorts, spatial-index fill,
+`rtExclude` reset, `tagValues` reset, and a per-point `router->acceptLine()` rule evaluation.
+Nothing caches it between calls. `CD_HHLOAD pts= segs= loadMs=` prices it, and `loadMs` is a LOWER
+BOUND - the `acceptLine` pass is billed after the line is printed.
+
+### `engine=` LIES about a missing HH index - read `fast=`
+
+The old note here said `engine=java` means `libosmand.so` did not load (**6.8 s average, 39 s
+worst**, measured). That is still true and still worth saying loudly. **But it is not the failure
+to look for**, because `engine=` is computed from `router.isHHRoutingConfigured()`
+(`RouteProvider:1244`) and stays `hh-cpp` even when the HH index is absent entirely.
+
+A map with no HH section - which is what a self-built OsmAndMapCreator extract usually is - gives
+`selectBestRoutingFiles` no group, so routing silently falls through to the native C++ A*. It
+reads **`engine=hh-cpp fast=FAILED_NO_HH_ROUTING_DATA`**. `fast=` is the ONLY tell. Also watch
+`fast=FAILED_UNSUPPORTED_PARAMETERS`, which this fork's `avoid_narrow_streets` work can trigger
+when a map's `profileParams` does not cover the parameters in use.
+
+C++ HH search times are ~200-400 ms; the seconds are the load, not the search.
 
 ### 3. `CD_NARROW` — narrow-street data coverage
 
