@@ -50,10 +50,10 @@ import java.util.Map;
  *       waypoint limit is a real structural constraint rather than a budget one, so a route with
  *       more points than that skips this provider instead of sending a request that would be
  *       rejected.</li>
- *   <li><b>Geoapify</b> - last, and capped tightest, despite having the largest allowance of the
- *       three on paper at 3000 credits/day. That 3000 is SHARED with Places and geocoding, and
- *       the dashboard showed Places alone consuming 3,881 credits in a month, so a request made
- *       here is taken away from search rather than drawn from spare headroom.</li>
+ *   <li><b>Geoapify</b> - last, and the only one not capped at its full tier, because its 3000
+ *       credits/day are SHARED with Places and geocoding. A request made here is taken from the
+ *       SEARCH budget rather than drawn from spare headroom, so it is held at 2000 to leave
+ *       address lookup and autocomplete a working allowance.</li>
  * </ul>
  *
  * <p>Geoapify needed {@link net.osmand.plus.onlinerouting.engine.GeoapifyEngine} written for it
@@ -72,22 +72,29 @@ public final class CairoDriveRoutingEngines {
 	private static final String GEOAPIFY_NAME = "CairoDrive Geoapify";
 
 	/**
-	 * Daily caps, far below each provider's allowance.
+	 * Daily caps, set to each provider's full free allowance at the owner's instruction.
 	 *
-	 * <p>These do not exist to ration a scarce resource - 12 reroutes a drive against 2000 is not
-	 * scarce. They exist because a LOOP is the realistic failure here: a reroute storm on a bad
-	 * GPS fix could spend a day's allowance in minutes and the first anyone would know is a drive
-	 * with no online routing at all. The cap turns that into a logged stand-down.
+	 * <p>Against ~12 reroutes a drive these are not rationing anything. What they still do is
+	 * bound a LOOP: a reroute storm on a bad GPS fix can spend an allowance far faster than a
+	 * driver ever could, and the cap turns that into a logged stand-down instead of a silent
+	 * outage. At 100% of the tier that bound is weaker - the storm now has the whole day's
+	 * allowance to burn before anything stops it - which is the accepted trade for never
+	 * refusing a request the tier would have served.
 	 */
-	private static final int ORS_DAILY_CAP = 200;
-	private static final int GRAPHHOPPER_DAILY_CAP = 100;
+	private static final int ORS_DAILY_CAP = 2000;
+	private static final int GRAPHHOPPER_DAILY_CAP = 500;
 	/**
-	 * Lowest cap of the three despite Geoapify's 3000 being the largest allowance, because
-	 * that 3000 is SHARED with Places and geocoding - the dashboard showed Places alone using
-	 * 3,881 credits in a month. Routing here competes with search, so it is last in line and
-	 * capped tightest.
+	 * NOT 3000, and this is the one place the "100% of the tier" rule cannot be applied
+	 * literally. Geoapify's 3000 credits/day are SHARED with Places, Place Details and
+	 * geocoding - so a routing cap of 3000 is not "all of routing's allowance", it is
+	 * permission for routing to consume the entire SEARCH budget too. Address lookup and
+	 * autocomplete would start failing mid-drive with nothing to explain why.
+	 *
+	 * <p>2000 leaves 1000/day for search, against measured search use of roughly 140/day
+	 * (4,293 credits over the month to 2026-08-06). That is a 7x margin on the search side
+	 * while still giving routing more headroom than it can plausibly use.
 	 */
-	private static final int GEOAPIFY_DAILY_CAP = 50;
+	private static final int GEOAPIFY_DAILY_CAP = 2000;
 
 	/** GraphHopper's free plan: "Max Locations: 5". Not a budget, a hard API limit. */
 	private static final int GRAPHHOPPER_MAX_POINTS = 5;

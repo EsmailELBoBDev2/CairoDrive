@@ -392,10 +392,12 @@ def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim
 // changes, expired after 90 s. CD_REROUTE reports `cache HIT ageMs=`.
 // Race the online route calculation against the local one and take whichever answers first.
 //
-// OFF by default, and unlike most flags here that is not caution about correctness - the worst
-// case of this feature is provably the current behaviour, because the offline calculation is
-// always running and nothing waits for the network. It is off because nobody has DRIVEN it yet,
-// and because it is inert anyway until an online engine exists.
+// ON at the owner's instruction, having been written off-by-default pending a drive. The safety
+// argument was always that the worst case is provably the CURRENT behaviour - the offline
+// calculation runs regardless and nothing ever waits on the network - so turning it on risks
+// latency nowhere and only adds a chance of beating the local search. What is still unproven is
+// the UPSIDE: whether an online answer actually arrives first on this phone, on this network, in
+// Cairo. That is what CD_ROUTE_RACE is for, and it is the first thing to read in the next log.
 //
 // What it is for: an 8 km Cairo reroute takes 4-8 s on the POCO C85, and six measured
 // hypotheses established that this is simply what the hardware costs - so the only remaining
@@ -406,7 +408,7 @@ def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim
 // Do NOT turn this on by pointing it at OsmAnd's online-with-fallback: that path waits out a
 // 30 s connect and 60 s read before it starts calculating locally. See CairoDriveRouteRace.
 def routeRaceEnv = System.getenv("CAIRODRIVE_ROUTE_RACE")
-def routeRace = routeRaceEnv?.trim() ? routeRaceEnv.trim() : "false"
+def routeRace = routeRaceEnv?.trim() ? routeRaceEnv.trim() : "true"
 
 def rerouteCacheEnv = System.getenv("CAIRODRIVE_REROUTE_CACHE")
 def rerouteCache = rerouteCacheEnv?.trim() ? rerouteCacheEnv.trim() : "true"
