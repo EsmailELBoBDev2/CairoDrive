@@ -10,20 +10,31 @@ name: Check the pinned OsmAnd-resources
 # something in routing.xml, and nobody notices because a pin never complains. This is the thing
 # that complains.
 #
-# It BUMPS THE PIN ITSELF, and the reason that is safe here is the branch topology rather than
-# trust:
+# It BUMPS THE PIN ITSELF - but it TRIES THE NEW RESOURCES FIRST, and only commits if they pass.
 #
-#   - a push to `dev` builds debug-signed artifacts that Play rejects by construction, so an
-#     automatic commit on dev cannot reach a user;
-#   - that push runs the full build AND the test suite, so a resources change that breaks routing
-#     shows up as a red dev build within twenty minutes;
-#   - shipping still needs a `v*` tag AND the `production` environment's reviewer, which no
-#     automation here can satisfy.
+# The obvious design is push-then-watch: commit the bump, let the dev build catch a breakage,
+# revert if it goes red. That works and it is wrong here, for a reason worth writing down: it
+# leaves `dev` broken for the twenty minutes the build takes, and when it does revert you are
+# back on the old resources with nothing learned, waiting for a human anyway. The automation
+# would be hands-off only while nothing went wrong, which is exactly when nobody needs it.
 #
-# So the human gate stays exactly where it already was, and the chore in front of it disappears.
-# Every bump is still a COMMIT - which is the part that matters. Reproducibility never came from
-# a person typing the number; it came from the number being recorded in history, bisectable and
-# revertable. `latest` has neither property.
+# So the check is moved BEFORE the commit. A resources bump can break precisely two things, and
+# both are testable here in a couple of minutes without the Android toolchain:
+#
+#   1. the fork's patches/ scripts, which edit routing.xml, the asset manifest and the render
+#      style - they abort loudly by design if upstream restructures what they edit;
+#   2. the Java test suite, whose ROUTING TEST MAPS come from this same resources repository -
+#      so the tests genuinely exercise the data that just changed.
+#
+# Neither needs the NDK, R8, or a 17-minute Android build. If both pass, the bump is committed
+# and the normal dev build runs as usual. If either fails, NOTHING is committed - dev never goes
+# red, the pin stays on the last known-good, and an issue carries the actual failure text.
+#
+# Every bump is still a COMMIT, which is the part that matters. Reproducibility never came from a
+# person typing the number; it came from the number being in history, bisectable and revertable.
+# `latest` has neither property.
+#
+# Shipping still needs a `v*` tag and the `production` reviewer, which nothing here can satisfy.
 
 on:
   schedule:
@@ -108,8 +119,96 @@ jobs:
             echo "::notice::OsmAnd-resources has moved. Pinned ${PINNED}, upstream ${UPSTREAM}."
           fi
 
-      - name: Bump the pin and push
+      # ---- everything below only runs when upstream actually moved ----
+
+      - name: Check out the CANDIDATE resources
         if: steps.compare.outputs.drift == 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: osmandapp/OsmAnd-resources
+          ref: ${{ steps.compare.outputs.upstream }}
+          path: resources
+          persist-credentials: false
+
+      - name: Set up JDK 17
+        if: steps.compare.outputs.drift == 'true'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Do the fork's patches still apply?
+        id: patches
+        if: steps.compare.outputs.drift == 'true'
+        run: |
+          set -euo pipefail
+          # The same three scripts the real build runs, in the same order, against the CANDIDATE
+          # resources. They abort by design when upstream restructures what they edit - which is
+          # the single most likely way a resources bump breaks this fork, and it is caught here
+          # in seconds instead of eleven minutes into an Android build.
+          python3 patches/cairodrive_narrow_streets.py resources/routing/routing.xml
+          python3 patches/cairodrive_trim_assets.py resources
+          python3 patches/cairodrive_driving_style.py resources/rendering_styles/default.render.xml
+          echo "Patches applied cleanly to the candidate resources."
+
+      - name: Do the Java tests still pass on the new data?
+        id: tests
+        if: steps.compare.outputs.drift == 'true'
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          # The routing TEST MAPS live in the resources repository, so this suite genuinely
+          # exercises the data that just changed - it is not a proxy. No NDK, no R8, no Android
+          # packaging: minutes, not the seventeen a full build costs.
+          ./gradlew --no-daemon --stacktrace :OsmAnd-java:test :OsmAnd-java:routingTest
+
+      - name: Report what broke, and change nothing
+        if: failure() && steps.compare.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PINNED: ${{ steps.compare.outputs.pinned }}
+          UPSTREAM: ${{ steps.compare.outputs.upstream }}
+        run: |
+          set -euo pipefail
+          MARKER="resources-pin-blocked"
+          EXISTING="$(gh issue list --state open --search "\"${MARKER}\" in:body" \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "${EXISTING}" ]; then
+            echo "Issue #${EXISTING} already open for this; not filing another."
+            exit 0
+          fi
+          BODY=blocked.md
+          {
+            echo 'The daily resources bump was attempted and **rejected before anything was'
+            echo 'committed**. Nothing changed: the pin is still on the last known-good commit,'
+            echo '`dev` is untouched, and the build is green.'
+            echo
+            echo "| | commit |"
+            echo "|---|---|"
+            echo "| still pinned (known good) | \`${PINNED}\` |"
+            echo "| rejected candidate | \`${UPSTREAM}\` |"
+            echo
+            echo "Compare: https://github.com/osmandapp/OsmAnd-resources/compare/${PINNED}...${UPSTREAM}"
+            echo
+            echo 'Either the fork'"'"'s `patches/` scripts no longer apply - they abort on purpose'
+            echo 'when upstream restructures what they edit - or the Java tests failed against the'
+            echo 'new routing data. The run log for this workflow has the exact failure.'
+            echo
+            echo 'This will retry every night and keep failing until the patch scripts are updated'
+            echo 'or the upstream change is understood. That is deliberate: a silent retry loop'
+            echo 'that never lands is how a pin rots while looking healthy.'
+            echo
+            echo "<!-- ${MARKER} -->"
+          } > "${BODY}"
+          gh issue create \
+            --title "Resources bump blocked: patches or tests fail on ${UPSTREAM:0:12}" \
+            --body-file "${BODY}"
+
+      - name: Bump the pin and push
+        # Only after the candidate proved itself above. `success()` is explicit rather than
+        # implied: without it a failed verification would still reach this step on a later edit.
+        if: success() && steps.compare.outputs.drift == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PINNED: ${{ steps.compare.outputs.pinned }}
