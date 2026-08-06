@@ -115,19 +115,35 @@ public class CheckAssetsTask extends AsyncTask<Void, String, List<String>> {
 				AssetsCollection assets = app.getResourceManager().getAssets();
 
 				for (AssetEntry asset : assets.getEntries()) {
-					File jsFile = new File(appPath, asset.destination);
-					if (asset.destination.contains(VOICE_PROVIDER_SUFFIX)
-							&& asset.destination.endsWith(TTSVOICE_INDEX_EXT_JS)) {
-						String name = asset.destination.replace(VOICE_PROVIDER_SUFFIX, "");
-						File oggFile = new File(appPath, name);
-						if (oggFile.getParentFile().exists() && !oggFile.exists()) {
-							ResourceManager.copyAssets(manager, asset.source, oggFile, asset.getVersionTime());
+					// Per-entry catch, for the same reason unpackBundledAssets has one - and this
+					// is where the hazard actually lives now. The `catch` used to sit outside this
+					// loop, so a manifest entry naming a file that is not in the APK aborted every
+					// remaining entry: the ONE missing voice script silently cost the user every
+					// voice, every 3D model and every asset after it in manifest order.
+					//
+					// It matters here more than it looks, because this loop is what the asset
+					// trimming touches. patches/cairodrive_trim_assets.py removes assets and their
+					// manifest entries together precisely so this cannot happen - but "the app
+					// survives a mistake in that script" and "the script is careful" are different
+					// guarantees, and only one of them is enforced by the code.
+					try {
+						File jsFile = new File(appPath, asset.destination);
+						if (asset.destination.contains(VOICE_PROVIDER_SUFFIX)
+								&& asset.destination.endsWith(TTSVOICE_INDEX_EXT_JS)) {
+							String name = asset.destination.replace(VOICE_PROVIDER_SUFFIX, "");
+							File oggFile = new File(appPath, name);
+							if (oggFile.getParentFile().exists() && !oggFile.exists()) {
+								ResourceManager.copyAssets(manager, asset.source, oggFile, asset.getVersionTime());
+							}
+						} else if (asset.destination.startsWith(MODEL_3D_DIR) && !jsFile.exists()) {
+							ResourceManager.copyAssets(manager, asset.source, jsFile, asset.getVersionTime());
 						}
-					} else if (asset.destination.startsWith(MODEL_3D_DIR) && !jsFile.exists()) {
-						ResourceManager.copyAssets(manager, asset.source, jsFile, asset.getVersionTime());
-					}
-					if (jsFile.getParentFile().exists() && !jsFile.exists()) {
-						ResourceManager.copyAssets(manager, asset.source, jsFile, asset.getVersionTime());
+						if (jsFile.getParentFile().exists() && !jsFile.exists()) {
+							ResourceManager.copyAssets(manager, asset.source, jsFile, asset.getVersionTime());
+						}
+					} catch (IOException e) {
+						warnings.add(asset.source + ": " + e.getMessage());
+						log.error("Failed to copy asset " + asset.source, e);
 					}
 				}
 			}

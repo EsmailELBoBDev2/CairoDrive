@@ -86,10 +86,15 @@ masquerading as a Play build has wasted a drive before.
   gated build instead and cost 15 minutes.
 - **Verify against the tree, never against a commit message.** A re-audit found a "fixed" token
   redaction that closed one of three leak vectors, and three regressions introduced the same day.
-- **The asset extractor aborts on the first missing file.** `CheckAssetsTask.unpackBundledAssets`
-  has no per-entry catch, so an asset in `bundled_assets.json` but absent from the APK skips every
-  remaining asset *and* the `PREVIOUS_INSTALLED_VERSION.set()` after it. Never remove an asset
-  without removing its manifest entry in the same change — `patches/cairodrive_trim_assets.py`.
+- **Never remove an asset without removing its manifest entry in the same change** —
+  `patches/cairodrive_trim_assets.py` does both atomically, and refuses to half-apply.
+  The rule stands; the reason has moved twice, so check the tree rather than this line.
+  `CheckAssetsTask.unpackBundledAssets` HAS a per-entry catch now (`:217`), and so does
+  `copyMissingJSAssets` (`:117`) — its catch used to sit outside the loop, so one missing voice
+  script cost the user every voice, every 3D model and every asset after it in manifest order.
+  Both were the same fault: an entry naming a file that is not in the APK aborted the whole pass,
+  skipping the `PREVIOUS_INSTALLED_VERSION.set()` after it, so `versionChanged` stayed true and
+  the copy re-ran on every cold start for the life of the install.
 - **`65_NotoSansNastaliqUrdu` is the only Arabic-script font in the manifest.** Base Noto Sans is
   Latin/Greek/Cyrillic. Dropping it makes every Cairo street label an empty box.
 - **Never commit into `patches/`** anything but reviewed `.py`. Both CI jobs execute python from
