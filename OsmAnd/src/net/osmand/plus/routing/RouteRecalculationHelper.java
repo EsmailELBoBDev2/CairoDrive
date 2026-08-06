@@ -1102,6 +1102,12 @@ class RouteRecalculationHelper {
 				res = provider.calculateRouteImpl(params);
 			}
 			if (params.calculationProgress.isCancelled) {
+				// Release the latch on EVERY exit. inFlight is cleared only by mayInstall, and
+				// this return sits above it - so a cancelled early calculation would leave the
+				// flag raised forever, confirm() would keep answering true, and every later
+				// deviation would be suppressed with nothing running. The driver would simply
+				// stop being rerouted, silently, for the rest of the session.
+				CairoDriveEarlyReroute.reset();
 				return;
 			}
 			boolean onlineSourceWithoutInternet = !res.isCalculated() &&
@@ -1151,6 +1157,9 @@ class RouteRecalculationHelper {
 					}
 				}
 			} else {
+				// Same reasoning as the cancellation path: a calculation that produced nothing
+				// must not leave the early-start latch raised, or the next deviation is swallowed.
+				CairoDriveEarlyReroute.reset();
 				evalWaitInterval = Math.max(3000, routingThreadHelper.evalWaitInterval * 3 / 2); // for Issue #3899
 				// Same cap as above. This is the failure path - the route could not be calculated
 				// at all - and it is the one that escalates fastest.

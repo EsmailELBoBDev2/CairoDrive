@@ -37,11 +37,16 @@ import net.osmand.plus.helpers.CairoDriveLog;
  * moving the driver onto a new route, and an early START would defeat it if the result were
  * installed unconditionally.
  *
- * <p>So the calculation runs early and the DECISION stays where it was: a result computed for an
- * unconfirmed deviation is installed only if, by the time it is ready, the deviation has been
- * confirmed or the driver is still off route. If they drifted back, the answer is discarded and
- * the only cost is CPU nobody was using. The route is never moved on weaker evidence than before
- * this existed.
+ * <p>So the calculation runs early and the DECISION stays exactly where it was: the result is
+ * installed only if the ordinary hysteresis - 3 to 20 consecutive off-route fixes, scaled by GPS
+ * accuracy - has confirmed the deviation by the time the work is done. Being still off route on
+ * the one fix that happens to complete the calculation is NOT enough, because that is a single
+ * uncorroborated distance test and accepting it would reduce the rule to two fixes.
+ *
+ * <p>Nothing is lost by that strictness. A discarded result is still cached, so a confirmation
+ * arriving a moment later is answered from the reroute cache rather than by searching again. What
+ * is given up is only the AUTHORITY to move the route on weaker evidence than before - which is
+ * the one thing that must not be traded for latency.
  *
  * <h3>Why no cancellation is needed</h3>
  *
@@ -172,9 +177,23 @@ public final class CairoDriveEarlyReroute {
 		if (!wasInFlight) {
 			return true;   // not ours: an ordinary reroute, unchanged behaviour
 		}
-		if (!confirmed && !stillOffRoute) {
+		// REQUIRES confirmation, not merely "still off route on this one fix".
+		//
+		// An earlier version accepted stillOffRoute alone, and that was a real weakening the
+		// javadoc denied: isDeviatedFromRoute is a SINGLE fix's distance test with no
+		// corroboration, so the rule became "one off-route fix starts the search, one off-route
+		// fix installs it" - two fixes, against the 3-20 CONSECUTIVE the hysteresis demands. The
+		// off/on/off alternation beside a parallel street is exactly the pattern that broke this
+		// fork's off-route logic once already, and it would have installed on the second off.
+		//
+		// Nothing is lost by being strict. A result discarded here is still handed to
+		// putCachedRoute by the caller, so when the hysteresis does confirm a moment later the
+		// ordinary dispatch answers from the reroute cache instead of searching again. The early
+		// work is kept; only the AUTHORITY to move the route on weak evidence is given up.
+		if (!confirmed) {
 			CairoDriveLog.log(TRACE_TAG, "DISCARDED ageMs=" + age
-					+ " - deviation did not confirm, driver back on route");
+					+ " stillOffRoute=" + stillOffRoute
+					+ " - hysteresis never confirmed; result cached for the real dispatch");
 			return false;
 		}
 		if (age > MAX_AGE_MS) {

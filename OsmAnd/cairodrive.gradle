@@ -426,6 +426,28 @@ def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim
 // What it costs: calculations begun for deviations that never confirm. Bounded by a 20 s minimum
 // interval. Read CD_EARLY_REROUTE USED against DISCARDED on the next drive - if DISCARDED
 // dominates, this is burning battery for nothing and should come out.
+// Notice a deviation by WHICH ROAD the driver is on, not by distance from the route line.
+//
+// Two flags because there are two very different risks.
+//
+// CAIRODRIVE_WRONG_ROAD - evaluate, log, and let it open an EARLY START. Zero route risk: the
+// early calculation is discarded unless the ordinary distance test confirms, so a false firing
+// costs one wasted calculation and nothing else. ON.
+//
+// CAIRODRIVE_WRONG_ROAD_ACT - let it reach the hysteresis, i.e. actually trigger a reroute. OFF,
+// and this is the one flag today that is NOT on by default. A false firing here is a reroute on a
+// correct route - exactly the failure CAIRODRIVE_OFFROUTE_HYSTERESIS exists to prevent, and which
+// already cost this project a drive. The evidence is a map matcher that is measurably wrong on
+// 0.5-1% of applied matches, mostly under flyovers, which is Cairo.
+//
+// Flip ACT only when a drive shows: fewer than one firing per hour that never went on to confirm,
+// a median lead over the distance test above 3 s, and `degraded` dominating the gated= histogram.
+// Read CD_WRONGROAD summary for all three.
+def wrongRoadEnv = System.getenv("CAIRODRIVE_WRONG_ROAD")
+def wrongRoad = wrongRoadEnv?.trim() ? wrongRoadEnv.trim() : "true"
+def wrongRoadActEnv = System.getenv("CAIRODRIVE_WRONG_ROAD_ACT")
+def wrongRoadAct = wrongRoadActEnv?.trim() ? wrongRoadActEnv.trim() : "false"
+
 def earlyRerouteEnv = System.getenv("CAIRODRIVE_EARLY_REROUTE")
 def earlyReroute = earlyRerouteEnv?.trim() ? earlyRerouteEnv.trim() : "true"
 
@@ -966,6 +988,8 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_REROUTE_CACHE", rerouteCache
 			buildConfigField "boolean", "CAIRODRIVE_ROUTE_RACE", routeRace
 			buildConfigField "boolean", "CAIRODRIVE_EARLY_REROUTE", earlyReroute
+			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD", wrongRoad
+			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD_ACT", wrongRoadAct
 			buildConfigField "int", "CAIRODRIVE_LOCATION_INTERPOLATION", locationInterpolation
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_DETAILS", placesDetails
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_PHOTOS", placesPhotos
@@ -1027,6 +1051,8 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_REROUTE_CACHE", rerouteCache
 			buildConfigField "boolean", "CAIRODRIVE_ROUTE_RACE", routeRace
 			buildConfigField "boolean", "CAIRODRIVE_EARLY_REROUTE", earlyReroute
+			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD", wrongRoad
+			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD_ACT", wrongRoadAct
 			buildConfigField "int", "CAIRODRIVE_LOCATION_INTERPOLATION", locationInterpolation
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_DETAILS", placesDetails
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_PHOTOS", placesPhotos

@@ -293,6 +293,7 @@ public class RoutingHelper {
 		net.osmand.plus.cairodrive.providers.CairoDriveProviders.resetRouteState();
 		net.osmand.plus.cairodrive.providers.TrafficAwareRouting.onRouteCleared(app);
 		net.osmand.plus.cairodrive.CairoDriveEarlyReroute.reset();
+		net.osmand.plus.cairodrive.CairoDriveWrongRoad.onRouteChanged(null);
 		net.osmand.plus.cairodrive.providers.SunGlareProvider.reset(app);
 		// TomTomTrafficProvider is DELIBERATELY absent from this list. Its published data is
 		// already dropped by resetRouteState() above; the only thing it could additionally clear is
@@ -574,8 +575,22 @@ public class RoutingHelper {
 					// is exactly upstream's behaviour. Fixed anyway so the flag is safe to turn
 					// on, rather than leaving a trap for whoever does.
 					boolean offRoute = distOrth > allowableDeviation;
+					// isDeviatedFromRoute stays DISTANCE ONLY. It drives the Android Auto
+					// off-route card, the widgets, the voice suppression, and it is the evidence
+					// CairoDriveEarlyReroute.mayInstall tests. A matcher error must not be able to
+					// blank a manoeuvre card, silence a turn prompt, or satisfy the install gate.
 					isDeviatedFromRoute = offRoute;
-					if (offRouteHysteresis.shouldRecalculate(currentLocation, offRoute)) {
+					// Road identity: the driver may be unambiguously on a road that is not part of
+					// the route while still well inside the distance threshold - a parallel Cairo
+					// street is 30 m away and is a different road. Notices earlier than distance
+					// can, on the fixes where the matcher settles.
+					boolean wrongRoad = net.osmand.plus.cairodrive.CairoDriveWrongRoad.evaluate(
+							app, currentLocation, distOrth, allowableDeviation,
+							System.currentTimeMillis());
+					boolean actOnWrongRoad = wrongRoad
+							&& net.osmand.plus.cairodrive.CairoDriveWrongRoad.mayAct();
+					if (offRouteHysteresis.shouldRecalculate(currentLocation,
+							offRoute || actOnWrongRoad)) {
 						log.info("Recalculate route, because correlation  : " + distOrth); //$NON-NLS-1$
 						calculateRoute = !settings.DISABLE_OFFROUTE_RECALC.get();
 						// If a calculation for this same deviation is already running, it IS the
@@ -587,8 +602,9 @@ public class RoutingHelper {
 						}
 					} else if (BuildConfig.CAIRODRIVE_EARLY_REROUTE
 							&& !settings.DISABLE_OFFROUTE_RECALC.get()
-							&& net.osmand.plus.cairodrive.CairoDriveEarlyReroute.shouldStart(
-									System.currentTimeMillis(), distOrth, allowableDeviation)) {
+							&& (wrongRoad || net.osmand.plus.cairodrive.CairoDriveEarlyReroute.shouldStart(
+									System.currentTimeMillis(), distOrth, allowableDeviation))
+							&& !net.osmand.plus.cairodrive.CairoDriveEarlyReroute.isInFlight()) {
 						// NOT gated on offRoute. Deliberately: the biggest remaining term in a
 						// reroute is the time spent travelling from the route out to the 50-120 m
 						// at which upstream will call the driver off it. That threshold is sized
@@ -730,7 +746,16 @@ public class RoutingHelper {
 		if (calculateRoute) {
 			routeRecalculationHelper.recalculateRouteInBackground(currentLocation, finalLocation, intermediatePoints, currentGPXRoute,
 					previousRoute.isCalculated() ? previousRoute : null, false, !targetPointsChanged);
-		} else {
+		} else if (!net.osmand.plus.cairodrive.CairoDriveEarlyReroute.isInFlight()) {
+			// NOT when an early calculation is running. Every deviation task is dispatched with
+			// paramsChanged=false, so stopCalculationIfParamsNotChanged cancels ALL of them - and
+			// on the fix after an early start, calculateRoute is false (the hysteresis has spent
+			// its evidence, and shouldStart sees inFlight). Without this guard the app cancels
+			// the very calculation the driver is waiting for, one second after starting it.
+			//
+			// The same hole exists for the ordinary hysteresis path and predates the early start:
+			// upstream is safe only because without hysteresis calculateRoute stays true on every
+			// off-route fix, so this branch is never reached mid-search.
 			routeRecalculationHelper.stopCalculationIfParamsNotChanged();
 		}
 
