@@ -374,7 +374,21 @@ public final class NavigationScreen extends BaseAndroidAutoScreen implements Sur
 				builder.setDestinationTravelEstimate(destinationTravelEstimate);
 			}
 			if (isRerouting()) {
-				builder.setNavigationInfo(new RoutingInfo.Builder().setLoading(true).build());
+				// A bare setLoading(true) spinner replaced the whole routing panel - turn,
+				// distance, street name, lanes - with nothing, for the several seconds a
+				// recalculation takes. Silence is what makes a wait feel like a failure: the
+				// driver cannot tell "working on it" from "crashed", and this is the surface
+				// they are actually looking at.
+				//
+				// The off-route VOICE cannot cover for it either. announceOffRoute is gated on
+				// AnnounceTimeDistances.OFF_ROUTE_DISTANCE, which is DEFAULT_SPEED * 20 - 200 to
+				// 250 m - while a reroute triggers at 50-120 m. So in the overwhelming majority
+				// of real deviations it is never spoken at all.
+				//
+				// Same shape as the `arrived` branch below, which the host already accepts.
+				MessageInfo rerouting = new MessageInfo.Builder(
+						getCarContext().getString(R.string.cairodrive_recalculating)).build();
+				builder.setNavigationInfo(rerouting);
 			} else if (arrived) {
 				MessageInfo messageInfo = new MessageInfo.Builder(
 						getCarContext().getString(R.string.arrived_at_destination)).build();

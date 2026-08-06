@@ -20,6 +20,7 @@ import net.osmand.Location;
 import net.osmand.StateChangedListener;
 import net.osmand.binary.RouteDataObject;
 import net.osmand.data.PointDescription;
+import net.osmand.plus.BuildConfig;
 import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.helpers.LocationPointWrapper;
 import net.osmand.plus.routing.data.AnnounceTimeDistances;
@@ -237,7 +238,19 @@ public class VoiceRouter {
 	}
 
 	public void announceOffRoute(double dist) {
-		if (settings.SPEAK_ROUTE_DEVIATION.get() && dist > atd.getOffRouteDistance()) {
+		// The threshold is OFF_ROUTE_DISTANCE = DEFAULT_SPEED * 20, i.e. 200-250 m - twenty
+		// seconds of driving. But a reroute triggers at allowableDeviation, 50-120 m. So on the
+		// overwhelming majority of real deviations this announcement was gated out and the driver
+		// heard nothing at all while the app worked.
+		//
+		// Aligning it with the distance that actually starts a recalculation is not a new
+		// behaviour, it is letting an existing one reach the case it was written for. The prompt
+		// is still rate-limited by waitAnnouncedOffRoute below and still respects
+		// SPEAK_ROUTE_DEVIATION, so a driver who does not want it is unaffected.
+		double threshold = BuildConfig.CAIRODRIVE_ANNOUNCE_EARLY_OFFROUTE
+				? Math.min(atd.getOffRouteDistance(), router.getMaxAllowedDeviation())
+				: atd.getOffRouteDistance();
+		if (settings.SPEAK_ROUTE_DEVIATION.get() && dist > threshold) {
 			long ms = System.currentTimeMillis();
 			if (waitAnnouncedOffRoute == 0 || ms - lastAnnouncedOffRoute > waitAnnouncedOffRoute) {
 				CommandBuilder p = getNewCommandPlayerToPlay();

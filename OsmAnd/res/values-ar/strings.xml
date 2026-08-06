@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+	<string name="cairodrive_recalculating">جارٍ إعادة الحساب…</string>
 	<string name="routing_attr_avoid_narrow_streets_name">تجنُّب الشوارع الضيقة</string>
 	<string name="routing_attr_avoid_narrow_streets_description">تفضيل الطرق الأوسع بشكل كبير. لا تزال الشوارع الضيقة تُستخدم عندما تكون الطريق الوحيد إلى الوجهة.</string>
     <string name="announce_lane_guidance">نطق الحارات</string>

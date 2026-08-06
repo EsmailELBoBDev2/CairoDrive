@@ -457,6 +457,17 @@ def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim
 // working in stop-and-go traffic and on degraded fixes, which are more than half of this
 // device's, where a heading test must go silent. And it buys its seconds on EVERY deviation
 // rather than only on missed turns sharper than 40 degrees.
+// Let the off-route announcement reach the deviations that actually happen.
+//
+// AnnounceTimeDistances.OFF_ROUTE_DISTANCE is DEFAULT_SPEED * 20 - 200 to 250 m, twenty seconds
+// of driving. A reroute triggers at allowableDeviation, 50-120 m. So the prompt was gated out of
+// the overwhelming majority of real deviations and the driver heard NOTHING while the app worked.
+//
+// This is not a new behaviour, it is letting an existing one reach the case it was written for.
+// Still rate-limited, still respects SPEAK_ROUTE_DEVIATION.
+def announceEarlyOffRouteEnv = System.getenv("CAIRODRIVE_ANNOUNCE_EARLY_OFFROUTE")
+def announceEarlyOffRoute = announceEarlyOffRouteEnv?.trim() ? announceEarlyOffRouteEnv.trim() : "true"
+
 def tightenNearTurnEnv = System.getenv("CAIRODRIVE_TIGHTEN_NEAR_TURN")
 def tightenNearTurn = tightenNearTurnEnv?.trim() ? tightenNearTurnEnv.trim() : "true"
 
@@ -1008,6 +1019,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD", wrongRoad
 			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD_ACT", wrongRoadAct
 			buildConfigField "boolean", "CAIRODRIVE_TIGHTEN_NEAR_TURN", tightenNearTurn
+			buildConfigField "boolean", "CAIRODRIVE_ANNOUNCE_EARLY_OFFROUTE", announceEarlyOffRoute
 			buildConfigField "int", "CAIRODRIVE_LOCATION_INTERPOLATION", locationInterpolation
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_DETAILS", placesDetails
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_PHOTOS", placesPhotos
@@ -1072,6 +1084,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD", wrongRoad
 			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD_ACT", wrongRoadAct
 			buildConfigField "boolean", "CAIRODRIVE_TIGHTEN_NEAR_TURN", tightenNearTurn
+			buildConfigField "boolean", "CAIRODRIVE_ANNOUNCE_EARLY_OFFROUTE", announceEarlyOffRoute
 			buildConfigField "int", "CAIRODRIVE_LOCATION_INTERPOLATION", locationInterpolation
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_DETAILS", placesDetails
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_PHOTOS", placesPhotos

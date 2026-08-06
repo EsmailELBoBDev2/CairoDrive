@@ -104,6 +104,17 @@ public class RoutingHelper {
 	//private long wrongMovementDetected = 0;
 	private boolean voiceRouterStopped;
 
+	/**
+	 * The deviation distance at which the last fix would have been called off route.
+	 *
+	 * <p>Published so the voice can be gated on the SAME number that starts a recalculation.
+	 * AnnounceTimeDistances.OFF_ROUTE_DISTANCE is 200-250 m while this is 50-120 m, so the
+	 * off-route prompt was gated out of nearly every real deviation.
+	 */
+	public float getMaxAllowedDeviation() {
+		return lastAllowableDeviation;
+	}
+
 	public boolean isDeviatedFromRoute() {
 		return isDeviatedFromRoute;
 	}
@@ -582,6 +593,7 @@ public class RoutingHelper {
 				if (nearManoeuvre && BuildConfig.CAIRODRIVE_TIGHTEN_NEAR_TURN) {
 					allowableDeviation *= NEAR_MANOEUVRE_TOLERANCE_MULT;
 				}
+				lastAllowableDeviation = (float) allowableDeviation;
 
 				// 2. Analyze if we need to recalculate route
 				// >100m off current route (sideways) or parameter (for Straight line)
@@ -1089,6 +1101,10 @@ public class RoutingHelper {
 
 	/** Reused so the per-fix check allocates nothing; only ever touched on the location thread. */
 	private final NextDirectionInfo nearTurnProbe = new NextDirectionInfo();
+
+	/** Last computed off-route threshold, for consumers that must agree with it. Volatile: the
+	 *  voice reads it from its own thread. */
+	private volatile float lastAllowableDeviation;
 
 	/**
 	 * Metres to the next spoken manoeuvre, or -1 when there is none to speak of.

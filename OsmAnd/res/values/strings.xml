@@ -38,6 +38,7 @@
 	<string name="cairo_osm_narrow_feedback">Report untagged narrow streets to OSM</string>
 	<string name="cairo_osm_send_notes">Send %1$d OSM note(s)</string>
 	<string name="cairo_osm_notes_sent">Sent %1$d OSM note(s)</string>
+	<string name="cairodrive_recalculating">Recalculating…</string>
 	<string name="cairodrive_ev_charging">EV charging</string>
 	<string name="cairodrive_ev_membership">Membership may be required</string>
 	<string name="cairo_google_traffic_on_route">Live traffic on route (Google)</string>
