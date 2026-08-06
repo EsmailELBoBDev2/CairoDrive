@@ -465,6 +465,18 @@ def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim
 //
 // This is not a new behaviour, it is letting an existing one reach the case it was written for.
 // Still rate-limited, still respects SPEAK_ROUTE_DEVIATION.
+// Fade the route line while the driver is off it.
+//
+// The largest object on screen said nothing about the one state the driver most needs to read:
+// the line looked identical whether they were on the route or two hundred metres away. Google
+// Maps and Waze both signal this and it costs no computation at all.
+//
+// Faded, not hidden - the route is still where they have to get back to. Alpha only, because
+// changing the hue would collide with the user-selectable colouring types (slope, speed,
+// altitude) and make one line mean two things.
+def dimOffRouteEnv = System.getenv("CAIRODRIVE_DIM_ROUTE_OFF_ROUTE")
+def dimOffRoute = dimOffRouteEnv?.trim() ? dimOffRouteEnv.trim() : "true"
+
 def announceEarlyOffRouteEnv = System.getenv("CAIRODRIVE_ANNOUNCE_EARLY_OFFROUTE")
 def announceEarlyOffRoute = announceEarlyOffRouteEnv?.trim() ? announceEarlyOffRouteEnv.trim() : "true"
 
@@ -1020,6 +1032,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD_ACT", wrongRoadAct
 			buildConfigField "boolean", "CAIRODRIVE_TIGHTEN_NEAR_TURN", tightenNearTurn
 			buildConfigField "boolean", "CAIRODRIVE_ANNOUNCE_EARLY_OFFROUTE", announceEarlyOffRoute
+			buildConfigField "boolean", "CAIRODRIVE_DIM_ROUTE_OFF_ROUTE", dimOffRoute
 			buildConfigField "int", "CAIRODRIVE_LOCATION_INTERPOLATION", locationInterpolation
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_DETAILS", placesDetails
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_PHOTOS", placesPhotos
@@ -1085,6 +1098,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD_ACT", wrongRoadAct
 			buildConfigField "boolean", "CAIRODRIVE_TIGHTEN_NEAR_TURN", tightenNearTurn
 			buildConfigField "boolean", "CAIRODRIVE_ANNOUNCE_EARLY_OFFROUTE", announceEarlyOffRoute
+			buildConfigField "boolean", "CAIRODRIVE_DIM_ROUTE_OFF_ROUTE", dimOffRoute
 			buildConfigField "int", "CAIRODRIVE_LOCATION_INTERPOLATION", locationInterpolation
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_DETAILS", placesDetails
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_PHOTOS", placesPhotos

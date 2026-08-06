@@ -6,6 +6,9 @@ import android.content.Context;
 import android.graphics.*;
 import android.graphics.drawable.Drawable;
 
+import android.graphics.Color;
+import net.osmand.plus.BuildConfig;
+import net.osmand.plus.routing.RoutingHelper;
 import androidx.annotation.ColorInt;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -47,6 +50,9 @@ public abstract class BaseRouteLayer extends OsmandMapLayer {
 
 	protected PreviewRouteLineInfo previewRouteLineInfo;
 	protected ColoringType routeColoringType = ColoringType.DEFAULT;
+
+	/** Faded, not hidden - the route is still where the driver has to get back to. */
+	private static final float OFF_ROUTE_ALPHA = 0.4f;
 	protected String routeGradientPalette = PaletteConstants.DEFAULT_NAME;
 	protected String routeInfoAttribute;
 
@@ -174,7 +180,46 @@ public abstract class BaseRouteLayer extends OsmandMapLayer {
 
 	@ColorInt
 	public int getRouteLineColor() {
-		return routeLineColor;
+		return dimIfOffRoute(routeLineColor);
+	}
+
+	/**
+	 * Fade the route line while the driver is off it.
+	 *
+	 * <p>The biggest thing this app was missing next to Google Maps and Waze, and it costs no
+	 * computation at all. The line looked identical whether the driver was on the route or two
+	 * hundred metres from it, so the largest object on screen said nothing about the one state
+	 * the driver most needs to read. A line that changes appearance says "something happened";
+	 * one that looks normal while you are lost says nothing at all.
+	 *
+	 * <p>Faded rather than hidden, deliberately: the route is still where they need to get back
+	 * to, and Mapbox's route-line vocabulary uses exactly this - active lines full strength,
+	 * inactive dimmed, never absent.
+	 *
+	 * <p>Driven off {@code isDeviatedFromRoute}, which upstream sets from the distance test and
+	 * which this fork deliberately keeps free of the map matcher and the early-start machinery.
+	 * That matters for cost: a colour change makes RouteRenderState rebuild the whole line
+	 * geometry, so this must flip about twice per deviation, not once per fix. The distance test
+	 * has the hysteresis of the threshold itself, and none of today's early-start work touches
+	 * it - which is why the flag was kept clean.
+	 */
+	@ColorInt
+	private int dimIfOffRoute(@ColorInt int color) {
+		try {
+			if (!BuildConfig.CAIRODRIVE_DIM_ROUTE_OFF_ROUTE) {
+				return color;
+			}
+			RoutingHelper helper = view.getApplication().getRoutingHelper();
+			if (!helper.isFollowingMode() || !helper.isDeviatedFromRoute()) {
+				return color;
+			}
+			// Alpha only. Changing the hue would collide with the colouring types the user can
+			// choose - slope, speed, altitude - and make the line mean two things at once.
+			int alpha = Math.round(Color.alpha(color) * OFF_ROUTE_ALPHA);
+			return Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color));
+		} catch (Throwable t) {
+			return color;
+		}
 	}
 
 	@ColorInt

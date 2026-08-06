@@ -1152,7 +1152,14 @@ class RouteRecalculationHelper {
 					// Shadow probe only when the live repair did NOT run. Once the repair is real,
 					// timing a second one would just burn a search to re-measure what `repair USED`
 					// already reports - and would do it on the same worker the next reroute needs.
-					if (!repaired) {
+					//
+					// AND ONLY WHEN THE DRIVER IS BACK ON A ROUTE. The probe is a full route
+					// search, and it runs inside this task - so the task's Future stays incomplete
+					// for its whole duration, isRouteBeingCalculated() stays true, and the head
+					// unit goes on saying "Recalculating…" with the new route already drawn on
+					// screen. A measurement must not be visible to the driver as latency it did
+					// not cause.
+					if (!repaired && !routingHelper.isDeviatedFromRoute()) {
 						routingThreadHelper.runRepairProbe(provider, params);
 					}
 				}
