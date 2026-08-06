@@ -614,7 +614,28 @@ jobs:
           VARIANT: ${{ steps.variant.outputs.variant }}
           SHORT_SHA: ${{ steps.variant.outputs.short_sha }}
           VERSION_CODE: ${{ steps.variant.outputs.version_code }}
+          # PRESENCE ONLY - `!= ''` yields the string true/false, so no key value can reach
+          # the log, the summary or the environment. Same rule as the Key wiring step.
+          #
+          # Repeated at the END of the build on purpose. The Key wiring step runs 9th of 21 and
+          # says the same thing, but a completed job's log is only readable from its tail through
+          # the API, and GitHub Actions does not populate the check-run output that would carry
+          # its ::warning:: annotations - so in practice that step's answer was unreadable
+          # anywhere except the browser. Here it is in the job summary and in the last lines of
+          # the log, which is where anything meant to be read after the fact belongs.
+          HAS_PLACES: ${{ secrets.GOOGLE_PLACES_API_KEY != '' }}
+          HAS_TOMTOM: ${{ secrets.TOMTOM_API_KEY != '' }}
+          HAS_OPENWEATHER: ${{ secrets.OPENWEATHER_KEY != '' }}
+          HAS_HERE: ${{ secrets.HERE_API_KEY != '' }}
+          HAS_BESTTIME: ${{ secrets.BESTTIME_API_KEY != '' }}
+          HAS_GEOAPIFY: ${{ secrets.GEOAPIFY_KEY != '' }}
+          HAS_LOCATIONIQ: ${{ secrets.LOCATIONIQ_KEY != '' }}
+          HAS_AZURE: ${{ secrets.AZURE_MAPS_KEY != '' }}
+          HAS_TOMORROW: ${{ secrets.TOMORROW_KEY != '' }}
         run: |
+          keyline() {
+            if [ "$2" = "true" ]; then echo "- $1: present"; else echo "- $1: :warning: NOT SET - $3 is inert in this build"; fi
+          }
           {
             echo "## CairoDrive dev build"
             echo
@@ -638,9 +659,21 @@ jobs:
               echo "- Search: :warning: offline OSM index - \`GOOGLE_PLACES_API_KEY\` is not set"
             fi
             echo
+            echo "### Provider keys"
+            echo
+            keyline "GOOGLE_PLACES_API_KEY" "${HAS_PLACES}" "search and Google traffic"
+            keyline "TOMTOM_API_KEY" "${HAS_TOMTOM}" "traffic flow and closures"
+            keyline "OPENWEATHER_KEY" "${HAS_OPENWEATHER}" "dust and air quality"
+            keyline "HERE_API_KEY" "${HAS_HERE}" "HERE closures and overlay"
+            keyline "BESTTIME_API_KEY" "${HAS_BESTTIME}" "popular times"
+            keyline "GEOAPIFY_KEY" "${HAS_GEOAPIFY}" "addresses, autocomplete, nearby"
+            keyline "LOCATIONIQ_KEY" "${HAS_LOCATIONIQ}" "address fallback"
+            keyline "AZURE_MAPS_KEY" "${HAS_AZURE}" "weather along the route"
+            keyline "TOMORROW_KEY" "${HAS_TOMORROW}" "independent visibility check"
+            echo
             echo "The debug APK writes its full diagnostic trace to"
             echo "\`Android/data/com.cairodrive.app/files/cairodrive-logs\` on the device."
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------------
   # Release build. `environment: production` is the gate: with required reviewers set on
