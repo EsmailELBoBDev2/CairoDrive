@@ -65,6 +65,26 @@ public final class CairoDriveEarlyReroute {
 	 */
 	private static final long MIN_INTERVAL_MS = 20_000;
 
+	/**
+	 * Fraction of the off-route threshold at which the CALCULATION may begin.
+	 *
+	 * <p>The largest remaining term in a reroute is not the search and not the confirmation - it
+	 * is the 4-9 s the driver spends travelling from the route to the 50-120 m at which upstream
+	 * will call them off it at all. That threshold is sized for a DECISION: below it, a fix is
+	 * more likely GPS error than a wrong turn, and moving the route on it would be reckless.
+	 *
+	 * <p>But it was never sized for STARTING WORK, and once the install is gated separately those
+	 * are different questions. Beginning a calculation half a threshold early costs, at worst, a
+	 * calculation that gets discarded. Being WRONG about it costs nothing at all, because
+	 * {@link #mayInstall} still requires the full threshold plus confirmation before the route
+	 * moves - the same test on the same evidence as before any of this existed.
+	 *
+	 * <p>So the start moves early and the decision does not. At 0.5 the calculation begins around
+	 * 25-60 m of deviation instead of 50-120, which at Cairo speeds is a few seconds of the wait
+	 * that no amount of routing optimisation could have touched.
+	 */
+	private static final double EARLY_START_FRACTION = 0.5;
+
 	/** Beyond this an early result is answering a question the driver has moved on from. */
 	private static final long MAX_AGE_MS = 30_000;
 
@@ -91,21 +111,30 @@ public final class CairoDriveEarlyReroute {
 	 *
 	 * <p>Called on a fix that is off route while the hysteresis is still gathering evidence.
 	 */
-	public static boolean shouldStart(long now) {
+	public static boolean shouldStart(long now, double devM, double allowableM) {
 		if (inFlight) {
+			return false;
+		}
+		if (allowableM > 0 && devM < allowableM * EARLY_START_FRACTION) {
 			return false;
 		}
 		return now - lastStartAt >= MIN_INTERVAL_MS;
 	}
 
 	/** Record that an early calculation has been dispatched for {@code from}. */
-	public static void started(@NonNull Location from, long now) {
+	public static void started(@NonNull Location from, long now, double devM, double allowableM) {
 		inFlight = true;
 		confirmed = false;
 		startedAt = now;
 		lastStartAt = now;
 		startedFrom = from;
-		CairoDriveLog.log(TRACE_TAG, "started - deviation forming, not yet confirmed");
+		// devM against allowM says HOW early this was: below allowM the driver is not even
+		// considered off route yet, so every metre of that gap is wait the search now runs
+		// through instead of after.
+		CairoDriveLog.log(TRACE_TAG, "started devM=" + Math.round(devM)
+				+ " allowM=" + Math.round(allowableM)
+				+ " offRouteYet=" + (devM > allowableM)
+				+ " - calculating before the route may legally move");
 	}
 
 	/**

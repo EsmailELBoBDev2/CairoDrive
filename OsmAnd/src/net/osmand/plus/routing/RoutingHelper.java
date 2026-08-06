@@ -585,16 +585,22 @@ public class RoutingHelper {
 								&& net.osmand.plus.cairodrive.CairoDriveEarlyReroute.confirm()) {
 							calculateRoute = false;
 						}
-					} else if (offRoute && BuildConfig.CAIRODRIVE_EARLY_REROUTE
+					} else if (BuildConfig.CAIRODRIVE_EARLY_REROUTE
 							&& !settings.DISABLE_OFFROUTE_RECALC.get()
-							&& net.osmand.plus.cairodrive.CairoDriveEarlyReroute
-									.shouldStart(System.currentTimeMillis())) {
-						// Off route, but the hysteresis is still gathering evidence. That wait is
-						// 3-12 s and nothing uses it. Start the calculation now from the position
-						// the driver is ACTUALLY at - nothing is predicted here - and let the
-						// decision to install it stay exactly where it was.
+							&& net.osmand.plus.cairodrive.CairoDriveEarlyReroute.shouldStart(
+									System.currentTimeMillis(), distOrth, allowableDeviation)) {
+						// NOT gated on offRoute. Deliberately: the biggest remaining term in a
+						// reroute is the time spent travelling from the route out to the 50-120 m
+						// at which upstream will call the driver off it. That threshold is sized
+						// for a DECISION, and starting work is not a decision - mayInstall still
+						// demands the full threshold plus confirmation before the route moves.
+						//
+						// So the search begins at half the deviation, from the position the
+						// driver is ACTUALLY at. Nothing is predicted. Being wrong costs one
+						// discarded calculation and the route is untouched.
 						net.osmand.plus.cairodrive.CairoDriveEarlyReroute.started(
-								currentLocation, System.currentTimeMillis());
+								currentLocation, System.currentTimeMillis(),
+								distOrth, allowableDeviation);
 						calculateRoute = true;
 					}
 				}
