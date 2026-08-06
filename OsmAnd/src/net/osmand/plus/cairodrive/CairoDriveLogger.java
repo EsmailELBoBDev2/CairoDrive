@@ -35,6 +35,7 @@ import androidx.core.content.ContextCompat;
 import net.osmand.Location;
 import net.osmand.PlatformUtil;
 import net.osmand.plus.BuildConfig;
+import net.osmand.plus.cairodrive.providers.ApiHealth;
 import net.osmand.plus.OsmAndLocationProvider;
 import net.osmand.plus.OsmAndLocationProvider.GPSInfo;
 import net.osmand.plus.OsmandApplication;
@@ -108,6 +109,16 @@ public class CairoDriveLogger {
 	 * {@link #refreshProviderState()}).
 	 */
 	private static final long SYSTEM_PROBE_INTERVAL_MS = 30000;
+
+	/**
+	 * How often every provider's health is written to the drive log.
+	 *
+	 * Three minutes: long enough that it is a rounding error against the frame budget and the log
+	 * size, short enough that a provider which fails and recovers inside one trip still leaves a
+	 * trace. The alternative - once at the end - loses exactly the transient faults that are
+	 * hardest to reproduce on request.
+	 */
+	private static final long API_STATUS_INTERVAL_MS = 3 * 60 * 1000L;
 	/** Compass updates arrive at sensor rate; log at most one per this interval. */
 	private static final long COMPASS_LOG_INTERVAL_MS = 500;
 	private static final long LOGCAT_RESTART_DELAY_MS = 2000;
@@ -742,7 +753,16 @@ public class CairoDriveLogger {
 				+ " besttime=" + have(BuildConfig.CAIRODRIVE_BESTTIME_PRIVATE_KEY)
 				+ " besttimePublic=" + have(BuildConfig.CAIRODRIVE_BESTTIME_PUBLIC_KEY)
 				+ " mapillary=" + have(BuildConfig.CAIRODRIVE_MAPILLARY_TOKEN)
-				+ " osmOauth=" + have(BuildConfig.CAIRODRIVE_OSM_OAUTH_ID));
+				+ " osmOauth=" + have(BuildConfig.CAIRODRIVE_OSM_OAUTH_ID)
+				// The five that were shipping unreported. `here` has been in the build for weeks;
+				// the other four arrived today. A key missing from this line is a key nobody can
+				// tell is missing from a drive log, which is the whole failure this header exists
+				// to prevent.
+				+ " here=" + have(BuildConfig.CAIRODRIVE_HERE_KEY)
+				+ " geoapify=" + have(BuildConfig.CAIRODRIVE_GEOAPIFY_KEY)
+				+ " locationiq=" + have(BuildConfig.CAIRODRIVE_LOCATIONIQ_KEY)
+				+ " azure=" + have(BuildConfig.CAIRODRIVE_AZURE_MAPS_KEY)
+				+ " tomorrow=" + have(BuildConfig.CAIRODRIVE_TOMORROW_KEY));
 		log("SESSION", "locale=" + Locale.getDefault() + " timezone=" + java.util.TimeZone.getDefault().getID());
 		log("SESSION", "logDir=" + writer.getDirectory().getAbsolutePath()
 				+ " maxFileBytes=" + CairoDriveLogWriter.MAX_FILE_BYTES
@@ -851,6 +871,39 @@ public class CairoDriveLogger {
 		}
 		if (sampleCounter % ticksPer(SYSTEM_SAMPLE_INTERVAL_MS) == 0) {
 			logSystemSample(probe);
+		}
+		if (sampleCounter % ticksPer(API_STATUS_INTERVAL_MS) == 0) {
+			logApiStatus();
+		}
+	}
+
+	/**
+	 * Every provider's state, on a timer, into the drive log.
+	 *
+	 * <h3>Why this is not left to the status screen</h3>
+	 *
+	 * ApiHealth already answers "which providers are working and why not", but only when someone
+	 * opens the menu item and taps it. That is the wrong instrument for this project: the owner is
+	 * DRIVING, the question is asked afterwards from the log far more often than during, and a
+	 * provider that failed once at minute three and recovered leaves no trace by the time anyone
+	 * looks.
+	 *
+	 * <p>It also means one drive tests EVERY provider at once instead of one per trip. Nine
+	 * providers checked one drive at a time is nine drives; this makes it one, and each costs a
+	 * real trip through Cairo traffic to produce.
+	 *
+	 * <p>No requests are made here - this reports what the providers already recorded. It cannot
+	 * spend budget, and it cannot make a provider look healthier than it is.
+	 */
+	private void logApiStatus() {
+		try {
+			// Pipe-joined rather than multi-line: one grep-able line per sample keeps it aligned
+			// with every other periodic line in this file, and newlines inside a log record are
+			// what make a log hard to read back.
+			log("APISTATUS", ApiHealth.summary().replace("\n", " | "));
+		} catch (Throwable t) {
+			// Diagnostics must never be able to take down the thing they diagnose.
+			log("APISTATUS", "unavailable: " + t.getClass().getSimpleName());
 		}
 	}
 

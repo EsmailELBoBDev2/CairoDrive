@@ -148,6 +148,23 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: osmandapp/OsmAnd-resources
+          # PINNED, like OsmAnd-core-legacy below it.
+          #
+          # Unpinned, this took upstream's default branch live on every build - and this checkout
+          # is not incidental: routing.xml comes from it (Gradle Syncs it into OsmAnd-java, then
+          # the patch step below adds the fork's narrow-street rules), as do rendering_types,
+          # poi_types and the routing test maps. So an upstream push could change the routing
+          # profile INSIDE A SHIPPED APK with no commit in this repository, and change it between
+          # two builds of the same commit.
+          #
+          # For the record: this was my first suspect for the routing test that started failing
+          # after the merge, and it was NOT the cause - that repo's last commit was hours before
+          # both the green and the red builds. Pinning is worth doing on its own merits, not as a
+          # fix for that.
+          #
+          # To take a newer upstream: bump this SHA in its own commit, so the change is reviewable
+          # and bisectable like any other.
+          ref: d87f3d4f6270974e7222b7fbddcc9e4c911ade85
           path: resources
           persist-credentials: false
 
@@ -682,6 +699,23 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: osmandapp/OsmAnd-resources
+          # PINNED, like OsmAnd-core-legacy below it.
+          #
+          # Unpinned, this took upstream's default branch live on every build - and this checkout
+          # is not incidental: routing.xml comes from it (Gradle Syncs it into OsmAnd-java, then
+          # the patch step below adds the fork's narrow-street rules), as do rendering_types,
+          # poi_types and the routing test maps. So an upstream push could change the routing
+          # profile INSIDE A SHIPPED APK with no commit in this repository, and change it between
+          # two builds of the same commit.
+          #
+          # For the record: this was my first suspect for the routing test that started failing
+          # after the merge, and it was NOT the cause - that repo's last commit was hours before
+          # both the green and the red builds. Pinning is worth doing on its own merits, not as a
+          # fix for that.
+          #
+          # To take a newer upstream: bump this SHA in its own commit, so the change is reviewable
+          # and bisectable like any other.
+          ref: d87f3d4f6270974e7222b7fbddcc9e4c911ade85
           path: resources
           persist-credentials: false
       - name: Apply CairoDrive routing profile patches
