@@ -10,6 +10,7 @@ import net.osmand.plus.cairodrive.providers.ProviderBudget;
 import net.osmand.plus.helpers.CairoDriveLog;
 import net.osmand.plus.onlinerouting.EngineParameter;
 import net.osmand.plus.onlinerouting.OnlineRoutingHelper;
+import net.osmand.plus.onlinerouting.engine.GeoapifyEngine;
 import net.osmand.plus.onlinerouting.engine.GraphhopperEngine;
 import net.osmand.plus.onlinerouting.engine.OnlineRoutingEngine;
 import net.osmand.plus.onlinerouting.engine.OrsEngine;
@@ -49,16 +50,16 @@ import java.util.Map;
  *       waypoint limit is a real structural constraint rather than a budget one, so a route with
  *       more points than that skips this provider instead of sending a request that would be
  *       rejected.</li>
+ *   <li><b>Geoapify</b> - last, and capped tightest, despite having the largest allowance of the
+ *       three on paper at 3000 credits/day. That 3000 is SHARED with Places and geocoding, and
+ *       the dashboard showed Places alone consuming 3,881 credits in a month, so a request made
+ *       here is taken away from search rather than drawn from spare headroom.</li>
  * </ul>
  *
- * <p><b>Geoapify is deliberately absent</b>, and not because of its quota - 3000 credits/day is
- * the largest of the three on paper. Two reasons, both checked rather than assumed. Its 3000 is
- * SHARED with Places and geocoding, and the dashboard shows Places already consuming 3,881
- * credits in a month, so routing there would compete with search rather than add headroom. More
- * decisively, its Routing API returns a GeoJSON shape OsmAnd cannot read: {@link OrsEngine}
- * parses {@code properties.segments[].steps[].way_points} and Geoapify returns
- * {@code properties.legs[].steps[]} with different fields, so it needs an engine subclass of its
- * own. That is a separate piece of work and it is better named here than half-built.
+ * <p>Geoapify needed {@link net.osmand.plus.onlinerouting.engine.GeoapifyEngine} written for it
+ * first: its Routing API returns a GeoJSON shape no existing engine can read, close enough to
+ * ORS to invite reuse and different in three ways that would each have produced a silently wrong
+ * route. See that class for the specifics.
  */
 public final class CairoDriveRoutingEngines {
 
@@ -68,6 +69,7 @@ public final class CairoDriveRoutingEngines {
 	/** Names are stable: they are how an already-created engine is recognised on later starts. */
 	private static final String ORS_NAME = "CairoDrive ORS";
 	private static final String GRAPHHOPPER_NAME = "CairoDrive GraphHopper";
+	private static final String GEOAPIFY_NAME = "CairoDrive Geoapify";
 
 	/**
 	 * Daily caps, far below each provider's allowance.
@@ -79,6 +81,13 @@ public final class CairoDriveRoutingEngines {
 	 */
 	private static final int ORS_DAILY_CAP = 200;
 	private static final int GRAPHHOPPER_DAILY_CAP = 100;
+	/**
+	 * Lowest cap of the three despite Geoapify's 3000 being the largest allowance, because
+	 * that 3000 is SHARED with Places and geocoding - the dashboard showed Places alone using
+	 * 3,881 credits in a month. Routing here competes with search, so it is last in line and
+	 * capped tightest.
+	 */
+	private static final int GEOAPIFY_DAILY_CAP = 50;
 
 	/** GraphHopper's free plan: "Max Locations: 5". Not a budget, a hard API limit. */
 	private static final int GRAPHHOPPER_MAX_POINTS = 5;
@@ -87,6 +96,8 @@ public final class CairoDriveRoutingEngines {
 	private static final String PREF_ORS_COUNT = "cairodrive_ors_count";
 	private static final String PREF_GH_DAY = "cairodrive_graphhopper_day";
 	private static final String PREF_GH_COUNT = "cairodrive_graphhopper_count";
+	private static final String PREF_GEO_DAY = "cairodrive_geoapify_route_day";
+	private static final String PREF_GEO_COUNT = "cairodrive_geoapify_route_count";
 
 	private static volatile boolean ensured;
 
@@ -99,6 +110,10 @@ public final class CairoDriveRoutingEngines {
 
 	private static boolean hasGraphhopperKey() {
 		return !Algorithms.isEmpty(BuildConfig.CAIRODRIVE_GRAPHHOPPER_KEY);
+	}
+
+	private static boolean hasGeoapifyKey() {
+		return !Algorithms.isEmpty(BuildConfig.CAIRODRIVE_GEOAPIFY_KEY);
 	}
 
 	/**
@@ -132,7 +147,15 @@ public final class CairoDriveRoutingEngines {
 				helper.saveEngine(new GraphhopperEngine(params));
 				CairoDriveLog.log(TRACE_TAG, "created " + GRAPHHOPPER_NAME);
 			}
-			if (!hasOrsKey() && !hasGraphhopperKey()) {
+			if (hasGeoapifyKey() && findByName(helper, GEOAPIFY_NAME) == null) {
+				Map<String, String> params = new HashMap<>();
+				params.put(EngineParameter.API_KEY.name(), BuildConfig.CAIRODRIVE_GEOAPIFY_KEY);
+				params.put(EngineParameter.VEHICLE_KEY.name(), "drive");
+				params.put(EngineParameter.CUSTOM_NAME.name(), GEOAPIFY_NAME);
+				helper.saveEngine(new GeoapifyEngine(params));
+				CairoDriveLog.log(TRACE_TAG, "created " + GEOAPIFY_NAME);
+			}
+			if (!hasOrsKey() && !hasGraphhopperKey() && !hasGeoapifyKey()) {
 				CairoDriveLog.log(TRACE_TAG, "no online routing key in this build - race inert");
 			}
 		} catch (Throwable t) {
@@ -163,17 +186,27 @@ public final class CairoDriveRoutingEngines {
 			if (gh != null) {
 				if (pointCount > GRAPHHOPPER_MAX_POINTS) {
 					// Skipped rather than attempted: the free plan rejects more than 5 locations,
-					// so sending it would spend a request to receive an error.
+					// so sending it would spend a request to receive an error. Note this only
+					// rules GraphHopper out - the next provider has no such limit, so selection
+					// continues rather than giving up on the whole race.
 					ApiHealth.recordSkipped(ApiHealth.Api.GRAPHHOPPER, ApiHealth.Skip.NOT_APPLICABLE);
 					CairoDriveLog.log(TRACE_TAG, "graphhopper skipped, " + pointCount
 							+ " points exceeds its " + GRAPHHOPPER_MAX_POINTS + " limit");
-					return null;
-				}
-				if (ProviderBudget.claim(app, ApiHealth.Api.GRAPHHOPPER,
+				} else if (ProviderBudget.claim(app, ApiHealth.Api.GRAPHHOPPER,
 						PREF_GH_DAY, PREF_GH_COUNT, GRAPHHOPPER_DAILY_CAP)) {
 					return gh;
+				} else {
+					ApiHealth.recordSkipped(ApiHealth.Api.GRAPHHOPPER, ApiHealth.Skip.BUDGET_SPENT);
 				}
-				ApiHealth.recordSkipped(ApiHealth.Api.GRAPHHOPPER, ApiHealth.Skip.BUDGET_SPENT);
+			}
+
+			OnlineRoutingEngine geo = findByName(helper, GEOAPIFY_NAME);
+			if (geo != null && ProviderBudget.claim(app, ApiHealth.Api.GEOAPIFY_ROUTING,
+					PREF_GEO_DAY, PREF_GEO_COUNT, GEOAPIFY_DAILY_CAP)) {
+				return geo;
+			}
+			if (geo != null) {
+				ApiHealth.recordSkipped(ApiHealth.Api.GEOAPIFY_ROUTING, ApiHealth.Skip.BUDGET_SPENT);
 			}
 			if (ors != null) {
 				ApiHealth.recordSkipped(ApiHealth.Api.ORS, ApiHealth.Skip.BUDGET_SPENT);

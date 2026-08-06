@@ -9,6 +9,7 @@ public class EngineType {
 	public static final OnlineRoutingEngine GRAPHHOPPER_TYPE = new GraphhopperEngine(null);
 	public static final OnlineRoutingEngine OSRM_TYPE = new OsrmEngine(null);
 	public static final OnlineRoutingEngine ORS_TYPE = new OrsEngine(null);
+	public static final OnlineRoutingEngine GEOAPIFY_TYPE = new GeoapifyEngine(null);
 	public static final OnlineRoutingEngine GPX_TYPE = new GpxEngine(null);
 
 	private static OnlineRoutingEngine[] enginesTypes;
@@ -19,6 +20,7 @@ public class EngineType {
 					GRAPHHOPPER_TYPE,
 					OSRM_TYPE,
 					ORS_TYPE,
+					GEOAPIFY_TYPE,
 					GPX_TYPE
 			};
 		}
