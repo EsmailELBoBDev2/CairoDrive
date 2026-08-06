@@ -542,6 +542,21 @@ def bestTime = bestTimeEnv?.trim() ? bestTimeEnv.trim() : "true"
 //
 // Geoapify: reverse geocoding + address autocomplete. 3,000 credits/day, no card, and the only
 // free geocoder whose terms permit caching and storage outright, which is why it is the primary.
+// The three online routing providers. ORS first, then Geoapify, then GraphHopper - see the
+// ApiHealth.Api enum for why that order and why only ONE is used per reroute.
+//
+// Quotas read from the provider dashboards, 2026-08-06, against ~12 reroutes per drive:
+//   ORS          Directions V2 2000/day, 40/min
+//   Geoapify     3000 credits/day, SHARED with Places and geocoding - so its routing budget
+//                is not free headroom, it competes with search
+//   GraphHopper  500 credits/day, and max 5 waypoints per request
+//
+// Empty means that provider is simply skipped, exactly like the OSM OAuth wiring.
+def orsKeyEnv = System.getenv("CAIRODRIVE_ORS_KEY")
+def orsKey = orsKeyEnv?.trim() ? orsKeyEnv.trim() : ""
+def graphhopperKeyEnv = System.getenv("CAIRODRIVE_GRAPHHOPPER_KEY")
+def graphhopperKey = graphhopperKeyEnv?.trim() ? graphhopperKeyEnv.trim() : ""
+
 def geoapifyKeyEnv = System.getenv("CAIRODRIVE_GEOAPIFY_KEY")
 def geoapifyKey = geoapifyKeyEnv?.trim() ? geoapifyKeyEnv.trim() : ""
 
@@ -924,6 +939,8 @@ android {
 			buildConfigField "String", "CAIRODRIVE_MAPILLARY_TOKEN", "\"" + mapillaryToken + "\""
 			buildConfigField "String", "CAIRODRIVE_BESTTIME_PRIVATE_KEY", "\"" + bestTimePrivate + "\""
 			buildConfigField "String", "CAIRODRIVE_GEOAPIFY_KEY", "\"" + geoapifyKey + "\""
+			buildConfigField "String", "CAIRODRIVE_ORS_KEY", "\"" + orsKey + "\""
+			buildConfigField "String", "CAIRODRIVE_GRAPHHOPPER_KEY", "\"" + graphhopperKey + "\""
 			buildConfigField "String", "CAIRODRIVE_LOCATIONIQ_KEY", "\"" + locationIqKey + "\""
 			buildConfigField "String", "CAIRODRIVE_AZURE_MAPS_KEY", "\"" + azureMapsKey + "\""
 			buildConfigField "String", "CAIRODRIVE_TOMORROW_KEY", "\"" + tomorrowKey + "\""
@@ -982,6 +999,8 @@ android {
 			buildConfigField "String", "CAIRODRIVE_MAPILLARY_TOKEN", "\"" + mapillaryToken + "\""
 			buildConfigField "String", "CAIRODRIVE_BESTTIME_PRIVATE_KEY", "\"" + bestTimePrivate + "\""
 			buildConfigField "String", "CAIRODRIVE_GEOAPIFY_KEY", "\"" + geoapifyKey + "\""
+			buildConfigField "String", "CAIRODRIVE_ORS_KEY", "\"" + orsKey + "\""
+			buildConfigField "String", "CAIRODRIVE_GRAPHHOPPER_KEY", "\"" + graphhopperKey + "\""
 			buildConfigField "String", "CAIRODRIVE_LOCATIONIQ_KEY", "\"" + locationIqKey + "\""
 			buildConfigField "String", "CAIRODRIVE_AZURE_MAPS_KEY", "\"" + azureMapsKey + "\""
 			buildConfigField "String", "CAIRODRIVE_TOMORROW_KEY", "\"" + tomorrowKey + "\""

@@ -55,7 +55,18 @@ public final class ApiHealth {
 		GEOAPIFY("Geoapify (addresses, autocomplete)"),
 		LOCATIONIQ("LocationIQ (address fallback)"),
 		AZURE_MAPS("Azure Maps (weather along route)"),
-		TOMORROW("Tomorrow.io (visibility 2nd opinion)");
+		TOMORROW("Tomorrow.io (visibility 2nd opinion)"),
+		// The three online routing providers, in the order the race tries them. Each is a
+		// BACKUP for the ones before it, not an addition to them: exactly one online request is
+		// made per reroute, racing the local calculation. Racing all three at once would treble
+		// the data and battery cost of every reroute to win a few milliseconds over whichever
+		// was fastest anyway.
+		//
+		// Order is by headroom against the owner's ~12 reroutes per drive, measured from the
+		// provider dashboards on 2026-08-06:
+		ORS("OpenRouteService (online routing)"),
+		GEOAPIFY_ROUTING("Geoapify (online routing, backup)"),
+		GRAPHHOPPER("GraphHopper (online routing, 2nd backup)");
 
 		public final String label;
 
