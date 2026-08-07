@@ -90,6 +90,8 @@ public class CairoDriveMapMatchService {
 	private Handler handler;
 
 	private CairoDriveMapMatcher matcher;
+	/** Kept beside the matcher purely so the noCandidate diagnostic can read its counters. */
+	private ObfRoadSource roadSource;
 	private RoutingEnvironment environment;
 	private long environmentBuiltAt;
 
@@ -391,7 +393,8 @@ public class CairoDriveMapMatchService {
 			if (previous != null && previous.getCtx() != null) {
 				previous.getCtx().unloadAllData();
 			}
-			matcher = new CairoDriveMapMatcher(new ObfRoadSource(ctx));
+			roadSource = new ObfRoadSource(ctx);
+			matcher = new CairoDriveMapMatcher(roadSource);
 			CairoDriveLogger.getInstance().log("CD_MATCH",
 					"environment built mode=CAR ageLimitMs=" + CairoDriveMapMatching.ENV_MAX_AGE_MS);
 			return true;
@@ -423,6 +426,10 @@ public class CairoDriveMapMatchService {
 		private int cachedX31;
 		private int cachedY31;
 		private boolean hasCache;
+		/** Outcome of the last real load, for the noCandidate diagnostic. -1 until one has run. */
+		private int lastRaw = -1;
+		private int lastAccepted = -1;
+		private boolean lastWasCacheHit;
 
 		ObfRoadSource(RoutingContext ctx) {
 			this.ctx = ctx;
@@ -432,8 +439,10 @@ public class CairoDriveMapMatchService {
 		@Override
 		public List<RouteDataObject> loadRoadsAround(int x31, int y31, double radiusM) {
 			if (hasCache && MapUtils.squareRootDist31(cachedX31, cachedY31, x31, y31) < CACHE_REUSE_M) {
+				lastWasCacheHit = true;
 				return cached;
 			}
+			lastWasCacheHit = false;
 			List<RouteDataObject> raw = new ArrayList<>();
 			ctx.loadTileData(x31, y31, 17, raw);
 			if (raw.isEmpty()) {
@@ -446,6 +455,8 @@ public class CairoDriveMapMatchService {
 					out.add(r);
 				}
 			}
+			lastRaw = raw.size();
+			lastAccepted = out.size();
 			cached = out;
 			cachedX31 = x31;
 			cachedY31 = y31;
@@ -476,8 +487,30 @@ public class CairoDriveMapMatchService {
 		}
 		detailAt = now;
 		if (match == null) {
+			// `chainBroken=true` used to be a hardcoded literal on this line - it said nothing,
+			// because it said the same thing every time. What it looked like on the 2026-08-07
+			// 20:31 log is nine identical `noCandidate ms=0 chainBroken=true` lines from a phone
+			// parked in the middle of Cairo, where there are obviously roads, and no way at all to
+			// tell which of three very different faults that was:
+			//
+			//   raw=0                  loadTileData found nothing - the matcher's throwaway
+			//                          RoutingContext is not reading the .obf
+			//   raw>0 accepted=0       every road rejected by router.acceptLine - a PROFILE
+			//                          problem, and note this drive runs short_way + the fork's
+			//                          narrow-street rules
+			//   accepted>0             roads were there and buildCandidates dropped them all -
+			//                          the radius or the candidate filter is wrong
+			//
+			// cache=1 marks a fix that reused the previous road set, so a run of them traces back
+			// to ONE real load rather than looking like a repeated failure. Guessing between these
+			// from a parked-phone log is exactly the blind optimising this fork's notes forbid;
+			// one drive with this line settles it.
+			ObfRoadSource src = roadSource;
 			CairoDriveLogger.getInstance().log("CD_MATCH",
-					"noCandidate ms=" + elapsedMs + " chainBroken=true");
+					"noCandidate ms=" + elapsedMs
+							+ " raw=" + (src != null ? src.lastRaw : -1)
+							+ " accepted=" + (src != null ? src.lastAccepted : -1)
+							+ " cache=" + (src != null && src.lastWasCacheHit ? 1 : 0));
 			return;
 		}
 		StringBuilder b = new StringBuilder(200);
