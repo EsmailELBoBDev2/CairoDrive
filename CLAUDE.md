@@ -296,11 +296,42 @@ and removes jam ids on the shared builder and each change correctly invalidates 
 the cache refusing to serve a route that ignores a jam. A zero for that reason is not a fault; a
 zero with `routing signature changed` on every calculation is. `cd-analyze.py` separates the two.
 
-### 3. `CD_NARROW` — narrow-street data coverage
+### 3. `CD_NARROW` — and the rule set was penalising the wrong roads
+
+**The spec, in the owner's words (2026-08-07):** remove the roads only a **tuk-tuk** gets
+through. Keep every road a car gets through, **including the tight ones** — he lives on a street
+where two cars pass with difficulty and it must stay routable. Separately, avoid streets that are
+physically wide but undrivable: souks, and streets the residents have blocked.
+
+The original rules failed the second sentence outright. They penalised `width < 3.5 m` (a road a
+car drives fine) and carried `lanes=1 and not oneway → 0.35`, which is *literally* "two cars cannot
+pass" — a 2.9× cost penalty on driving home. **Both are gone. Do not restore the `lanes` rule.**
+
+Thresholds now: `<2.0 m → 0.02`, `<2.5 m → 0.05` (tuk-tuk territory), `<3.0 m → 0.35`, nothing
+above that.
+
+**The surface tier was doing all the work, and it was the wrong work.** Of 14 actionable ways on
+the 2026-08-07 route, **all 14 were tagged by `surface` and none by width or lanes** — so in Cairo
+this option was an unpaved-roads penalty wearing a narrow-streets name, and an unpaved road six
+metres wide is one he wants driven. Cut to `mud/sand/ground/dirt` at 0.45; `compacted`, `unpaved`,
+`cobblestone`, `sett` removed. `smoothness=bad`/`very_bad` removed for the same reason.
+
+**`fires=` is the number that matters now, not `actionable=`.** `actionable` counts ways carrying
+any tag the option *could* look at; `fires` counts ways a rule *actually* penalises.
+`RouteProvider.wouldBePenalised` mirrors the patch's selects value-for-value and **must be changed
+in the same commit as `patches/cairodrive_narrow_streets.py`** — a rule added to one and not the
+other silently stops being measured, which is how the previous mismatch survived.
 
 Compare against the city-wide Overpass numbers already measured for Cairo: **tags ~2.5%**,
-**alley names (حارة/زقاق/درب/ممر/عطفة) ~16.6%**. If `nameAlley` again beats `actionable`, it
-re-confirms that only a custom Egypt `.obf` can act on the signal — the router cannot read names.
+**alley names (حارة/زقاق/درب/ممر/عطفة) ~16.6%**. If `nameAlley` beats `fires`, it re-confirms that
+only a custom Egypt `.obf` can act on the signal — the router cannot read names.
+
+**"Blocked by the residents" has no OSM tag and never will** — the blockage is social and changes
+by the hour. Do not invent a proxy for it; that fails the same way an inferred-narrowness rule
+fails, confidently and on the roads he actually drives. The two mechanisms that do work are outside
+`routing.xml`: OsmAnd's avoid-roads list (`AvoidRoadsHelper` — long-press a road, it is impassable
+for every future route) and live closures (`CD_CLOSURE`). `highway=pedestrian` is the one taggable
+part of the souk case and is penalised at 0.05.
 
 ### Google Places: all five features are ON, and the console can still block them
 

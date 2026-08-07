@@ -23,7 +23,40 @@ WHY PRIORITY PENALTIES AND NOT A BLOCK
     length. It loses every shortcut race it should lose, while remaining usable when it is
     the only way home. That is "deprioritise, do not block".
 
-WHY THESE RULES AND NOT MORE AGGRESSIVE ONES
+WHAT THIS OPTION IS FOR, STATED AS THE OWNER STATED IT
+    Remove the roads only a TUK-TUK gets through. Keep every road a car gets through, including
+    the tight ones - he lives on a street where two cars pass with difficulty and that street
+    must stay routable. And avoid the streets that are physically wide but impossible to drive:
+    souks, and streets the residents have blocked off.
+
+    Those three sentences are the specification, and the first version of this file failed the
+    second one. It penalised width < 3.5 m and, worse, carried a 0.35 penalty on
+    `lanes=1 and not oneway` - which is literally "two cars cannot pass", i.e. a 2.9x cost
+    penalty on driving home. Both are gone.
+
+WHAT THE MAP CAN AND CANNOT SEE - read this before adding a rule
+    Measured on the 2026-08-07 drive by CD_NARROW: of 14 actionable ways on the route, ALL 14
+    were tagged by SURFACE and NONE by width, maxwidth or lanes. City-wide Overpass agrees -
+    width appears on 14 ways out of 71922. So the surface tier was doing essentially all of the
+    work, and an unpaved road six metres wide is one the owner wants driven. That tier is now
+    cut to the four surfaces that can strand a car rather than merely shake it.
+
+    The signal that WOULD identify a tuk-tuk alley in Cairo is the NAME - عطفة, حارة, زقاق, درب,
+    ممر are alleys by definition of what they are called, and CLAUDE.md records them on ~16.6%
+    of the network against ~2.5% for all routing tags combined. The router cannot read names:
+    only tags the map builder encoded into the .obf via rendering_types.xml reach it. Acting on
+    that signal needs a custom Egypt .obf that bakes the name convention into a tag. Nothing in
+    this file can substitute for it, and no rule here should pretend to.
+
+    A street blocked by the people who live on it, or by a market that sets up in it, carries
+    NO OSM tag whatsoever. It is not under-mapped, it is unmappable - the blockage is social and
+    changes by the hour. There is no accurate algorithm for it and this file does not attempt
+    one. The two mechanisms that DO work are outside routing.xml: OsmAnd's own avoid-roads list
+    (AvoidRoadsHelper, long-press a road and it becomes impassable for every future route), and
+    live closures from TomTom/HERE (CD_CLOSURE). A guess here would fail exactly the way an
+    inferred-narrowness rule fails - confidently, and on the roads he actually drives.
+
+WHY PRIORITY PENALTIES AND NOT A BLOCK
     Every rule below fires only on a tag that is POSITIVELY PRESENT. None of them infer
     narrowness from a missing tag, and that restraint is the whole design. In an
     under-mapped city, absence of `width` or `lanes` is the normal state of a perfectly
@@ -36,14 +69,12 @@ WHY THESE RULES AND NOT MORE AGGRESSIVE ONES
     THE BALANCE, stated explicitly, because it is easy to get backwards:
     upstream's own car defaults are residential 0.7 and unclassified 0.7 - and its comment
     calls unclassified "usually 90% of urban roads". Those two are NEVER touched here, and
-    that is what stops this option from penalising most of Cairo. Everything penalised
-    below is either measured (width), definitional (alley, driveway, parking_aisle, track)
-    or positively surveyed as poor (surface, tracktype).
+    that is what stops this option from penalising most of Cairo.
 
     Because these rules sit at the TOP of the priority block and the first match wins, every
     value must be BELOW the upstream default it shadows, or the rule silently makes that road
     class more attractive instead of less. Upstream rates track, service and living_street at
-    0.5, so anything here keyed on those must be under 0.5.
+    0.5, so 0.45 is the highest value any rule here may take.
 
     Also worth recording: `narrow=yes` - the tag that sounds perfect for this - is NOT
     usable. The router only sees tags the map builder encoded into the .obf via
@@ -74,52 +105,68 @@ PARAM_ID = "avoid_narrow_streets"
 # is handed as the preference default. So this is what makes the option ON out of the box without
 # any app-side code: the user can still turn it off in Route parameters.
 PARAM_DECL = (
-    '\t\t<parameter id="%s" name="Deprioritise narrow streets" default="true"'
-    ' description="Strongly prefer wider roads. Narrow streets are still used when they'
-    ' are the only way to the destination." type="boolean"/>\n' % PARAM_ID
+    '\t\t<parameter id="%s" name="Avoid roads a car cannot use" default="true"'
+    ' description="Avoids alleys, tracks and pedestrianised streets. Streets where two cars'
+    ' pass with difficulty are NOT avoided, and any road is still used when it is the only'
+    ' way to the destination." type="boolean"/>\n' % PARAM_ID
 )
 
 # Inserted at the TOP of the car profile's priority block: the engine takes the first
 # matching select, so these must be evaluated before upstream's own highway-class rules.
 #
-# Threshold reasoning: a car is ~1.8 m wide, ~2.0 m over the mirrors. Below 2.2 m is not
-# passable in practice; 2.2-2.8 m is passable but with no margin; 2.8-3.5 m is single-file.
-# Two cars cannot pass each other below ~4.5 m.
+# THE THRESHOLD, and the correction that produced it.
+#
+# The owner's requirement, in his words: remove the roads that only a TUK-TUK gets through.
+# Keep everything a car gets through, INCLUDING the tight ones - he lives on a street where
+# "two cars pass with difficulty", and that street must stay routable.
+#
+# A tuk-tuk is ~1.3 m wide. A car is ~1.8 m of body and ~2.0 m over the mirrors. So the line
+# he is drawing sits at roughly 2.5 m, and everything above it is a road he wants USED, not
+# avoided. The previous version of this file drew the line at 3.5 m and penalised a road a car
+# drives down perfectly well, which is the opposite of what was asked for.
 #
 # Operator semantics, from routing.xml's own documentation: ':' prefixes a PARAMETER you
 # defined, '$' prefixes a TAG loaded from the obf. So "$width" is the road's surveyed
-# width, and <lt value1="$width" value2="2.2"> reads "the road's width tag is under 2.2 m".
+# width, and <lt value1="$width" value2="2.5"> reads "the road's width tag is under 2.5 m".
+#
+# THE CEILING THAT BOUNDS EVERY VALUE HERE: these rules sit at the TOP of the priority block
+# and the first match wins, so a value must be BELOW the upstream default it shadows or the
+# rule makes that road MORE attractive with the option on. Upstream rates track, service and
+# living_street at 0.5, so 0.45 is the highest value any rule here may take.
 RULES = """
-			<!-- CairoDrive: deprioritise narrow streets. Penalties only, never value="-1",
-			     so a narrow street stays usable when it is the only way to the destination.
+			<!-- CairoDrive: deprioritise streets a car cannot use. Penalties only, never
+			     value="-1", so a road stays usable when it is the only way to the destination.
 			     Ordered by precision - first match wins, so surveyed width outranks inference. -->
 			<if param="%s">
-				<!-- Tier 1: surveyed width. Exact, no false positives, but rare in Cairo. -->
+				<!-- Tier 1: surveyed width. Exact, and the only tier that measures the thing the
+				     option is named after. Rare in Cairo - an Overpass count found width on 14 ways
+				     out of 71922 - so it almost never fires, which is precisely why the tiers below
+				     must not overreach on its behalf. -->
+				<select value="0.02" t="width">
+					<lt value1="$width" value2="2.0" type="length"/>
+				</select>
 				<select value="0.05" t="width">
-					<lt value1="$width" value2="2.2" type="length"/>
+					<lt value1="$width" value2="2.5" type="length"/>
 				</select>
-				<select value="0.15" t="width">
-					<lt value1="$width" value2="2.8" type="length"/>
+				<!-- 2.5-3.0 m: a car fits with no margin. A deterrent, not an exclusion, and
+				     deliberately the last width tier. Anything wider is a street the owner drives
+				     daily and wants chosen. -->
+				<select value="0.35" t="width">
+					<lt value1="$width" value2="3.0" type="length"/>
 				</select>
-				<select value="0.40" t="width">
-					<lt value1="$width" value2="3.5" type="length"/>
+				<!-- maxwidth is a legal limit rather than a measurement, but a road signed under
+				     2.5 m is not one a car is meant to be on. -->
+				<select value="0.02" t="maxwidth">
+					<lt value1="$maxwidth" value2="2.0" type="length"/>
 				</select>
-				<!-- maxwidth is a legal limit rather than a measurement, but a road signed
-				     under 2.8 m is narrow by anyone's definition. -->
 				<select value="0.05" t="maxwidth">
-					<lt value1="$maxwidth" value2="2.2" type="length"/>
-				</select>
-				<select value="0.15" t="maxwidth">
-					<lt value1="$maxwidth" value2="2.8" type="length"/>
+					<lt value1="$maxwidth" value2="2.5" type="length"/>
 				</select>
 
-				<!-- Tier 2: definitional. These tags do not correlate with "not a through
-				     road" - they mean it. Highest-precision signal available without a survey.
-				     Tracktype comes first so a graded track keeps its specific value instead of
-				     being swallowed by the generic highway=track rule below it. -->
-				<select value="0.25" t="tracktype" v="grade5"/>
-				<select value="0.30" t="tracktype" v="grade4"/>
-				<select value="0.45" t="tracktype" v="grade3"/>
+				<!-- Tier 2: definitional. These tags do not CORRELATE with "only a tuk-tuk gets
+				     through" - they mean it. This is the highest-precision signal available without
+				     a survey, and with width almost never tagged it is what the option actually
+				     runs on. -->
 				<select value="0.15" t="service" v="alley"/>
 				<select value="0.20" t="highway" v="track"/>
 				<!-- A driveway or a parking aisle is somebody's access, not a route. Upstream
@@ -128,58 +175,54 @@ RULES = """
 				<select value="0.20" t="service" v="driveway"/>
 				<select value="0.20" t="service" v="parking_aisle"/>
 
-				<!-- Tier 3: surface. Strong correlate in Cairo's informal areas, where the
-				     unpaved lanes and the narrow lanes are largely the same streets. Fires
-				     only where the surface was positively surveyed.
-				     NOTE: surface=earth and surface=soil are NOT listed here on purpose -
-				     rendering_types.xml rewrites both to surface=ground before the map is
-				     built, so a rule keyed on them could never fire. ground covers them. -->
-				<select value="0.25" t="surface" v="ground"/>
-				<select value="0.25" t="surface" v="dirt"/>
-				<select value="0.25" t="surface" v="mud"/>
-				<select value="0.25" t="surface" v="sand"/>
-				<select value="0.30" t="surface" v="grass"/>
-				<select value="0.30" t="surface" v="gravel"/>
-				<select value="0.30" t="surface" v="fine_gravel"/>
-				<select value="0.30" t="surface" v="pebblestone"/>
-				<select value="0.40" t="surface" v="unpaved"/>
-				<select value="0.45" t="surface" v="compacted"/>
-				<!-- Cobbles and setts are paved and perfectly drivable, so the penalty is mild.
-				     They are here because in Cairo they overwhelmingly mark the old quarters,
-				     where the streets they surface are narrow by construction. -->
-				<select value="0.35" t="surface" v="cobblestone"/>
-				<select value="0.35" t="surface" v="sett"/>
+				<!-- Tier 2b: WIDE BUT NOT FOR CARS. The owner asked for this case by name - a souk
+				     street that is physically wide and impossible to drive. Only the taggable half of
+				     it is reachable: highway=pedestrian is a street given over to people, which is
+				     what a mapped Cairo market street usually carries.
+				     motor_vehicle=no and vehicle=no are deliberately NOT here - upstream's access
+				     section already refuses those outright, so a priority rule would be dead weight
+				     that looks like it works.
+				     A street blocked by the people who live on it carries NO tag at all and cannot be
+				     inferred from any map. See the note in the module docstring. -->
+				<select value="0.05" t="highway" v="pedestrian"/>
 
-				<!-- Tier 3b: surveyed ride quality. Same standing as surface - positively
-				     surveyed, never inferred - and the same caveat: it measures how rough a road
-				     is, not how wide. It earns its place because in Cairo's informal areas the
-				     rough streets and the narrow streets are largely the same streets, and
-				     because smoothness is one of the few tags the router can actually see.
-				     Kept mild at the common end: "bad" only means a car needs decent wheels, and
-				     it is tagged on plenty of ordinary through-roads. -->
-				<select value="0.10" t="smoothness" v="impassable"/>
+				<!-- Tier 3: surface, and this tier has been CUT HARD on purpose.
+				     It used to run from 0.25 to 0.45 across ten values, and CD_NARROW on the
+				     2026-08-07 drive showed why that mattered: of 14 actionable ways on the route,
+				     all 14 were tagged by SURFACE and none by width or lanes. So in Cairo this option
+				     was, in practice, an unpaved-roads penalty wearing a narrow-streets name - and an
+				     unpaved road that is six metres wide is one the owner wants driven.
+				     What survives is the surfaces that can strand a car rather than merely shake it,
+				     and even those are mild. compacted, unpaved, cobblestone and sett are GONE: all
+				     four are drivable, and cobbles were only ever a proxy for "old quarter". -->
+				<select value="0.45" t="surface" v="mud"/>
+				<select value="0.45" t="surface" v="sand"/>
+				<select value="0.45" t="surface" v="ground"/>
+				<select value="0.45" t="surface" v="dirt"/>
+
+				<!-- Tier 3b: surveyed ride quality, cut for the same reason and to the same shape.
+				     `impassable` is a statement that a car does not get through, so it keeps the
+				     strongest penalty in the file. `bad` and `very_bad` are GONE - they are tagged on
+				     ordinary Cairo through-roads and say nothing about width. -->
+				<select value="0.05" t="smoothness" v="impassable"/>
 				<select value="0.15" t="smoothness" v="very_horrible"/>
-				<select value="0.20" t="smoothness" v="horrible"/>
-				<select value="0.30" t="smoothness" v="very_bad"/>
-				<select value="0.45" t="smoothness" v="bad"/>
+				<select value="0.30" t="smoothness" v="horrible"/>
 
-				<!-- Tier 4: one lane shared in both directions - two cars cannot pass. Weaker
-				     than the above because lanes=1 is sometimes tagged on wide one-way roads,
-				     hence the explicit oneway exclusions. -->
-				<select value="0.35" t="lanes" v="1">
-					<ifnot t="oneway" v="yes"/>
-					<ifnot t="oneway" v="-1"/>
-				</select>
+				<!-- Tier 3c: track grade. Roughness again, not width, so only the two grades that
+				     mean "barely a road" survive. grade3 is GONE at 0.45 it was nearly a no-op. -->
+				<select value="0.30" t="tracktype" v="grade5"/>
+				<select value="0.40" t="tracktype" v="grade4"/>
 
-				<!-- Tier 5: living streets are shared pedestrian/vehicle space and usually
-				     narrow, but they are also legitimate residential roads, so this is the
-				     mildest penalty in the set.
-				     0.35 and not 0.60: upstream already rates living_street 0.5 by default, and
-				     because these rules sit at the TOP of the block and first match wins, any
-				     value above 0.5 would OVERRIDE upstream and make living streets MORE
-				     attractive with the option switched on - the exact opposite of the intent.
-				     Every value here must stay below the upstream default it shadows. -->
-				<select value="0.35" t="highway" v="living_street"/>
+				<!-- REMOVED, and this is the single most important line in the file:
+				       <select value="0.35" t="lanes" v="1"> ... not oneway ...
+				     "one lane shared in both directions" is the definition of a street where two cars
+				     cannot pass - which is the owner's OWN STREET, and the exact class of road he
+				     asked to keep. It was a 2.9x cost penalty on driving home. Do not restore it. -->
+
+				<!-- Tier 4: living streets are shared pedestrian/vehicle space and often tight, but
+				     they are legitimate residential roads, so this is the mildest penalty in the set
+				     and sits just under upstream's own 0.5. -->
+				<select value="0.45" t="highway" v="living_street"/>
 			</if>
 """ % PARAM_ID
 

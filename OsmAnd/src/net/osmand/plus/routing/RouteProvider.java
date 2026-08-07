@@ -1896,7 +1896,7 @@ public class RouteProvider {
 			}
 			Set<Long> seen = new HashSet<>();
 			int ways = 0, width = 0, maxwidth = 0, lanes = 0, surface = 0, smoothness = 0;
-			int tracktype = 0, service = 0, actionable = 0;
+			int tracktype = 0, service = 0, actionable = 0, fires = 0;
 			int named = 0, narrowName = 0, wideName = 0;
 			for (RouteSegmentResult segment : segments) {
 				RouteDataObject obj = segment == null ? null : segment.getObject();
@@ -1924,6 +1924,9 @@ public class RouteProvider {
 				if (any) {
 					actionable++;
 				}
+				if (wouldBePenalised(obj)) {
+					fires++;
+				}
 				// The exact population this measurement was built to find: named as an alley,
 				// tagged as nothing. Recorded in memory only - nothing is uploaded until the
 				// driver asks, and the feature is off by default. See CairoDriveOsmFeedback.
@@ -1936,6 +1939,7 @@ public class RouteProvider {
 				return;
 			}
 			CairoDriveLogger.getInstance().log(NARROW_TAG, "ways=" + ways
+					+ " fires=" + fires + " (" + (fires * 100 / ways) + "%)"
 					+ " actionable=" + actionable + " (" + (actionable * 100 / ways) + "%)"
 					+ " width=" + width + " maxwidth=" + maxwidth + " lanes=" + lanes
 					+ " surface=" + surface + " smoothness=" + smoothness
@@ -1944,6 +1948,70 @@ public class RouteProvider {
 		} catch (RuntimeException e) {
 			// Diagnostics must never be able to break a navigation calculation.
 			log.error(NARROW_TAG + " failed to measure tag coverage", e);
+		}
+	}
+
+	/**
+	 * Would any rule in {@code patches/cairodrive_narrow_streets.py} actually fire on this way?
+	 *
+	 * <p>{@code actionable=} answers a different and weaker question - "does this way carry any
+	 * tag the option COULD in principle look at" - and the gap between the two was large enough to
+	 * mislead. On the 2026-08-07 drive it read 14 of 31, and every one of those 14 was a
+	 * {@code surface} value that the rule set has since stopped penalising. A measurement that
+	 * counts tags the rules ignore reports a feature doing work it is not doing.
+	 *
+	 * <p>So this mirrors the patch's actual selects, value for value. <b>The two must be changed
+	 * together</b>: a rule added there and not here silently stops being measured, which is how
+	 * the previous mismatch survived. Width is compared numerically rather than merely tested for
+	 * presence, because the whole point of the correction is that 3 m and 5 m are different
+	 * answers - the old rule set penalised both.
+	 */
+	private static boolean wouldBePenalised(@NonNull RouteDataObject obj) {
+		if (belowMetres(obj.getValue("width"), 3.0) || belowMetres(obj.getValue("maxwidth"), 2.5)) {
+			return true;
+		}
+		String service = obj.getValue("service");
+		if ("alley".equals(service) || "driveway".equals(service) || "parking_aisle".equals(service)) {
+			return true;
+		}
+		String highway = obj.getValue("highway");
+		if ("track".equals(highway) || "pedestrian".equals(highway) || "living_street".equals(highway)) {
+			return true;
+		}
+		String surface = obj.getValue("surface");
+		if ("mud".equals(surface) || "sand".equals(surface)
+				|| "ground".equals(surface) || "dirt".equals(surface)) {
+			return true;
+		}
+		String smoothness = obj.getValue("smoothness");
+		if ("impassable".equals(smoothness) || "very_horrible".equals(smoothness)
+				|| "horrible".equals(smoothness)) {
+			return true;
+		}
+		String tracktype = obj.getValue("tracktype");
+		return "grade5".equals(tracktype) || "grade4".equals(tracktype);
+	}
+
+	/**
+	 * Parses an OSM width value in metres. Returns false on anything it cannot read, which is the
+	 * safe direction: an unparsed width must not be reported as a penalty that did not happen.
+	 *
+	 * <p>Handles the bare number and the {@code "3 m"} form. Feet ({@code 8'} / {@code "8 ft"})
+	 * are deliberately NOT handled - they do not occur in Egypt, and guessing at a unit is how a
+	 * width of 8 becomes 8 metres.
+	 */
+	private static boolean belowMetres(@Nullable String value, double limit) {
+		if (value == null) {
+			return false;
+		}
+		String v = value.trim().toLowerCase(java.util.Locale.US);
+		if (v.endsWith("m")) {
+			v = v.substring(0, v.length() - 1).trim();
+		}
+		try {
+			return Double.parseDouble(v) < limit;
+		} catch (NumberFormatException e) {
+			return false;
 		}
 	}
 

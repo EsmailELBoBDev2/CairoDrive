@@ -684,24 +684,49 @@ def narrow_verdict(lines):
     Reported as counts as well as percentages: this is a per-window sample of whatever roads were
     near the car, and a handful of ways is not a measurement of Cairo.
     """
-    ways = actionable = alley = street = 0
+    ways = actionable = fires = alley = street = 0
+    has_fires = False
     for line in lines:
         d = kv(line)
+        has_fires = has_fires or "fires" in d
         ways += int(num(d, "ways", 0) or 0)
         actionable += int(num(d, "actionable", 0) or 0)
+        fires += int(num(d, "fires", 0) or 0)
         alley += int(num(d, "nameAlley", 0) or 0)
         street += int(num(d, "nameStreet", 0) or 0)
     if ways == 0:
         return
-    print("    totals: ways=%d actionable=%d (%.0f%%) nameAlley=%d (%.0f%%) nameStreet=%d"
-          % (ways, actionable, 100.0 * actionable / ways, alley, 100.0 * alley / ways, street))
+    if has_fires:
+        print("    totals: ways=%d fires=%d (%.0f%%) actionable=%d (%.0f%%) nameAlley=%d (%.0f%%) nameStreet=%d"
+              % (ways, fires, 100.0 * fires / ways, actionable, 100.0 * actionable / ways,
+                 alley, 100.0 * alley / ways, street))
+    else:
+        # No fires= field at all: a build from before the 2026-08-07 rule cut. Reporting fires=0
+        # here would read as "the option did nothing", which is a claim about the drive rather
+        # than about the build that produced the log.
+        print("    totals: ways=%d actionable=%d (%.0f%%) nameAlley=%d (%.0f%%) nameStreet=%d"
+              % (ways, actionable, 100.0 * actionable / ways, alley, 100.0 * alley / ways, street))
+        print("    (no fires= field - this log predates the rule cut, so how many ways were")
+        print("     actually PENALISED cannot be recovered from it. actionable= is the weaker")
+        print("     question: which ways carried a tag the option could look at.)")
+    # fires= counts ways a rule ACTUALLY penalises; actionable= counts ways carrying any tag the
+    # option could in principle look at. A large gap is the normal and healthy state after the
+    # 2026-08-07 rule cut - it means the surface tags that dominate Cairo are no longer being
+    # treated as evidence of narrowness. fires=0 across a whole drive means the option did
+    # nothing at all on the roads actually driven, which is a result, not a bug to paper over.
+    if has_fires and fires == 0:
+        print("    ==> fires=0: the narrow-street option changed NOTHING on this route. Either")
+        print("        the roads driven are all fine, or the signal is in the alley NAMES the")
+        print("        router cannot read - which is the custom Egypt .obf argument, not a rule.")
     if ways < 200:
         print("    (%d ways is a sample of what was near the car, NOT a measurement of Cairo -" % ways)
         print("     city-wide Overpass gave tags ~2.5%, alley names ~16.6%. Do not conclude yet.)")
-    if alley > actionable:
+    if not has_fires:
+        pass
+    elif alley > fires:
         print("    ==> alley names beat actionable tags, as CLAUDE.md predicts: the signal lives")
         print("        where the router CANNOT read it, which is the case for a custom Egypt .obf.")
-    elif actionable > alley:
+    elif fires > alley:
         print("    ==> actionable tags beat alley names - the OPPOSITE of CLAUDE.md's premise.")
         print("        If a real drive reproduces this, the custom .obf argument is WEAKER, not")
         print("        stronger: the router can already act on what is there.")
