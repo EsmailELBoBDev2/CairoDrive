@@ -958,6 +958,14 @@ def releaseLogging = fullLogging?.trim() ? fullLogging.trim() : "true"
 
 // Escaped and quoted because buildConfigField takes a Java literal, not a bare string.
 def placesKey = System.getenv("GOOGLE_PLACES_API_KEY")?.trim() ?: ""
+// Java string literal, with backslashes and quotes escaped. placesKeyLiteral and
+// routesKeyLiteral did this by hand and the other twelve keys did not - so a secret
+// containing a quote or a backslash produced a BuildConfig.java that does not compile,
+// and javac echoes the offending source line (which contains the key) into the CI log.
+// GitHub masks registered secret values, so the realistic outcome is a baffling compile
+// failure rather than a leak - but the asymmetry was unexplained and the fix is one line.
+def javaStr = { String v -> "\"" + (v == null ? "" : v).replace("\\", "\\\\").replace("\"", "\\\"") + "\"" }
+
 def placesKeyLiteral = "\"" + placesKey.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
 // Routes API key, for live traffic on the route. DEFAULTS TO THE PLACES KEY, because one Google
@@ -1069,24 +1077,24 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_REVIEWS", placesReviews
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_AUTOCOMPLETE", placesAutocomplete
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_NEARBY", placesNearby
-			buildConfigField "String", "CAIRODRIVE_TOMTOM_KEY", "\"" + tomtomKey + "\""
-			buildConfigField "String", "CAIRODRIVE_HERE_KEY", "\"" + hereKey + "\""
-			buildConfigField "String", "CAIRODRIVE_OPENWEATHER_KEY", "\"" + openWeatherKey + "\""
-			buildConfigField "String", "CAIRODRIVE_MAPILLARY_TOKEN", "\"" + mapillaryToken + "\""
-			buildConfigField "String", "CAIRODRIVE_BESTTIME_PRIVATE_KEY", "\"" + bestTimePrivate + "\""
-			buildConfigField "String", "CAIRODRIVE_GEOAPIFY_KEY", "\"" + geoapifyKey + "\""
-			buildConfigField "String", "CAIRODRIVE_ORS_KEY", "\"" + orsKey + "\""
-			buildConfigField "String", "CAIRODRIVE_GRAPHHOPPER_KEY", "\"" + graphhopperKey + "\""
-			buildConfigField "String", "CAIRODRIVE_LOCATIONIQ_KEY", "\"" + locationIqKey + "\""
-			buildConfigField "String", "CAIRODRIVE_AZURE_MAPS_KEY", "\"" + azureMapsKey + "\""
-			buildConfigField "String", "CAIRODRIVE_TOMORROW_KEY", "\"" + tomorrowKey + "\""
-			buildConfigField "String", "CAIRODRIVE_BESTTIME_PUBLIC_KEY", "\"" + bestTimePublic + "\""
+			buildConfigField "String", "CAIRODRIVE_TOMTOM_KEY", javaStr(tomtomKey)
+			buildConfigField "String", "CAIRODRIVE_HERE_KEY", javaStr(hereKey)
+			buildConfigField "String", "CAIRODRIVE_OPENWEATHER_KEY", javaStr(openWeatherKey)
+			buildConfigField "String", "CAIRODRIVE_MAPILLARY_TOKEN", javaStr(mapillaryToken)
+			buildConfigField "String", "CAIRODRIVE_BESTTIME_PRIVATE_KEY", javaStr(bestTimePrivate)
+			buildConfigField "String", "CAIRODRIVE_GEOAPIFY_KEY", javaStr(geoapifyKey)
+			buildConfigField "String", "CAIRODRIVE_ORS_KEY", javaStr(orsKey)
+			buildConfigField "String", "CAIRODRIVE_GRAPHHOPPER_KEY", javaStr(graphhopperKey)
+			buildConfigField "String", "CAIRODRIVE_LOCATIONIQ_KEY", javaStr(locationIqKey)
+			buildConfigField "String", "CAIRODRIVE_AZURE_MAPS_KEY", javaStr(azureMapsKey)
+			buildConfigField "String", "CAIRODRIVE_TOMORROW_KEY", javaStr(tomorrowKey)
+			buildConfigField "String", "CAIRODRIVE_BESTTIME_PUBLIC_KEY", javaStr(bestTimePublic)
 			buildConfigField "boolean", "CAIRODRIVE_BESTTIME", bestTime
 			buildConfigField "boolean", "CAIRODRIVE_OPEN_CHARGE_MAP", openChargeMap
 			buildConfigField "boolean", "CAIRODRIVE_RESUME_ZIP", resumeZip
-			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_ID", "\"" + osmOauthId + "\""
-			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_SECRET", "\"" + osmOauthSecret + "\""
-			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_REDIRECT", "\"" + osmOauthRedirect + "\""
+			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_ID", javaStr(osmOauthId)
+			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_SECRET", javaStr(osmOauthSecret)
+			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_REDIRECT", javaStr(osmOauthRedirect)
 			buildConfigField "boolean", "CAIRODRIVE_TOMTOM_TRAFFIC", tomtomTraffic
 			buildConfigField "boolean", "CAIRODRIVE_WEATHER_HAZARD", weatherHazard
 			buildConfigField "boolean", "CAIRODRIVE_SUN_GLARE", sunGlare
@@ -1136,24 +1144,24 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_REVIEWS", placesReviews
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_AUTOCOMPLETE", placesAutocomplete
 			buildConfigField "boolean", "CAIRODRIVE_PLACES_NEARBY", placesNearby
-			buildConfigField "String", "CAIRODRIVE_TOMTOM_KEY", "\"" + tomtomKey + "\""
-			buildConfigField "String", "CAIRODRIVE_HERE_KEY", "\"" + hereKey + "\""
-			buildConfigField "String", "CAIRODRIVE_OPENWEATHER_KEY", "\"" + openWeatherKey + "\""
-			buildConfigField "String", "CAIRODRIVE_MAPILLARY_TOKEN", "\"" + mapillaryToken + "\""
-			buildConfigField "String", "CAIRODRIVE_BESTTIME_PRIVATE_KEY", "\"" + bestTimePrivate + "\""
-			buildConfigField "String", "CAIRODRIVE_GEOAPIFY_KEY", "\"" + geoapifyKey + "\""
-			buildConfigField "String", "CAIRODRIVE_ORS_KEY", "\"" + orsKey + "\""
-			buildConfigField "String", "CAIRODRIVE_GRAPHHOPPER_KEY", "\"" + graphhopperKey + "\""
-			buildConfigField "String", "CAIRODRIVE_LOCATIONIQ_KEY", "\"" + locationIqKey + "\""
-			buildConfigField "String", "CAIRODRIVE_AZURE_MAPS_KEY", "\"" + azureMapsKey + "\""
-			buildConfigField "String", "CAIRODRIVE_TOMORROW_KEY", "\"" + tomorrowKey + "\""
-			buildConfigField "String", "CAIRODRIVE_BESTTIME_PUBLIC_KEY", "\"" + bestTimePublic + "\""
+			buildConfigField "String", "CAIRODRIVE_TOMTOM_KEY", javaStr(tomtomKey)
+			buildConfigField "String", "CAIRODRIVE_HERE_KEY", javaStr(hereKey)
+			buildConfigField "String", "CAIRODRIVE_OPENWEATHER_KEY", javaStr(openWeatherKey)
+			buildConfigField "String", "CAIRODRIVE_MAPILLARY_TOKEN", javaStr(mapillaryToken)
+			buildConfigField "String", "CAIRODRIVE_BESTTIME_PRIVATE_KEY", javaStr(bestTimePrivate)
+			buildConfigField "String", "CAIRODRIVE_GEOAPIFY_KEY", javaStr(geoapifyKey)
+			buildConfigField "String", "CAIRODRIVE_ORS_KEY", javaStr(orsKey)
+			buildConfigField "String", "CAIRODRIVE_GRAPHHOPPER_KEY", javaStr(graphhopperKey)
+			buildConfigField "String", "CAIRODRIVE_LOCATIONIQ_KEY", javaStr(locationIqKey)
+			buildConfigField "String", "CAIRODRIVE_AZURE_MAPS_KEY", javaStr(azureMapsKey)
+			buildConfigField "String", "CAIRODRIVE_TOMORROW_KEY", javaStr(tomorrowKey)
+			buildConfigField "String", "CAIRODRIVE_BESTTIME_PUBLIC_KEY", javaStr(bestTimePublic)
 			buildConfigField "boolean", "CAIRODRIVE_BESTTIME", bestTime
 			buildConfigField "boolean", "CAIRODRIVE_OPEN_CHARGE_MAP", openChargeMap
 			buildConfigField "boolean", "CAIRODRIVE_RESUME_ZIP", resumeZip
-			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_ID", "\"" + osmOauthId + "\""
-			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_SECRET", "\"" + osmOauthSecret + "\""
-			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_REDIRECT", "\"" + osmOauthRedirect + "\""
+			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_ID", javaStr(osmOauthId)
+			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_SECRET", javaStr(osmOauthSecret)
+			buildConfigField "String", "CAIRODRIVE_OSM_OAUTH_REDIRECT", javaStr(osmOauthRedirect)
 			buildConfigField "boolean", "CAIRODRIVE_TOMTOM_TRAFFIC", tomtomTraffic
 			buildConfigField "boolean", "CAIRODRIVE_WEATHER_HAZARD", weatherHazard
 			buildConfigField "boolean", "CAIRODRIVE_SUN_GLARE", sunGlare

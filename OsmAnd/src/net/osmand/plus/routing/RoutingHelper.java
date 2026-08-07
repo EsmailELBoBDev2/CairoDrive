@@ -320,6 +320,10 @@ public class RoutingHelper {
 		// first minute produce identical silence, and they mean opposite things.
 		net.osmand.plus.cairodrive.CairoDriveFastReroute.logSummary();
 		net.osmand.plus.cairodrive.CairoDriveFastReroute.navigationStopped();
+		// Assigned only inside the route-non-empty branch, so without this a tightened 30 m
+		// survived into the NEXT navigation session and governed the off-route voice prompt until
+		// the first guided fix of the new route.
+		lastAllowableDeviation = 0;
 		net.osmand.plus.cairodrive.CairoDriveEarlyReroute.reset();
 		net.osmand.plus.cairodrive.CairoDriveWrongRoad.onRouteChanged(null);
 		net.osmand.plus.cairodrive.providers.SunGlareProvider.reset(app);
@@ -575,7 +579,12 @@ public class RoutingHelper {
 				List<Location> routeNodes = route.getImmutableAllLocations();
 				int currentRoute = route.currentRoute;
 				double allowableDeviation = route.getRouteRecalcDistance();
-				if (allowableDeviation <= 0) {
+				// A non-zero value here is the user's OWN "Recalculate route within X" setting, and
+				// the two tightenings below were reasoned about against the derived default, not
+				// against a number somebody typed. Multiplying an explicit 500 m down to 150 m near
+				// a turn is overriding a preference, not tuning a heuristic.
+				boolean userChoseDeviation = allowableDeviation > 0;
+				if (!userChoseDeviation) {
 					allowableDeviation = getDefaultAllowedDeviation(settings, route.getAppMode(), posTolerance);
 				}
 				// TIGHTEN THE THRESHOLD NEAR A MANOEUVRE. The 50-120 m default answers "is this
@@ -594,7 +603,7 @@ public class RoutingHelper {
 				// seconds on EVERY deviation rather than only on missed turns above 40 degrees.
 				double manoeuvreM = distanceToNextManoeuvre();
 				boolean nearManoeuvre = manoeuvreM >= 0 && manoeuvreM <= NEAR_MANOEUVRE_M;
-				if (nearManoeuvre && BuildConfig.CAIRODRIVE_TIGHTEN_NEAR_TURN) {
+				if (nearManoeuvre && BuildConfig.CAIRODRIVE_TIGHTEN_NEAR_TURN && !userChoseDeviation) {
 					allowableDeviation *= NEAR_MANOEUVRE_TOLERANCE_MULT;
 				}
 				// The last of the wait, taken from the rule that owns it. The simulation says the
@@ -602,8 +611,10 @@ public class RoutingHelper {
 				// so this is where the remaining seconds actually are. It disarms itself if the
 				// drive shows it was too much; see CairoDriveFastReroute.
 				double beforeFast = allowableDeviation;
-				allowableDeviation = net.osmand.plus.cairodrive.CairoDriveFastReroute
-						.tolerance(allowableDeviation);
+				if (!userChoseDeviation) {
+					allowableDeviation = net.osmand.plus.cairodrive.CairoDriveFastReroute
+							.tolerance(allowableDeviation);
+				}
 				lastAllowableDeviation = (float) allowableDeviation;
 
 				// 2. Analyze if we need to recalculate route
@@ -668,18 +679,20 @@ public class RoutingHelper {
 							offRoute || actOnWrongRoad, distOrth, beforeFast)) {
 						log.info("Recalculate route, because correlation  : " + distOrth); //$NON-NLS-1$
 						calculateRoute = !settings.DISABLE_OFFROUTE_RECALC.get();
-						// The falsification test. Counted on the DISPATCH, because a deviation the
-						// hysteresis refused cost nothing and proves nothing.
-						if (calculateRoute) {
-							net.osmand.plus.cairodrive.CairoDriveFastReroute.rerouteHappened(
-									System.currentTimeMillis());
-						}
 						// If a calculation for this same deviation is already running, it IS the
 						// answer - dispatching a second would queue behind it on the single
 						// routing thread and arrive later than doing nothing at all.
 						if (calculateRoute
 								&& net.osmand.plus.cairodrive.CairoDriveEarlyReroute.confirm()) {
 							calculateRoute = false;
+						}
+						// The falsification test, counted AFTER the suppression above rather than
+						// before it. A deviation absorbed by an in-flight early search produced no
+						// new calculation, so counting it made "4 reroutes in 90 s" not mean four
+						// reroutes and biased the guard toward disarming on a drive that was fine.
+						if (calculateRoute) {
+							net.osmand.plus.cairodrive.CairoDriveFastReroute.rerouteHappened(
+									System.currentTimeMillis());
 						}
 					} else if (BuildConfig.CAIRODRIVE_EARLY_REROUTE
 							&& !settings.DISABLE_OFFROUTE_RECALC.get()

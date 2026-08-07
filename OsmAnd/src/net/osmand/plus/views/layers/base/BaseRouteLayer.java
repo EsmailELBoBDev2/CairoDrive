@@ -198,19 +198,61 @@ public abstract class BaseRouteLayer extends OsmandMapLayer {
 	 *
 	 * <p>Driven off {@code isDeviatedFromRoute}, which upstream sets from the distance test and
 	 * which this fork deliberately keeps free of the map matcher and the early-start machinery.
-	 * That matters for cost: a colour change makes RouteRenderState rebuild the whole line
-	 * geometry, so this must flip about twice per deviation, not once per fix. The distance test
-	 * has the hysteresis of the threshold itself, and none of today's early-start work touches
-	 * it - which is why the flag was kept clean.
+	 *
+	 * <p>DEBOUNCED, and that is not optional. A colour change makes RouteRenderState rebuild the
+	 * whole line geometry, and {@code isDeviatedFromRoute} is a bare {@code distOrth > allowable}
+	 * with no dead band at all - the hysteresis in this fork gates RECALCULATION, not this flag,
+	 * and an earlier version of this comment claimed otherwise. A driver whose offset straddles the
+	 * threshold flips it every fix, rebuilding the entire route line at 1 Hz on a device already
+	 * measured at 46.9 ms per frame. CAIRODRIVE_FAST_REROUTE moved that threshold down to 30-39 m,
+	 * which is where a driver on a wide arterial actually sits, so the straddle got more likely
+	 * rather than less. Requiring the new state to hold for {@link #DIM_DEBOUNCE_MS} costs at most
+	 * two seconds of a correct indication and removes the churn entirely.
 	 */
+	/** New state must hold this long before the line is redrawn in it. */
+	private static final long DIM_DEBOUNCE_MS = 2000;
+
+	private boolean dimmed;
+	private boolean pendingDim;
+	private long pendingDimSince;
+
+	/** @return the debounced off-route state. Drawn from the render thread; state is thread-confined. */
+	private boolean isDimmedDebounced(boolean offRoute) {
+		long now = System.currentTimeMillis();
+		if (offRoute == dimmed) {
+			pendingDimSince = 0;
+			return dimmed;
+		}
+		if (pendingDimSince == 0 || pendingDim != offRoute) {
+			pendingDim = offRoute;
+			pendingDimSince = now;
+			return dimmed;
+		}
+		if (now - pendingDimSince >= DIM_DEBOUNCE_MS) {
+			dimmed = offRoute;
+			pendingDimSince = 0;
+		}
+		return dimmed;
+	}
+
 	@ColorInt
 	private int dimIfOffRoute(@ColorInt int color) {
 		try {
 			if (!BuildConfig.CAIRODRIVE_DIM_ROUTE_OFF_ROUTE) {
 				return color;
 			}
+			if (previewRouteLineInfo != null) {
+				// The Route line appearance PREVIEW, not the live route. PreviewRouteLineLayer
+				// extends this class, so a driver who opened that screen while off route saw the
+				// sample at 40% alpha while the colour card beside it (which uses the undimmed
+				// getter) showed full strength - and picked a colour against a wrong sample.
+				return color;
+			}
 			RoutingHelper helper = view.getApplication().getRoutingHelper();
-			if (!helper.isFollowingMode() || !helper.isDeviatedFromRoute()) {
+			if (!helper.isFollowingMode()) {
+				return color;
+			}
+			if (!isDimmedDebounced(helper.isDeviatedFromRoute())) {
 				return color;
 			}
 			// Alpha only. Changing the hue would collide with the colouring types the user can

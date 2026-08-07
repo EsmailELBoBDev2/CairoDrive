@@ -505,7 +505,13 @@ public final class NavigationScreen extends BaseAndroidAutoScreen implements Sur
 	 */
 	private boolean isReroutingVisibly() {
 		try {
-			return isRerouting() && getApp().getRoutingHelper().isDeviatedFromRoute();
+			return isRerouting()
+					&& (getApp().getRoutingHelper().isDeviatedFromRoute()
+					// ...or road identity fired. That path deliberately leaves
+					// isDeviatedFromRoute false, so without this a wrong-road reroute swapped the
+					// route under the driver with nothing on screen to say it was happening.
+					|| net.osmand.plus.cairodrive.CairoDriveWrongRoad.actedRecently(
+							System.currentTimeMillis()));
 		} catch (Throwable t) {
 			return isRerouting();
 		}

@@ -31,6 +31,15 @@ public class RouteCalculationParams {
 	 * RouteProvider, after this task has already been queued.
 	 */
 	public long cairoDriveDispatchedAt;
+	/**
+	 * Whether a CairoDriveEarlyReroute calculation was in flight when this task was dispatched.
+	 * <p>
+	 * mayInstall reads and CLEARS a global static latch, so without this every task consumed it -
+	 * including ones with nothing to do with the deviation. A road-closure or settings
+	 * recalculation finishing while an early start was pending would find confirmed==false and
+	 * have its own perfectly good route DISCARDED, leaving the driver on the closed road.
+	 */
+	public boolean cairoDriveEarlyInFlight;
 	public boolean fast;
 	public boolean leftSide;
 	public boolean startTransportStop;

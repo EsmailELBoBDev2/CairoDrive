@@ -852,7 +852,10 @@ class RouteRecalculationHelper {
 				// were written to bound.
 				int reusedTailM = previous.getDistanceFromPoint(rejoinIndex);
 				repairDistM = Math.max(0, repaired.getWholeDistance() - reusedTailM);
-				if (repairDistM > REPAIR_ABSOLUTE_CAP_M + alongRouteM) {
+				// Absolute, as the constant's javadoc says. It was REPAIR_ABSOLUTE_CAP_M + alongRouteM,
+			// and alongRouteM reaches repairCutoffM() = 2400, so the effective cap was 4900 m -
+			// nearly twice the documented one, on the guard whose whole job is to say "never".
+			if (repairDistM > REPAIR_ABSOLUTE_CAP_M) {
 					reject = "tooLong";
 				} else if (repairDistM > REPAIR_DETOUR_RATIO * Math.max(alongRouteM, REPAIR_MIN_BASE_M)
 						+ alongRouteM) {
@@ -1034,6 +1037,7 @@ class RouteRecalculationHelper {
 			// queued and ends before the result is handed to any listener. The driver experiences
 			// the whole span, and the parts outside the search have never been priced.
 			params.cairoDriveDispatchedAt = System.currentTimeMillis();
+			params.cairoDriveEarlyInFlight = CairoDriveEarlyReroute.isInFlight();
 			CairoDriveLogger.getInstance().log("CD_REROUTE", "dispatched"
 					+ " sinceLastMs=" + sinceLastMs
 					+ " evalWaitMs=" + evalWaitInterval
@@ -1234,9 +1238,14 @@ class RouteRecalculationHelper {
 			if (res.isCalculated() || res.hasMissingMaps()) {
 				if (params.alternateResultListener != null) {
 					params.alternateResultListener.onRouteCalculated(res);
-				} else if (!CairoDriveEarlyReroute.mayInstall(
+				} else if (params.cairoDriveEarlyInFlight && !CairoDriveEarlyReroute.mayInstall(
 						routingHelper.isDeviatedFromRoute(), System.currentTimeMillis(),
 						routingHelper.getLastFixedLocation())) {
+					// Gated on this task having actually been dispatched under an early start.
+					// mayInstall reads and clears a GLOBAL static, so every task used to consume
+					// it - a closure or settings recalculation completing while an early start was
+					// pending would see confirmed==false and throw its own route away, keeping the
+					// driver on a road the app had just declared closed.
 					// An early start whose deviation never confirmed. The hysteresis has not been
 					// weakened by starting sooner - it is applied here instead, on exactly the
 					// evidence it would have had. The calculation is thrown away, which is the

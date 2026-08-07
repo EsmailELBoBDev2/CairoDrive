@@ -1558,6 +1558,57 @@ jobs:
             echo "::warning::The alias in CAIRODRIVE_KEY_ALIAS/ANDROID_KEY_ALIAS was not found in the keystore listing above."
           fi
 
+      # SAME STEP AS THE DEV JOB, and it belongs here more than there. This is the job that
+      # produces the Play upload, and it had no key check at all - its summary reported one
+      # key of thirteen. The failure this guards against (a renamed or removed secret resolving
+      # silently to an empty string, shipping a feature inert) already happened once, was fixed
+      # in dev, and was left live in the job that actually reaches users.
+      - name: Key wiring
+        env:
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          TOMTOM_API_KEY: ${{ secrets.TOMTOM_API_KEY }}
+          OPENWEATHER_KEY: ${{ secrets.OPENWEATHER_KEY }}
+          HERE_API_KEY: ${{ secrets.HERE_API_KEY }}
+          BESTTIME_API_KEY: ${{ secrets.BESTTIME_API_KEY }}
+          GEOAPIFY_KEY: ${{ secrets.GEOAPIFY_KEY }}
+          ORS_API_KEY: ${{ secrets.ORS_API_KEY }}
+          GRAPHHOPPER_API_KEY: ${{ secrets.GRAPHHOPPER_API_KEY }}
+          LOCATIONIQ_KEY: ${{ secrets.LOCATIONIQ_KEY }}
+          AZURE_MAPS_KEY: ${{ secrets.AZURE_MAPS_KEY }}
+          TOMORROW_KEY: ${{ secrets.TOMORROW_KEY }}
+          OSM_OAUTH_ID: ${{ secrets.OSM_OAUTH_ID }}
+          MAPILLARY_TOKEN: ${{ secrets.MAPILLARY_TOKEN }}
+        run: |
+          # WARN, never fail: a build with no keys is a legitimate configuration and the app is
+          # written to degrade to offline behaviour. What is NOT legitimate is not knowing.
+          #
+          # This exists because the env blocks below read CAIRODRIVE_TOMTOM_KEY and
+          # CAIRODRIVE_OPENWEATHER_KEY, which are not secret names in this repository - the real
+          # ones are TOMTOM_API_KEY and OPENWEATHER_KEY. GitHub resolves a missing secret to an
+          # empty string with no warning, so TomTom traffic and the dust/weather hazards were
+          # built with no key and were inert in every build, silently. Only the presence or
+          # absence of each key is printed; no value is ever echoed.
+          for pair in "GOOGLE_PLACES_API_KEY:search + Google traffic" \
+                      "TOMTOM_API_KEY:TomTom traffic and closures" \
+                      "OPENWEATHER_KEY:dust and air-quality warnings" \
+                      "HERE_API_KEY:HERE raster traffic overlay" \
+                      "BESTTIME_API_KEY:popular times" \
+                      "GEOAPIFY_KEY:addresses and autocomplete" \
+                      "ORS_API_KEY:online routing, raced against the local calculation" \
+                      "GRAPHHOPPER_API_KEY:online routing, 2nd backup" \
+                      "LOCATIONIQ_KEY:address fallback (second geocoder)" \
+                      "AZURE_MAPS_KEY:weather along the route" \
+                      "TOMORROW_KEY:independent visibility check" \
+                      "OSM_OAUTH_ID:OSM edits under THIS app's client, not upstream's" \
+                      "MAPILLARY_TOKEN:Mapillary photos under THIS app's token"; do
+            name="${pair%%:*}"; what="${pair#*:}"
+            if [ -n "${!name:-}" ]; then
+              echo "  present : ${name}  (${what})"
+            else
+              echo "::warning::${name} is not set - ${what} will be inert in this build."
+            fi
+          done
+
       - name: Build release bundle (AAB)
         working-directory: android
         env:

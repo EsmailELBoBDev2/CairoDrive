@@ -10,6 +10,7 @@ import net.osmand.plus.OsmandApplication;
 import net.osmand.plus.helpers.CairoDriveLog;
 import net.osmand.plus.routing.RouteCalculationResult;
 import net.osmand.router.RouteSegmentResult;
+import net.osmand.util.MapUtils;
 
 import java.util.Collections;
 import java.util.HashSet;
@@ -103,6 +104,9 @@ public final class CairoDriveWrongRoad {
 	 */
 	private static final int REQUIRED_RUN = 2;
 
+	/** Longest gap between two matches that can still count as the same run. */
+	private static final long MAX_RUN_GAP_MS = 6000;
+
 	/**
 	 * Silence after a new route is installed.
 	 *
@@ -116,11 +120,13 @@ public final class CairoDriveWrongRoad {
 	private static volatile long runRoadId;
 	private static volatile int runLength;
 	private static volatile long lastMatchTime;
+	private static volatile long runLastAt;
+	private static volatile long lastActedAt;
 
 	// Gate counters, reset when the summary is written. They exist so a drive can say WHY the
 	// feature was silent, which is the first question a zero firing count raises.
 	private static volatile int seen, gateStale, gateSettled, gateDegraded, gateOffset, gateDev,
-			gateRun, gateOnRoute, fired;
+			gateRun, gateOnRoute, gateDrift, fired;
 
 	private CairoDriveWrongRoad() {
 	}
@@ -223,6 +229,19 @@ public final class CairoDriveWrongRoad {
 				gateOffset++;
 				return false;
 			}
+			// The drift gate. Declared here since this class was written, documented as "the match
+			// must have been computed near where the driver is now", and never actually applied -
+			// only the 2500 ms age test was. At 50 km/h that window puts the verdict ~35 m behind
+			// the car, which is past a junction the driver may have taken correctly ONTO the route.
+			// CairoDriveMatchedPosition:217 already enforces exactly this for the display path, the
+			// weaker consumer; this one can trigger a reroute.
+			double driftM = MapUtils.squareRootDist31(m.fixX31, m.fixY31,
+					MapUtils.get31TileNumberX(fix.getLongitude()),
+					MapUtils.get31TileNumberY(fix.getLatitude()));
+			if (driftM > MAX_SOURCE_DRIFT_M) {
+				gateDrift++;
+				return false;
+			}
 			// The rule that kills the flyover and the opposite carriageway: both are genuinely
 			// different roads sitting almost on top of the route.
 			if (devM < MIN_DEV_M) {
@@ -235,17 +254,33 @@ public final class CairoDriveWrongRoad {
 				runLength = 0;
 				return false;
 			}
-			if (runRoadId == m.roadId) {
+			// "Consecutive" has to mean consecutive IN TIME. Every gate above returns before this
+			// bookkeeping, so a gated fix neither advanced nor broke the run - a qualifying match
+			// at t=0 and another at t=40s, with forty seconds of degraded fixes between them, was
+			// counted as a corroborated run of 2 and fired a reroute. The class javadoc prices
+			// REQUIRED_RUN at "12-24 m of extra travel", which assumes adjacency the code never
+			// enforced.
+			if (runRoadId == m.roadId && now - runLastAt <= MAX_RUN_GAP_MS) {
 				runLength++;
 			} else {
 				runRoadId = m.roadId;
 				runLength = 1;
 			}
+			runLastAt = now;
 			if (runLength < REQUIRED_RUN) {
 				gateRun++;
 				return false;
 			}
 			fired++;
+			if (mayAct()) {
+				// So the DRIVER is told. isDeviatedFromRoute stays false on this path by design -
+				// that is what keeps a matcher error from blanking the manoeuvre card - but it is
+				// also what every driver-facing surface keys off, so a reroute triggered purely by
+				// road identity happened in complete silence: no "Recalculating", no dimmed line,
+				// no voice, and the arrow still snapped to the route they had left. The route then
+				// changed underneath them with no warning at all.
+				lastActedAt = now;
+			}
 			CairoDriveLog.log(TRACE_TAG, "FIRED devM=" + Math.round(devM)
 					+ " allowM=" + Math.round(allowableM)
 					+ " roadId=" + m.roadId + " road=" + m.roadName
@@ -265,6 +300,11 @@ public final class CairoDriveWrongRoad {
 	 * <p>Separate from {@link #evaluate} so the observation can ship, and be judged from a drive,
 	 * without being able to move a route.
 	 */
+	/** Did road identity trigger a reroute in the last few seconds? For the driver-facing surfaces. */
+	public static boolean actedRecently(long now) {
+		return lastActedAt > 0 && now - lastActedAt < 15_000;
+	}
+
 	public static boolean mayAct() {
 		// The disarm check is not decoration. This is the highest-risk actuation in the fork - a
 		// matcher error here reroutes a driver who is on the correct road - and the flap guard was
@@ -283,9 +323,10 @@ public final class CairoDriveWrongRoad {
 			CairoDriveLog.log(TRACE_TAG, "summary matches=" + seen + " fired=" + fired
 					+ " gated=[stale:" + gateStale + " unsettled:" + gateSettled
 					+ " degraded:" + gateDegraded + " offset:" + gateOffset
-					+ " tooClose:" + gateDev + " run:" + gateRun + " onRoute:" + gateOnRoute + "]");
+					+ " tooClose:" + gateDev + " drift:" + gateDrift
+					+ " run:" + gateRun + " onRoute:" + gateOnRoute + "]");
 			seen = fired = gateStale = gateSettled = gateDegraded = 0;
-			gateOffset = gateDev = gateRun = gateOnRoute = 0;
+			gateOffset = gateDev = gateRun = gateOnRoute = gateDrift = 0;
 		} catch (Throwable t) {
 			// ignored
 		}
