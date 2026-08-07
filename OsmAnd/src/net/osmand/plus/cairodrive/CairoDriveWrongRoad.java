@@ -265,7 +265,12 @@ public final class CairoDriveWrongRoad {
 	 * without being able to move a route.
 	 */
 	public static boolean mayAct() {
-		return BuildConfig.CAIRODRIVE_WRONG_ROAD_ACT;
+		// The disarm check is not decoration. This is the highest-risk actuation in the fork - a
+		// matcher error here reroutes a driver who is on the correct road - and the flap guard was
+		// documented as covering it while `disarmed` was read nowhere but CairoDriveFastReroute's
+		// own two methods. So four reroutes in 90 s disarmed the tolerance and the fix cap, which
+		// were not the cause, and left THIS running, which was. Same latch now.
+		return BuildConfig.CAIRODRIVE_WRONG_ROAD_ACT && CairoDriveFastReroute.isActive();
 	}
 
 	/** Why the feature was silent, which is the first question a zero firing count raises. */

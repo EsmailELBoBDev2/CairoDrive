@@ -651,8 +651,21 @@ public class RoutingHelper {
 						net.osmand.plus.cairodrive.CairoDriveFastReroute.logDecision(
 								currentLocation, distOrth, beforeFast, allowableDeviation);
 					}
+					// beforeFast, NOT allowableDeviation. The hysteresis waives corroboration when
+					// devM is a large MULTIPLE of the threshold - 2 fixes at 2.5x, 1 fix at 4x -
+					// and its javadoc justifies that by the threshold being "already twice an
+					// accuracy-derived tolerance", i.e. by the GPS ERROR MODEL. Feeding it the
+					// tightened value keeps the ratios but destroys the premise: 0.5 x 0.6 makes
+					// the denominator 0.3 of a tolerance, so "4x the threshold" stops meaning
+					// "impossible as noise" and starts meaning 156 m - which one cell-tower fix
+					// wearing a 2.5 m error bar reaches, and this device produces exactly those.
+					//
+					// So the tightening decides WHETHER the driver is off route, which is what it
+					// was designed for, and the untightened value decides how much corroboration
+					// that verdict needs. Tightening a threshold must not silently also waive the
+					// evidence for it.
 					if (offRouteHysteresis.shouldRecalculate(currentLocation,
-							offRoute || actOnWrongRoad, distOrth, allowableDeviation)) {
+							offRoute || actOnWrongRoad, distOrth, beforeFast)) {
 						log.info("Recalculate route, because correlation  : " + distOrth); //$NON-NLS-1$
 						calculateRoute = !settings.DISABLE_OFFROUTE_RECALC.get();
 						// The falsification test. Counted on the DISPATCH, because a deviation the
@@ -670,8 +683,18 @@ public class RoutingHelper {
 						}
 					} else if (BuildConfig.CAIRODRIVE_EARLY_REROUTE
 							&& !settings.DISABLE_OFFROUTE_RECALC.get()
-							&& (wrongRoad || net.osmand.plus.cairodrive.CairoDriveEarlyReroute.shouldStart(
-									System.currentTimeMillis(), distOrth, allowableDeviation))
+							// shouldStart is evaluated ALWAYS, not short-circuited by wrongRoad.
+							// MIN_INTERVAL_MS lives inside it and is, by its own javadoc, "the only
+							// thing bounding" this feature's cost. With `wrongRoad ||` in front,
+							// a matcher holding an off-route id started a fresh 4-8 s native search
+							// on the very next fix after each one finished, back to back, for as
+							// long as it held - because the only remaining bound was !isInFlight().
+							&& net.osmand.plus.cairodrive.CairoDriveEarlyReroute.shouldStart(
+									System.currentTimeMillis(),
+									// Road identity is its own evidence, so it does not have to
+									// clear the distance fraction - but it still has to wait its
+									// turn. Passing 0 satisfies the deviation test only.
+									wrongRoad ? Double.MAX_VALUE : distOrth, allowableDeviation)
 							&& !net.osmand.plus.cairodrive.CairoDriveEarlyReroute.isInFlight()) {
 						// NOT gated on offRoute. Deliberately: the biggest remaining term in a
 						// reroute is the time spent travelling from the route out to the 50-120 m
@@ -694,11 +717,21 @@ public class RoutingHelper {
 				boolean isStraight =
 						route.getRouteService() == RouteService.DIRECT_TO || route.getRouteService() == RouteService.STRAIGHT;
 				boolean wrongMovementDirection = RoutingHelperUtils.checkWrongMovementDirection(currentLocation, prev, next);
-				if ((allowableDeviation > 0 && wrongMovementDirection && !isStraight
-						&& (currentLocation.distanceTo(routeNodes.get(currentRoute)) > allowableDeviation)) && !settings.DISABLE_WRONG_DIRECTION_RECALC.get()) {
+				// beforeFast, NOT allowableDeviation - and this one matters more than the
+				// orthogonal test, because this trigger has NO hysteresis at all. One fix whose
+				// bearing differs by 90 degrees reroutes, and the distance it is compared against
+				// is to the next route NODE rather than to the route line, which on sparse OSM
+				// geometry is routinely 40-150 m while the driver is exactly on it. The tightening
+				// was reasoned about for the orthogonal test and must not leak into a
+				// single-fix trigger that was never sized for it.
+				if ((beforeFast > 0 && wrongMovementDirection && !isStraight
+						&& (currentLocation.distanceTo(routeNodes.get(currentRoute)) > beforeFast)) && !settings.DISABLE_WRONG_DIRECTION_RECALC.get()) {
 					log.info("Recalculate route, because wrong movement direction: " + currentLocation.distanceTo(routeNodes.get(currentRoute))); //$NON-NLS-1$
 					isDeviatedFromRoute = true;
 					calculateRoute = true;
+					// Counted, or this path could flap forever without ever disarming the guard.
+					net.osmand.plus.cairodrive.CairoDriveFastReroute.rerouteHappened(
+							System.currentTimeMillis());
 				}
 				// 4. Identify if UTurn is needed
 				if (RoutingHelperUtils.identifyUTurnIsNeeded(this, currentLocation, posTolerance)) {
@@ -812,8 +845,18 @@ public class RoutingHelper {
 		}
 
 		if (calculateRoute) {
-			routeRecalculationHelper.recalculateRouteInBackground(currentLocation, finalLocation, intermediatePoints, currentGPXRoute,
+			// The return value is load-bearing. This call refuses the request whenever a
+			// calculation is already running or evalWaitInterval has not elapsed, and every
+			// deviation dispatch passes exactly the argument combination that gate refuses
+			// (paramsChanged=false, onlyStartPointChanged=true). An early start has by then already
+			// marked itself in flight, and a latch raised for work that never ran is never lowered:
+			// confirm() would answer "already running" to every later deviation and the app would
+			// stop rerouting for the rest of the process.
+			boolean dispatched = routeRecalculationHelper.recalculateRouteInBackground(currentLocation, finalLocation, intermediatePoints, currentGPXRoute,
 					previousRoute.isCalculated() ? previousRoute : null, false, !targetPointsChanged);
+			if (!dispatched) {
+				net.osmand.plus.cairodrive.CairoDriveEarlyReroute.dispatchFailed();
+			}
 		} else if (!net.osmand.plus.cairodrive.CairoDriveEarlyReroute.isInFlight()) {
 			// NOT when an early calculation is running. Every deviation task is dispatched with
 			// paramsChanged=false, so stopCalculationIfParamsNotChanged cancels ALL of them - and

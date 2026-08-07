@@ -180,6 +180,24 @@ public final class CairoDriveRouteRace {
 				}
 			}
 
+			// Offline finished but could not answer, and online could. This is the case the whole
+			// feature exists for - outside the downloaded .obf, a missing map, an area the local
+			// router cannot solve - and until now it was the one case the race structurally could
+			// NOT deliver: the online result was only ever returned while `!offlineTask.isDone()`,
+			// so an offline calculation that finished FIRST and FAILED locked out a perfectly good
+			// online route. It was fetched, tested, and thrown away, and navigation then failed
+			// with a usable answer sitting in a local variable.
+			if (!usable.isUsable(offlineResult)) {
+				if (onlineMs < 0 && onlineTask.isDone()) {
+					onlineResult = get(onlineTask, "online");
+				}
+				if (usable.isUsable(onlineResult)) {
+					log("ONLINE won by default in " + onlineMs + " ms - offline finished but"
+							+ " produced no usable route");
+					return onlineResult;
+				}
+			}
+
 			// Both finished and neither was usable, which is what a plain offline calculation
 			// would have produced on its own. Returning the offline one keeps the failure
 			// identical to the behaviour without this feature.

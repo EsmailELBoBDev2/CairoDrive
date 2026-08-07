@@ -117,7 +117,7 @@ public final class CairoDriveEarlyReroute {
 	 * <p>Called on a fix that is off route while the hysteresis is still gathering evidence.
 	 */
 	public static boolean shouldStart(long now, double devM, double allowableM) {
-		if (inFlight) {
+		if (inFlight && !expired(now)) {
 			return false;
 		}
 		if (allowableM > 0 && devM < allowableM * EARLY_START_FRACTION) {
@@ -150,7 +150,20 @@ public final class CairoDriveEarlyReroute {
 	 *         would queue behind it and arrive later than doing nothing.
 	 */
 	public static boolean confirm() {
-		if (!inFlight) {
+		if (!inFlight || expired(System.currentTimeMillis())) {
+			// expired() is the second line of defence behind dispatchFailed(). If this latch is ever
+			// raised for work that never ran, answering "already running" here is what stops the
+			// REAL reroute from being dispatched - and because nothing then installs a route,
+			// setRoute/reset never run and the app stops rerouting for the rest of the process.
+			// That has happened once already; a stuck latch must expire rather than be trusted.
+			if (inFlight) {
+				CairoDriveLog.log(TRACE_TAG, "latch EXPIRED after " + MAX_AGE_MS
+						+ " ms with no result - dispatching normally. If this appears, an early"
+						+ " start was begun for a calculation that was never queued.");
+				inFlight = false;
+				confirmed = false;
+				startedFrom = null;
+			}
 			return false;
 		}
 		confirmed = true;
@@ -213,6 +226,36 @@ public final class CairoDriveEarlyReroute {
 		}
 		CairoDriveLog.log(TRACE_TAG, "USED ageMs=" + age + " confirmed=" + confirmed);
 		return true;
+	}
+
+	/**
+	 * An early start was recorded but the dispatch was REFUSED, so no calculation will ever run and
+	 * nothing will ever clear the latch.
+	 *
+	 * <p>{@code RouteRecalculationHelper.recalculateRouteInBackground} drops a request whenever a
+	 * calculation is already running or {@code evalWaitInterval} has not elapsed - and every
+	 * deviation dispatch passes {@code paramsChanged=false, onlyStartPointChanged=true}, which is
+	 * exactly the combination that gate refuses. A 4-8 s search is in flight on most deviations, so
+	 * this is a common path, not a corner.
+	 *
+	 * <p>Left unhandled it is fatal and silent: {@link #confirm} answers "already running" to every
+	 * later deviation, {@link #shouldStart} refuses to start another, no route is ever installed so
+	 * {@link #reset} never runs, and the app simply stops rerouting for the rest of the process.
+	 */
+	public static void dispatchFailed() {
+		if (!inFlight) {
+			return;
+		}
+		inFlight = false;
+		confirmed = false;
+		startedFrom = null;
+		CairoDriveLog.log(TRACE_TAG, "dispatch REFUSED - latch released."
+				+ " The calculation was never queued (busy, or evalWaitInterval not elapsed);"
+				+ " holding the latch would have stopped every later reroute.");
+	}
+
+	private static boolean expired(long now) {
+		return now - startedAt > MAX_AGE_MS;
 	}
 
 	/** Route replaced, navigation stopped, or anything else that makes the question obsolete. */

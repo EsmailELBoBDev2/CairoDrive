@@ -1989,6 +1989,26 @@ public class RouteProvider {
 		if (!BuildConfig.CAIRODRIVE_ROUTE_RACE) {
 			return null;
 		}
+		// LIVE REROUTES ONLY. calculateRouteImpl has three callers, not one, and the other two are
+		// broken by an online win rather than helped by it:
+		//
+		//   TrafficDetourHelper.computeDetour bakes the jammed road ids into the SHARED routing
+		//   configuration and calls this, then removes them. Those ids exist only for the local
+		//   router. An online provider has never heard of the jam, so a detour it wins is in
+		//   practice the same road THROUGH the jam - then scored, announced as "saving ~N min",
+		//   and installed. A detour that is not a detour is worse than no detour.
+		//
+		//   RouteRecalculationHelper.runRepairProbe exists to TIME and SIZE a local repair search;
+		//   its distance and elapsed feed the REPAIR_DETOUR_RATIO and REPAIR_ABSOLUTE_CAP_M gates.
+		//   An online win makes those gates judge a foreign route's geometry and an HTTP latency.
+		//
+		// cairoDriveDispatchedAt is stamped only by recalculateRouteInBackground, i.e. only on the
+		// path a deviation actually takes, so it is an exact discriminator rather than a heuristic.
+		// It also stops both callers spending a metered credit, which restores the "exactly one
+		// online request per reroute" claim the budget accounting is built on.
+		if (params.cairoDriveDispatchedAt <= 0) {
+			return null;
+		}
 		try {
 			OnlineRoutingHelper helper = params.ctx.getOnlineRoutingHelper();
 			List<LatLon> racePath = getPathFromParams(params);

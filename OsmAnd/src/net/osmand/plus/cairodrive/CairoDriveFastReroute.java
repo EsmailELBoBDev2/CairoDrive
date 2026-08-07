@@ -126,7 +126,14 @@ public final class CairoDriveFastReroute {
 		if (tightened < MIN_ALLOWABLE_M) {
 			tightened = Math.min(allowableM, MIN_ALLOWABLE_M);
 		}
-		applied++;
+		// Counted only when the value actually MOVED. Incrementing unconditionally made this a
+		// count of guided fixes - thousands on any drive - printed under the name "tightenedFixes",
+		// which is the same kind of mislabel as the routingTime/routeCostSec unit error that cost
+		// this project a whole investigation. When the floor clamps the result back to allowableM,
+		// nothing was tightened and nothing is counted.
+		if (tightened != allowableM) {
+			applied++;
+		}
 		return tightened;
 	}
 

@@ -881,17 +881,24 @@ class RouteRecalculationHelper {
 		}
 	}
 
-	public void recalculateRouteInBackground(Location start, LatLon end, List<LatLon> intermediates,
-	                                         GPXRouteParamsBuilder gpxRoute, RouteCalculationResult previousRoute,
-	                                         boolean paramsChanged, boolean onlyStartPointChanged) {
+	/**
+	 * @return whether a calculation was actually queued. FALSE means the request was dropped and
+	 * nothing will retry it, which the caller MUST know: {@code CairoDriveEarlyReroute.started} has
+	 * by then already marked a calculation as in flight, and a latch raised for work that never ran
+	 * is never lowered - {@code confirm()} then answers "already running" to every later deviation
+	 * and the app stops rerouting for the rest of the process.
+	 */
+	public boolean recalculateRouteInBackground(Location start, LatLon end, List<LatLon> intermediates,
+	                                            GPXRouteParamsBuilder gpxRoute, RouteCalculationResult previousRoute,
+	                                            boolean paramsChanged, boolean onlyStartPointChanged) {
 		if (start == null || end == null) {
-			return;
+			return false;
 		}
 		try {
 			if (PlatformUtil.getOsmandRegions() == null || !app.getAppInitializer().isRoutingConfigInitialized()) {
 				app.showToastMessage(R.string.waiting_for_route_calculation);
 				LOG.warn("recalculateRouteInBackground is waiting for initialization");
-				return; // will be retried automatically
+				return false; // will be retried automatically
 			}
 		} catch (IOException e) {
 			LOG.warn("getOsmandRegions", e);
@@ -918,7 +925,7 @@ class RouteRecalculationHelper {
 					+ " sinceLastMs=" + sinceLastMs
 					+ " evalWaitMs=" + evalWaitInterval
 					+ " waitLeftMs=" + Math.max(0, evalWaitInterval - sinceLastMs));
-			return;
+			return false;
 		}
 		{
 			if (System.currentTimeMillis() - lastTimeEvaluatedRoute < RECALCULATE_THRESHOLD_CAUSING_FULL_RECALCULATE_INTERVAL) {
@@ -980,6 +987,7 @@ class RouteRecalculationHelper {
 				}
 			}
 			startRouteCalculationThread(params, paramsChanged, updateProgress);
+			return true;
 		}
 	}
 

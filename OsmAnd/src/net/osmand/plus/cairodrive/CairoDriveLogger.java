@@ -679,13 +679,23 @@ public class CairoDriveLogger {
 		}
 	}
 
-	/** Writes one tagged line. No-op when logging is disabled. */
+	/**
+	 * Writes one tagged line. No-op when logging is disabled.
+	 * <p>
+	 * REDACTED HERE, not only in the logcat pump. Redaction used to sit on the pump alone, so
+	 * anything reaching this direct entry point went into the file verbatim - and the online
+	 * routing race logs {@code Throwable.getMessage()} of whatever the HTTP layer threw. Several
+	 * {@code java.net} and OkHttp exceptions put the full request URL in that message, which
+	 * carries {@code apiKey=} or {@code key=}. That would write a live provider key into
+	 * {@code cairodrive-*.log}, a file this project pulls off the device by design and pastes into
+	 * chat. Redacting at the sink covers every caller, including the ones not yet written.
+	 */
 	public void log(@NonNull String tag, @Nullable String message) {
 		CairoDriveLogWriter writer = this.writer;
 		if (writer == null || !started) {
 			return;
 		}
-		writer.write(timestamp() + " " + tag + ": " + message);
+		writer.write(timestamp() + " " + tag + ": " + redactSecrets(String.valueOf(message)));
 	}
 
 	public void log(@NonNull String tag, @Nullable String message, @NonNull Throwable throwable) {
@@ -900,7 +910,14 @@ public class CairoDriveLogger {
 				+ " geoapify=" + have(BuildConfig.CAIRODRIVE_GEOAPIFY_KEY)
 				+ " locationiq=" + have(BuildConfig.CAIRODRIVE_LOCATIONIQ_KEY)
 				+ " azure=" + have(BuildConfig.CAIRODRIVE_AZURE_MAPS_KEY)
-				+ " tomorrow=" + have(BuildConfig.CAIRODRIVE_TOMORROW_KEY));
+				+ " tomorrow=" + have(BuildConfig.CAIRODRIVE_TOMORROW_KEY)
+				// The two the reroute race actually depends on, missed by the pass above. Without
+				// them a log cannot separate "the race never ran because there is no key" from
+				// "the race ran and lost" - which is the exact distinction this line exists for,
+				// and the release job does not check key presence at all, so this is the only
+				// record anywhere that a signed build shipped with a routing engine wired.
+				+ " ors=" + have(BuildConfig.CAIRODRIVE_ORS_KEY)
+				+ " graphhopper=" + have(BuildConfig.CAIRODRIVE_GRAPHHOPPER_KEY));
 		log("SESSION", "locale=" + Locale.getDefault() + " timezone=" + java.util.TimeZone.getDefault().getID());
 		log("SESSION", "logDir=" + writer.getDirectory().getAbsolutePath()
 				+ " maxFileBytes=" + CairoDriveLogWriter.MAX_FILE_BYTES
