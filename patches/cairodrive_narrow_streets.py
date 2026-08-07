@@ -97,6 +97,7 @@ USAGE
 
 import re
 import sys
+import xml.etree.ElementTree as ET
 
 PARAM_ID = "avoid_narrow_streets"
 
@@ -247,6 +248,15 @@ def main():
         print("cairodrive_narrow_streets: already applied, nothing to do")
         return
 
+    # Recorded before any edit so verify() can tell "this script broke it" from "upstream shipped
+    # something this parser cannot read", which are not the same failure and must not be treated
+    # the same way.
+    try:
+        ET.fromstring(xml)
+        parsed_before = True
+    except ET.ParseError:
+        parsed_before = False
+
     # Locate the car profile by name, then bound it at the next routingProfile so nothing
     # can leak into bicycle/pedestrian.
     car = re.search(r'<routingProfile\s+name="car"\s+baseProfile="car"', xml)
@@ -272,6 +282,8 @@ def main():
     at = car.start() + prio.end()
     xml = xml[:at] + RULES + xml[at:]
 
+    verify(xml, parsed_before)
+
     try:
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(xml)
@@ -279,6 +291,65 @@ def main():
         fail("cannot write %s: %s" % (path, exc))
 
     print("cairodrive_narrow_streets: added '%s' to the car profile" % PARAM_ID)
+
+
+# The highest value any rule here may take. These selects sit at the TOP of the priority block
+# and the first match wins, so a value at or above the default it shadows makes that road class
+# MORE attractive with the option on - the exact opposite of the intent. Upstream rates track,
+# service and living_street at 0.5.
+CEILING = 0.5
+
+
+def verify(xml, parsed_before):
+    """Refuse to write a routing.xml this script has broken.
+
+    Two failures are worth a build-time check rather than a comment. Neither shows up until the
+    app is on a Cairo road: routing.xml is parsed at RUNTIME, so a malformed insert means the car
+    profile fails to load, and a value over the ceiling means the option silently makes bad roads
+    more attractive - which looks like working software.
+
+    `parsed_before` is why this cannot simply parse and fail: if upstream ships a routing.xml this
+    parser cannot read, that is not this script's doing and failing the build for it would be
+    wrong. The check only fires when the file parsed BEFORE the edit and does not parse after.
+    """
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError as exc:
+        if not parsed_before:
+            print("cairodrive_narrow_streets: routing.xml did not parse before the edit either,"
+                  " so the insert is not being blamed for it (%s)" % exc)
+            return
+        fail("the patched routing.xml no longer parses, so this script broke it: %s" % exc)
+
+    blocks = [node for node in root.iter("if") if node.get("param") == PARAM_ID]
+    if len(blocks) != 1:
+        fail("expected exactly one <if param=\"%s\"> block after patching, found %d"
+             % (PARAM_ID, len(blocks)))
+
+    over = []
+    lanes = []
+    for select in blocks[0]:
+        value = select.get("value")
+        if value is not None:
+            try:
+                if float(value) >= CEILING:
+                    over.append((select.get("t"), select.get("v"), value))
+            except ValueError:
+                fail("non-numeric priority value %r in the inserted rules" % value)
+        if select.get("t") == "lanes":
+            lanes.append(select.get("v"))
+    if over:
+        fail("these rules are at or above the %.2f ceiling and would make those roads MORE"
+             " attractive: %s" % (CEILING, over))
+    if lanes:
+        # Deliberately checked by name. `lanes=1 and not oneway` is "two cars cannot pass", which
+        # is the owner's own street and the exact class of road he asked to keep. It was removed
+        # on 2026-08-07 and is the single most likely rule to be helpfully restored.
+        fail("a `lanes` rule is back (%s). That penalises streets where two cars cannot pass,"
+             " which is the road class this option must NOT avoid - see the module docstring."
+             % lanes)
+    print("cairodrive_narrow_streets: verified - %d rules, none at or above %.2f, no lanes rule"
+          % (len(blocks[0]), CEILING))
 
 
 if __name__ == "__main__":
