@@ -254,7 +254,10 @@ public class VoiceRouter {
 		double threshold = BuildConfig.CAIRODRIVE_ANNOUNCE_EARLY_OFFROUTE && allowed > 0
 				? Math.min(atd.getOffRouteDistance(), allowed)
 				: atd.getOffRouteDistance();
-		if (settings.SPEAK_ROUTE_DEVIATION.get() && dist > threshold) {
+		if (!settings.SPEAK_ROUTE_DEVIATION.get()) {
+			return;
+		}
+		if (dist > threshold) {
 			long ms = System.currentTimeMillis();
 			if (waitAnnouncedOffRoute == 0 || ms - lastAnnouncedOffRoute > waitAnnouncedOffRoute) {
 				CommandBuilder p = getNewCommandPlayerToPlay();
@@ -269,17 +272,26 @@ public class VoiceRouter {
 					waitAnnouncedOffRoute *= 2.5;
 				}
 				lastAnnouncedOffRoute = ms;
-			// Avoid offRoute/onRoute loop, #16571:
-			//
-			// Scaled off THRESHOLD, not off the raw OFF_ROUTE_DISTANCE constant. With the two
-			// unrelated - 250 m for one, 25-120 m for the other - the branches stopped being
-			// mutually exclusive: a driver 60 m off route, past the rate limiter, was told
-			// "you are back on the route" while the app was still recalculating and still
-			// considered them off it. Upstream never hit this because the outer gate was 250 m
-			// and made this branch unreachable.
-			} else if (announceBackOnRoute && (dist < 0.3 * threshold)) {
-				announceBackOnRoute();
 			}
+		// Avoid offRoute/onRoute loop, #16571:
+		//
+		// Scaled off THRESHOLD, not off the raw OFF_ROUTE_DISTANCE constant. With the two
+		// unrelated - 250 m for one, 25-120 m for the other - the branches stopped being
+		// mutually exclusive: a driver 60 m off route, past the rate limiter, was told
+		// "you are back on the route" while the app was still recalculating and still
+		// considered them off it.
+		//
+		// HOISTED OUT of the `dist > threshold` block, where it sat both upstream and here. Nested,
+		// it required `dist > threshold && dist < 0.3 * threshold` - impossible for any positive
+		// threshold, so announceBackOnRoute was a write-only flag and the prompt could never play.
+		// Suppressing the wrong announcement by making the right one unreachable is not a fix.
+		//
+		// It also took the backoff with it: waitAnnouncedOffRoute = 0 lives in announceBackOnRoute()
+		// and is the natural reset. Unreachable, the 60 s wait multiplied by 2.5 per deviation with
+		// nothing to clear it - 60, 150, 375, 937 seconds of enforced silence for a driver
+		// deviating repeatedly in a residential block without completing a turn in between.
+		} else if (announceBackOnRoute && (dist < 0.3 * threshold)) {
+			announceBackOnRoute();
 		}
 	}
 

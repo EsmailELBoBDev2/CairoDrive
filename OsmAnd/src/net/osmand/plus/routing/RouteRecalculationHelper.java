@@ -27,6 +27,7 @@ import net.osmand.util.MapUtils;
 import org.apache.commons.logging.Log;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
@@ -655,8 +656,34 @@ class RouteRecalculationHelper {
 		}
 		int sx = MapUtils.get31TileNumberX(params.start.getLongitude()) >>> CACHE_CELL_SHIFT;
 		int sy = MapUtils.get31TileNumberY(params.start.getLatitude()) >>> CACHE_CELL_SHIFT;
-		return sx + ":" + sy + ":" + params.end.getLatitude() + ":" + params.end.getLongitude()
-				+ ":" + params.mode.getStringKey();
+		// The avoided/nogo set is part of the key, LISTED rather than hashed for the same reason the
+		// warm environment lists it: a collision here means serving a route over a road that was
+		// deliberately closed.
+		//
+		// Without it this cache would drive through a closure it had just announced.
+		// ClosureSyncHelper detects a closure on the current route, bakes the id into the routing
+		// config, toasts "road closed", and recalculates - and that recalculation reaches
+		// takeCachedRoute BEFORE any other guard. Same start cell, same destination, same mode was
+		// a HIT, so the pre-closure route came straight back and was installed. The same held for
+		// every routing preference: avoid_narrow_streets, tolls, motorways - none of them change
+		// mode.getStringKey(), so for the whole TTL the cache re-served the pre-change answer.
+		StringBuilder key = new StringBuilder(96);
+		key.append(sx).append(':').append(sy)
+				.append(':').append(params.end.getLatitude())
+				.append(':').append(params.end.getLongitude())
+				.append(':').append(params.mode.getStringKey());
+		try {
+			Set<Long> impassable = app.getRoutingConfigForMode(params.mode).getImpassableRoadLocations();
+			if (impassable != null && !impassable.isEmpty()) {
+				List<Long> sorted = new ArrayList<>(impassable);
+				Collections.sort(sorted);
+				key.append(":avoid").append(sorted);
+			}
+		} catch (Throwable t) {
+			// Unable to read the set means unable to prove the cached route still honours it.
+			return null;
+		}
+		return key.toString();
 	}
 
 	@Nullable
@@ -677,9 +704,33 @@ class RouteRecalculationHelper {
 			rerouteCache.remove(key);
 			return null;
 		}
+		RouteCalculationResult cached = (RouteCalculationResult) entry[0];
+		// NEVER serve a route that has already been driven.
+		//
+		// The cached value is the SAME OBJECT that was installed as the live route, and
+		// RoutingHelper advances its currentRoute pointer on every fix - forward only, nothing
+		// rewinds it. Re-serving one that has been followed for a minute hands back a route whose
+		// pointer sits a kilometre ahead: setNewRoute then searches for the driver's position
+		// starting from there, guidance and distance-to-finish are computed against a point they
+		// have not reached, upstream measures a huge deviation and reroutes again. A driver
+		// crawling at a junction stays inside one 66 m cell, so every confirmed deviation would be
+		// answered with the identical stale object and a "route recalculated" prompt, and no new
+		// search would ever run - which is precisely the "reroute after reroute while trying to
+		// turn around" signature this fork has been chasing.
+		//
+		// currentRoute == 0 means "computed but never followed", which is the case this cache was
+		// actually written for: the early-reroute discard path caches its answer so the real
+		// dispatch a moment later is free.
+		if (cached.getCurrentRoute() != 0) {
+			rerouteCache.remove(key);
+			CairoDriveLogger.getInstance().log("CD_REROUTE",
+					"cache DROPPED - entry had already been driven (currentRoute="
+							+ cached.getCurrentRoute() + ")");
+			return null;
+		}
 		CairoDriveLogger.getInstance().log("CD_REROUTE",
 				"cache HIT ageMs=" + (System.currentTimeMillis() - at) + " - no search at all");
-		return (RouteCalculationResult) entry[0];
+		return cached;
 	}
 
 	private synchronized void putCachedRoute(@NonNull RouteCalculationParams params,
@@ -688,9 +739,18 @@ class RouteRecalculationHelper {
 			return;
 		}
 		String key = cacheKey(params);
-		if (key != null) {
-			rerouteCache.put(key, new Object[] {res, System.currentTimeMillis()});
+		if (key == null) {
+			return;
 		}
+		Object[] existing = rerouteCache.get(key);
+		if (existing != null && existing[0] == res) {
+			// Re-storing the entry we were just served. Keeping the ORIGINAL timestamp is the
+			// point: refreshing it made the TTL a bound on the gap between consultations rather
+			// than on the age of the route, so an oscillating or stationary driver could keep an
+			// arbitrarily old route alive indefinitely by asking for it.
+			return;
+		}
+		rerouteCache.put(key, new Object[] {res, System.currentTimeMillis()});
 	}
 
 	/** Dropped whenever the loaded map set changes - a cached route over a map that has since been
@@ -740,6 +800,19 @@ class RouteRecalculationHelper {
 			if (consecutiveRepairs >= REPAIR_MAX_CONSECUTIVE) {
 				CairoDriveLogger.getInstance().log("CD_REROUTE",
 						"repair SKIPPED consecutiveRepairs=" + consecutiveRepairs + " - full search");
+				// ...and CLEAR it, so this is an escape hatch rather than a one-way latch.
+				//
+				// The counter was only ever reset after a SUCCESSFUL repair, and this early return
+				// happens before any repair is attempted - so once it reached the cap nothing could
+				// ever lower it again. The field lives on RouteRecalculationHelper, which lives as
+				// long as RoutingHelper, and is not cleared by clearCurrentRoute or a new
+				// destination: three bad deviations on the morning drive disabled route repair for
+				// the evening drive too, silently.
+				//
+				// Skipping THIS repair is the whole intent - the driver who has not come back gets
+				// a full search - and the next deviation is a new question that deserves to be
+				// asked again.
+				consecutiveRepairs = 0;
 				return null;
 			}
 			Object[] ahead = previous.getLocationAheadAlongRoute(repairCutoffM());

@@ -61,7 +61,8 @@ import java.util.Set;
  *       the early start already discards its result unless the ordinary distance test confirms,
  *       so a false firing costs one wasted calculation.</li>
  *   <li>{@code CAIRODRIVE_WRONG_ROAD_ACT} - let it reach the hysteresis, i.e. let it actually
- *       trigger a reroute. OFF until a drive proves it. A false firing here is a reroute on a
+ *       trigger a reroute. Now ON at the owner's instruction, guarded by CairoDriveFastReroute's
+ *       flap latch so a misbehaving matcher disarms itself within 90 s. A false firing here is a reroute on a
  *       correct route, which is precisely the failure the off-route hysteresis was written to
  *       stop and which has already cost this project a drive.</li>
  * </ul>

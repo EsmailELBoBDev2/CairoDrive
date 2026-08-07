@@ -1,5 +1,5 @@
 # Appended to proguard-rules.pro by cairodrive.gradle whenever CAIRODRIVE_R8_SHRINK is not
-# "true" - which is the default, so this is what an ordinary build gets.
+# "true" - which is NO LONGER the default, so this file applies only when the flag is explicitly turned off.
 #
 # This single line is what the fork shipped before the narrowing work, and it is deliberately
 # still what it ships. Every net.osmand rule in proguard-rules.pro names only classes and

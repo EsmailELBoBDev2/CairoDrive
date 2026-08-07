@@ -1017,7 +1017,7 @@ jobs:
       # The blanket `-keep class net.osmand.** { *; }` that made R8 a no-op on this app's own
       # code has been narrowed - proguard-rules.pro carries the replacement and names the
       # evidence for every rule - but it is still what an ordinary build gets, because
-      # CAIRODRIVE_R8_SHRINK defaults to false. Two of the four hazards that motivated the
+      # CAIRODRIVE_R8_SHRINK defaults to TRUE as of 2026-08 (it was false when this was written). Two of the four hazards that motivated the
       # blanket keep turned out not to exist: the voice scripts run in Rhino's SAFE scope and so
       # cannot name a Java class at all, and both AIDL services are removed in this fork. A
       # third, getIdentifier, is a resources question rather than a code one and is governed by

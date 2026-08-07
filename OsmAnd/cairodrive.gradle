@@ -434,8 +434,8 @@ def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim
 // early calculation is discarded unless the ordinary distance test confirms, so a false firing
 // costs one wasted calculation and nothing else. ON.
 //
-// CAIRODRIVE_WRONG_ROAD_ACT - let it reach the hysteresis, i.e. actually trigger a reroute. OFF,
-// and this is the one flag today that is NOT on by default. A false firing here is a reroute on a
+// CAIRODRIVE_WRONG_ROAD_ACT - let it reach the hysteresis, i.e. actually trigger a reroute. Now ON
+// (see the note at the flag itself); it was off for a long time and for good reasons. A false firing here is a reroute on a
 // correct route - exactly the failure CAIRODRIVE_OFFROUTE_HYSTERESIS exists to prevent, and which
 // already cost this project a drive. The evidence is a map matcher that is measurably wrong on
 // 0.5-1% of applied matches, mostly under flyovers, which is Cairo.

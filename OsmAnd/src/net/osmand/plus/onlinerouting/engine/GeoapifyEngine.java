@@ -145,7 +145,14 @@ public class GeoapifyEngine extends JsonOnlineRoutingEngine {
 		// step indices below address this list.
 		JSONArray lines = root.getJSONObject("geometry").getJSONArray("coordinates");
 		List<LatLon> points = new ArrayList<>();
+		// Where each leg BEGINS in the flattened list. Geoapify documents a step's from_index under
+		// its leg, so on a route with intermediates every leg after the first carries indices that
+		// start again at 0 - and adding them to a flattened list verbatim points them back into
+		// leg 0. That gives non-monotonic offsets and negative turn distances downstream. Single-leg
+		// routes, which is every reroute without intermediates, have base 0 and are unaffected.
+		List<Integer> legStart = new ArrayList<>();
 		for (int i = 0; i < lines.length(); i++) {
+			legStart.add(points.size());
 			JSONArray line = lines.getJSONArray(i);
 			for (int j = 0; j < line.length(); j++) {
 				JSONArray point = line.getJSONArray(j);
@@ -163,6 +170,8 @@ public class GeoapifyEngine extends JsonOnlineRoutingEngine {
 			if (steps == null) {
 				continue;
 			}
+			int base = i < legStart.size() ? legStart.get(i) : 0;
+			int legLength = (i + 1 < legStart.size() ? legStart.get(i + 1) : points.size()) - base;
 			for (int j = 0; j < steps.length(); j++) {
 				JSONObject step = steps.getJSONObject(j);
 				double distance = step.optDouble("distance", 0);
@@ -177,7 +186,35 @@ public class GeoapifyEngine extends JsonOnlineRoutingEngine {
 
 				TurnType turnType = getTurnType(step.optString("turn_type", ""), leftSideNavigation);
 				RouteDirectionInfo direction = new RouteDirectionInfo(averageSpeed, turnType);
-				direction.routePointOffset = step.optInt("from_index", 0);
+				// getInt, NOT optInt(...,0). This is the one field whose absence must REJECT the
+				// route rather than default.
+				//
+				// With a default of 0, a renamed or missing from_index gives every direction
+				// offset 0. The route is then geometrically valid and passes the only acceptance
+				// test (directions non-empty), so it is INSTALLED with every turn collapsed onto
+				// the route start - all prompts firing at once at the origin, and the driver
+				// guided by nothing after that. OrsEngine uses getInt/getString throughout and so
+				// fails closed; this was the one engine that failed open, which is the dangerous
+				// direction for a field that indexes the geometry.
+				//
+				// The bounds check matters for the same reason: routePointOffset is used as a raw
+				// array index downstream, so an out-of-range value from a server-side change
+				// becomes an exception swallowed by the race - "online never wins, nobody knows
+				// why" - rather than a rejected response.
+				int fromIndex = step.getInt("from_index");
+				// Leg-relative or already global? Decided from the value rather than assumed:
+				// an index inside this leg's own length is relative and needs the base; one that
+				// already exceeds it can only be global. For a single-leg route base is 0 and both
+				// readings agree, so this can only change multi-waypoint routes - the ones that
+				// are wrong today either way.
+				if (base > 0 && fromIndex < legLength) {
+					fromIndex += base;
+				}
+				if (fromIndex < 0 || fromIndex >= points.size()) {
+					throw new JSONException("from_index " + fromIndex + " outside the "
+							+ points.size() + " geometry points");
+				}
+				direction.routePointOffset = fromIndex;
 				direction.setDescriptionRoute(text);
 				direction.setStreetName(step.optString("name", ""));
 				direction.setDistance((int) Math.round(distance));

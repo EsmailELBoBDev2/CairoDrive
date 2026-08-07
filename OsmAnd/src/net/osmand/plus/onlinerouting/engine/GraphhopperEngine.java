@@ -144,7 +144,11 @@ public class GraphhopperEngine extends JsonOnlineRoutingEngine {
 			int startPointOffset = interval.getInt(0);
 			int endPointOffset = interval.getInt(1);
 
-			float averageSpeed = (float) distance / timeInSeconds;
+			// Guarded: timeInSeconds is a ROUNDED millisecond value, so any step under 500 ms
+			// becomes exactly 0 - and GraphHopper emits short steps routinely. Infinity/NaN does
+			// not stay local: RouteCalculationResult sums expected times, so one poisoned step
+			// corrupts the ETA of every earlier direction on the route.
+			float averageSpeed = timeInSeconds > 0 ? (float) distance / timeInSeconds : 0f;
 			TurnType turnType = parseTurnType(instruction, leftSideNavigation);
 			RouteDirectionInfo direction = new RouteDirectionInfo(averageSpeed, turnType);
 

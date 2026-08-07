@@ -307,7 +307,7 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 			// retry; let the offline index answer this keystroke immediately. The breaker clears
 			// itself after CIRCUIT_OPEN_MS.
 			if (circuitOpen()) {
-				trace("query='" + query + "' source=network result=skipped"
+				trace("q=" + qLen(query) + " source=network result=skipped"
 						+ " (recent failure, using offline index)");
 				return true;
 			}
@@ -325,7 +325,7 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 				// so the next keystrokes skip Google instead of re-paying the stall; request() has
 				// already logged the reason.
 				noteTransportOutcome(false);
-				trace("query='" + query + "' source=network result=failed"
+				trace("q=" + qLen(query) + " source=network result=failed"
 						+ " (falling back to the offline index)");
 				return true;
 			}
@@ -347,7 +347,7 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 		// says whether this cost a billed request: network did, cache and prefix did not.
 		// published=0 means Google answered and knew nothing, which is not a failure - the
 		// offline index gets its turn rather than the user being shown an empty list.
-		trace("query='" + query + "' source=" + source
+		trace("q=" + qLen(query) + " source=" + source
 				+ " published=" + published + " osmSuppressed=" + (published > 0));
 		return true;
 	}
@@ -880,6 +880,22 @@ public class GooglePlacesSearchApi extends SearchBaseAPI {
 	private static void trace(@NonNull String message) {
 		LOG.info(TRACE_TAG + " " + message);
 		CairoDriveLogger.getInstance().log(TRACE_TAG, message);
+	}
+
+	/**
+	 * The LENGTH of a query, never its text.
+	 *
+	 * <p>{@code CairoDriveLog}'s contract says call sites must never pass user query text, and the
+	 * autocomplete path already honours it - this one did not, writing {@code query='...'} verbatim
+	 * into the drive log. That log is pulled off the device and pasted into chat by design, and it
+	 * already carries a continuous GPS trace at ~1 m resolution: the trace alone gives away home and
+	 * work, and the queries name everywhere else the driver was going. Length keeps everything the
+	 * trace was for - cache hit rate, debounce behaviour, whether a request was worth issuing -
+	 * because none of that depends on what the words were.
+	 */
+	@NonNull
+	private static String qLen(@Nullable String query) {
+		return (query == null ? 0 : query.length()) + "ch";
 	}
 
 	private static class CachedResponse {

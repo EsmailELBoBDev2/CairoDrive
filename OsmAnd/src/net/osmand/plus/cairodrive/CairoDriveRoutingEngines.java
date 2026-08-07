@@ -124,42 +124,102 @@ public final class CairoDriveRoutingEngines {
 	}
 
 	/**
-	 * Create any engine whose key is present and which does not exist yet. Safe to call more than
-	 * once; it is a no-op after the first successful pass.
+	 * Which health bucket an engine's outcomes belong in.
+	 *
+	 * <p>Matched on the same CUSTOM_NAME the engines are created with, so a user-added engine of
+	 * the same type is correctly reported as null rather than charged to this fork's budget.
+	 */
+	@Nullable
+	public static ApiHealth.Api healthApiFor(@Nullable OnlineRoutingEngine engine) {
+		if (engine == null) {
+			return null;
+		}
+		String name = engine.get(EngineParameter.CUSTOM_NAME);
+		if (ORS_NAME.equals(name)) {
+			return ApiHealth.Api.ORS;
+		}
+		if (GRAPHHOPPER_NAME.equals(name)) {
+			return ApiHealth.Api.GRAPHHOPPER;
+		}
+		if (GEOAPIFY_NAME.equals(name)) {
+			return ApiHealth.Api.GEOAPIFY_ROUTING;
+		}
+		return null;
+	}
+
+	/**
+	 * Create or refresh every engine whose key is present. Safe to call more than once; it is a
+	 * no-op after the first successful pass.
 	 *
 	 * <p>An engine is matched by NAME rather than by key, because the generated key differs every
 	 * time one is created - matching on it would add a duplicate engine on every cold start until
 	 * the settings file was full of them.
 	 */
-	public static void ensureConfigured(@NonNull OsmandApplication app) {
+	public static synchronized void ensureConfigured(@NonNull OsmandApplication app) {
+		// synchronized: called from BOTH the app startup thread and the route calculation thread,
+		// and `ensured` is a check-then-set that is only assigned after all three saveEngine calls.
+		// Two threads entering together both ran the whole body - one mutating OnlineRoutingHelper's
+		// unsynchronised LinkedHashMap while the other iterated it. That is a
+		// ConcurrentModificationException (swallowed, so the race silently does not run) or, worse,
+		// two engines with the same name and different generated keys persisted forever.
 		if (ensured) {
 			return;
 		}
 		try {
 			OnlineRoutingHelper helper = app.getOnlineRoutingHelper();
-			if (hasOrsKey() && findByName(helper, ORS_NAME) == null) {
-				Map<String, String> params = new HashMap<>();
+			if (hasOrsKey()) {
+				// Key re-applied on EVERY pass, not only at creation. It is deliberately not
+				// persisted (see OnlineRoutingUtils.writeToJson), so it has to be injected from
+				// BuildConfig each launch - and that also fixes key ROTATION, which the
+				// match-by-name-then-skip shape got wrong: a revoked key stayed on the device
+				// forever because the engine already existed.
+				OnlineRoutingEngine existing = findByName(helper, ORS_NAME);
+				Map<String, String> params = existing != null
+						? new HashMap<>(existing.getParams()) : new HashMap<>();
 				params.put(EngineParameter.API_KEY.name(), BuildConfig.CAIRODRIVE_ORS_KEY);
 				params.put(EngineParameter.VEHICLE_KEY.name(), "driving-car");
 				params.put(EngineParameter.CUSTOM_NAME.name(), ORS_NAME);
+				if (existing != null) {
+					params.put(EngineParameter.KEY.name(), existing.getStringKey());
+				}
 				helper.saveEngine(new OrsEngine(params));
-				CairoDriveLog.log(TRACE_TAG, "created " + ORS_NAME);
+				CairoDriveLog.log(TRACE_TAG, (existing == null ? "created " : "refreshed ") + ORS_NAME);
 			}
-			if (hasGraphhopperKey() && findByName(helper, GRAPHHOPPER_NAME) == null) {
-				Map<String, String> params = new HashMap<>();
+			if (hasGraphhopperKey()) {
+				// Key re-applied on EVERY pass, not only at creation. It is deliberately not
+				// persisted (see OnlineRoutingUtils.writeToJson), so it has to be injected from
+				// BuildConfig each launch - and that also fixes key ROTATION, which the
+				// match-by-name-then-skip shape got wrong: a revoked key stayed on the device
+				// forever because the engine already existed.
+				OnlineRoutingEngine existing = findByName(helper, GRAPHHOPPER_NAME);
+				Map<String, String> params = existing != null
+						? new HashMap<>(existing.getParams()) : new HashMap<>();
 				params.put(EngineParameter.API_KEY.name(), BuildConfig.CAIRODRIVE_GRAPHHOPPER_KEY);
 				params.put(EngineParameter.VEHICLE_KEY.name(), "car");
 				params.put(EngineParameter.CUSTOM_NAME.name(), GRAPHHOPPER_NAME);
+				if (existing != null) {
+					params.put(EngineParameter.KEY.name(), existing.getStringKey());
+				}
 				helper.saveEngine(new GraphhopperEngine(params));
-				CairoDriveLog.log(TRACE_TAG, "created " + GRAPHHOPPER_NAME);
+				CairoDriveLog.log(TRACE_TAG, (existing == null ? "created " : "refreshed ") + GRAPHHOPPER_NAME);
 			}
-			if (hasGeoapifyKey() && findByName(helper, GEOAPIFY_NAME) == null) {
-				Map<String, String> params = new HashMap<>();
+			if (hasGeoapifyKey()) {
+				// Key re-applied on EVERY pass, not only at creation. It is deliberately not
+				// persisted (see OnlineRoutingUtils.writeToJson), so it has to be injected from
+				// BuildConfig each launch - and that also fixes key ROTATION, which the
+				// match-by-name-then-skip shape got wrong: a revoked key stayed on the device
+				// forever because the engine already existed.
+				OnlineRoutingEngine existing = findByName(helper, GEOAPIFY_NAME);
+				Map<String, String> params = existing != null
+						? new HashMap<>(existing.getParams()) : new HashMap<>();
 				params.put(EngineParameter.API_KEY.name(), BuildConfig.CAIRODRIVE_GEOAPIFY_KEY);
 				params.put(EngineParameter.VEHICLE_KEY.name(), "drive");
 				params.put(EngineParameter.CUSTOM_NAME.name(), GEOAPIFY_NAME);
+				if (existing != null) {
+					params.put(EngineParameter.KEY.name(), existing.getStringKey());
+				}
 				helper.saveEngine(new GeoapifyEngine(params));
-				CairoDriveLog.log(TRACE_TAG, "created " + GEOAPIFY_NAME);
+				CairoDriveLog.log(TRACE_TAG, (existing == null ? "created " : "refreshed ") + GEOAPIFY_NAME);
 			}
 			if (!hasOrsKey() && !hasGraphhopperKey() && !hasGeoapifyKey()) {
 				CairoDriveLog.log(TRACE_TAG, "no online routing key in this build - race inert");

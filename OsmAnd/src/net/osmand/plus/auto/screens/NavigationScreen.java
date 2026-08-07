@@ -395,7 +395,15 @@ public final class NavigationScreen extends BaseAndroidAutoScreen implements Sur
 				}
 				builder.setDestinationTravelEstimate(estimate);
 			}
-			if (isReroutingVisibly() && Algorithms.isEmpty(steps)) {
+			// isRerouting(), not isReroutingVisibly(). The visible variant additionally requires
+			// isDeviatedFromRoute(), and steps is empty ONLY when TripHelper returned a loading
+			// trip - a state in which there is nothing else to put in the card. For a recalculation
+			// the driver has not deviated for (a target change, a settings change, a road closure,
+			// a traffic detour, a wrong-road dispatch) both conditions could be false at once and
+			// NO branch fired at all: setNavigationInfo was never called and the routing card went
+			// completely blank for the whole 4-8 s search. Upstream's chain always reached a branch;
+			// that invariant is restored here.
+			if (isRerouting() && Algorithms.isEmpty(steps)) {
 				// ONLY when there is no manoeuvre left to show. Both setLoading(true) and a
 				// MessageInfo REPLACE the whole routing card - turn, distance, road name, lanes -
 				// and the API gives no way to combine them with a manoeuvre: RoutingInfo.Builder
@@ -527,6 +535,12 @@ public final class NavigationScreen extends BaseAndroidAutoScreen implements Sur
 			adjustMapPosition(true);
 		}
 		map.refreshMap();
+		// Re-run getTemplate() now the route has arrived, instead of waiting for the next location
+		// fix to do it. `rerouting` is a cached field written only by updateTrip, which only runs on
+		// a location update - so in a tunnel, a car park, or the degraded-fix stretches this device
+		// spends most of its time in, the head unit kept saying "Recalculating..." over a route
+		// that was already drawn on the map.
+		invalidate();
 		if (newRoute && rh.isRoutePlanningMode() && map.getMapView().isCarView()) {
 			// Re-check route-planning mode INSIDE the delayed runnable. The guard above is
 			// evaluated now, but the fit runs 300ms later - and if the driver pressed Go in that

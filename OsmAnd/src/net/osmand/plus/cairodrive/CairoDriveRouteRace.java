@@ -55,9 +55,9 @@ import java.util.concurrent.ThreadFactory;
  * because the question this feature exists to answer - is online actually faster on THIS phone
  * on THIS network - cannot be answered from a UI, only from a drive.
  *
- * <h3>NOT YET WIRED INTO RouteProvider, and the reason is a data race</h3>
+ * <h3>How it is wired, and the data race that had to be fixed first</h3>
  *
- * This engine is complete and tested. What is deliberately missing is the call site, because
+ * The call site could not simply be added, because
  * {@code RouteProvider.findOnlineRoute} MUTATES the shared {@link
  * net.osmand.plus.routing.RouteCalculationParams}: it assigns {@code params.gpxFile},
  * {@code params.gpxRoute}, {@code params.initialCalculation}, and sets
@@ -66,11 +66,11 @@ import java.util.concurrent.ThreadFactory;
  * navigation path, and the thing it would corrupt is the offline route - the one result that
  * must never be wrong, because it is what the driver falls back on when everything else fails.
  *
- * <p>So wiring this up needs the online side to get its OWN copy of the parameters first. That
- * is a separate, careful change rather than a line added to the dispatch in
- * {@code calculateRouteImpl}, and it is the next step. Until then this class is unreachable
- * from the app, which is why it can be committed with the flag defaulting off and no risk at
- * all: nothing calls it.
+ * <p>{@link #copyForOnline} is the fix: the online side gets its own parameters. With that in
+ * place the race IS wired - {@code RouteProvider.raceOnlineWithOffline} calls it on the live
+ * reroute path and {@code CAIRODRIVE_ROUTE_RACE} defaults to true. It is deliberately NOT run for
+ * the traffic detour or the repair probe; see that method for why an online win would break each
+ * of them rather than help.
  *
  * <p>Verified before commit, by executing this logic standalone with synthetic timings, since
  * the class deliberately has no Android dependency beyond the logger:
@@ -205,8 +205,17 @@ public final class CairoDriveRouteRace {
 			log("neither side usable (offline=" + offlineMs + "ms online=" + onlineMs + "ms)");
 			return offlineResult;
 		} finally {
-			// Never blocks: the losing task is a daemon and is left to finish on its own.
-			pool.shutdown();
+			// Interrupt the loser rather than leaving it to finish. shutdown() alone never
+			// interrupts, so on the common path - offline wins - the online socket stayed open for
+			// up to the 30 s connect + 60 s read timeout after the driver already had their route,
+			// once per reroute. shutdownNow() sets the interrupt, which is what a blocked read
+			// needs.
+			//
+			// The offline task is a different matter and is deliberately NOT force-killed here: it
+			// is deep inside native HH code that does not observe an interrupt, and interrupting
+			// its thread mid-JNI is a worse failure than letting it run out. Its cost is bounded by
+			// the calculation itself.
+			pool.shutdownNow();
 		}
 	}
 

@@ -166,7 +166,11 @@ public class OrsEngine extends JsonOnlineRoutingEngine {
 				JSONArray wayPoints = step.getJSONArray("way_points");
 				int routePointOffset = wayPoints.getInt(0);
 				int routeEndPointOffset = wayPoints.getInt(1);
-				float averageSpeed = (float) (distance / duration);
+				// Guarded: a zero-duration step is legal in an ORS response (the depart and arrive
+				// instructions are), and Infinity/NaN here does not stay local - RouteCalculationResult
+				// accumulates expected times into a running sum, so one poisoned step corrupts the ETA
+				// of every earlier direction on the route.
+				float averageSpeed = duration > 0 ? (float) (distance / duration) : 0f;
 
 				// create direction step
 				RouteDirectionInfo direction = new RouteDirectionInfo(averageSpeed, turnType);

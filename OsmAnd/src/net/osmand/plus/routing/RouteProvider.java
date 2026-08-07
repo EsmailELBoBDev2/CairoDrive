@@ -36,6 +36,7 @@ import net.osmand.plus.cairodrive.CairoDriveLogger;
 import net.osmand.plus.cairodrive.CairoDriveRoutePhases;
 import net.osmand.plus.cairodrive.CairoDriveRouteRace;
 import net.osmand.plus.cairodrive.CairoDriveRoutingEngines;
+import net.osmand.plus.cairodrive.providers.ApiHealth;
 import net.osmand.plus.resources.ResourceManager;
 import net.osmand.plus.routing.GPXRouteParams.GPXRouteParamsBuilder;
 import net.osmand.plus.settings.backend.ApplicationMode;
@@ -1404,15 +1405,51 @@ public class RouteProvider {
 			List<RouteSegmentResult> spliced = new ArrayList<>(repairSegments.size() + tail.size());
 			spliced.addAll(repairSegments);
 			RouteSegmentResult last = repairSegments.get(repairSegments.size() - 1);
+			boolean first = true;
 			for (RouteSegmentResult rr : tail) {
 				// Deep copy - see (1) above.
 				RouteSegmentResult copy = new RouteSegmentResult(rr.getObject(),
 						rr.getStartPointIndex(), rr.getEndPointIndex());
+				if (first) {
+					first = false;
+					// TRIM THE FIRST TAIL SEGMENT TO THE JOINT.
+					//
+					// getOriginalRoute(startIndex) returns segments.get(startIndex) WHOLE, from its
+					// own startPointIndex. But rejoinLocationIndex is a LOCATION index, and a
+					// location sits at some point in the MIDDLE of that segment's run - a Cairo way
+					// carries 3-10 geometry nodes between junctions. So the untrimmed tail begins
+					// before the point the repair leg was routed to, and the spliced route doubles
+					// back and re-drives it.
+					//
+					// The joint-gap check below then rejects the splice - correctly, but only after
+					// the search has been paid for, and then the full search runs anyway. So most
+					// deviations were paying TWO route calculations serially in front of a waiting
+					// driver, and the repair could only ever succeed on the 1-in-k chance that the
+					// rejoin location happened to be the first point of its segment.
+					//
+					// Trimmed geometrically rather than by index arithmetic: the repair leg was
+					// routed TO this location, so its last point is the joint by construction, and
+					// the nearest point of the tail segment to it is the one to start from. That is
+					// self-correcting against the index-space question rather than assuming an
+					// answer to it.
+					RouteSegmentResult trimmed = trimToJoint(copy, last);
+					if (trimmed != null) {
+						copy = trimmed;
+					}
+				}
 				if (spliced.size() == repairSegments.size()
 						&& sameSegment(last, copy)) {
 					continue;   // dedupe the joint
 				}
 				spliced.add(copy);
+			}
+			// The tail can dedupe away entirely when it was a single segment, which is reachable
+			// near the destination. Without this the joint check below indexes past the end and the
+			// splice is reported as an IndexOutOfBoundsException, which reads like a real index bug.
+			if (spliced.size() <= repairSegments.size()) {
+				CairoDriveLogger.getInstance().log("CD_REROUTE",
+						"splice REJECTED - tail collapsed into the repair leg");
+				return null;
 			}
 			// (3) the joint must be geometrically continuous.
 			RouteSegmentResult a = repairSegments.get(repairSegments.size() - 1);
@@ -1433,6 +1470,58 @@ public class RouteProvider {
 		} catch (Throwable t) {
 			CairoDriveLogger.getInstance().log("CD_REROUTE",
 					"splice FAILED " + t.getClass().getSimpleName() + ": " + t.getMessage());
+			return null;
+		}
+	}
+
+	/**
+	 * Restart {@code tailFirst} at whichever of its own points the repair leg actually ends on.
+	 *
+	 * @return a trimmed copy, or null when no point of the segment is close enough to the joint to
+	 *         be it - in which case the caller keeps the untrimmed segment and the joint-gap check
+	 *         rejects the splice, exactly as before. Trimming must never INVENT a join.
+	 */
+	@Nullable
+	private static RouteSegmentResult trimToJoint(@NonNull RouteSegmentResult tailFirst,
+	                                              @NonNull RouteSegmentResult repairLast) {
+		try {
+			int end = tailFirst.getEndPointIndex();
+			int start = tailFirst.getStartPointIndex();
+			LatLon joint = repairLast.getPoint(repairLast.getEndPointIndex());
+			if (joint == null) {
+				return null;
+			}
+			int step = end >= start ? 1 : -1;
+			int best = start;
+			double bestDist = Double.MAX_VALUE;
+			// Only points between the segment's own start and end, in its own direction of travel:
+			// a nearer point on the far side would reverse the segment or extend it beyond what the
+			// previous route used.
+			for (int i = start; step > 0 ? i <= end : i >= end; i += step) {
+				LatLon p = tailFirst.getPoint(i);
+				if (p == null) {
+					continue;
+				}
+				double d = MapUtils.getDistance(p.getLatitude(), p.getLongitude(),
+						joint.getLatitude(), joint.getLongitude());
+				if (d < bestDist) {
+					bestDist = d;
+					best = i;
+				}
+			}
+			// The repair was routed TO this location, so a genuine joint is metres away. Anything
+			// further means the repair ended somewhere else and this is not the segment to trim.
+			if (bestDist > 15.0) {
+				return null;
+			}
+			if (best == start) {
+				return null;   // already correct, nothing to trim
+			}
+			if (best == end) {
+				return null;   // trimming to zero length; let the dedupe/gap check handle it
+			}
+			return new RouteSegmentResult(tailFirst.getObject(), best, end);
+		} catch (Throwable t) {
 			return null;
 		}
 	}
@@ -2079,7 +2168,31 @@ public class RouteProvider {
 	                                                   @NonNull List<LatLon> path,
 	                                                   @NonNull RouteCalculationParams params)
 			throws IOException, JSONException {
-		OnlineRoutingResponse response = helper.calculateRouteOnline(engine, path, params);
+		// Record the OUTCOME, not just the spend. Nothing in this path ever called recordOk or
+		// recordFailure, so all three routing providers read permanently unhealthy on the API
+		// status screen while serving every reroute - ApiHealth.healthy() needs okCount > 0 - and a
+		// 401 from a revoked key, a 403 from an exhausted quota or a 429 were completely invisible.
+		// They surfaced only as "offline won ... online unusable or later", which is the same line
+		// a merely slower network produces. For a feature whose whole justification is that it can
+		// only be judged from a drive, that is the wrong side of the trade.
+		long startedAt = System.currentTimeMillis();
+		ApiHealth.Api healthApi = CairoDriveRoutingEngines.healthApiFor(engine);
+		OnlineRoutingResponse response = null;
+		try {
+			response = helper.calculateRouteOnline(engine, path, params);
+		} finally {
+			// finally rather than catch+rethrow: whether a precise rethrow of Throwable compiles
+			// depends on what calculateRouteOnline happens to declare, and that is not a thing this
+			// call site should be coupled to.
+			if (healthApi != null) {
+				long ms = System.currentTimeMillis() - startedAt;
+				if (response == null) {
+					ApiHealth.recordFailure(healthApi, 0, "no route returned", ms);
+				} else {
+					ApiHealth.recordOk(healthApi, ms);
+				}
+			}
+		}
 		if (response == null) {
 			return null;
 		}
