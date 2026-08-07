@@ -2197,24 +2197,24 @@ public class RouteProvider {
 			return CairoDriveRouteRace.race(
 					() -> findVectorMapsRoute(params, calcGPXRoute),
 					() -> findOnlineRouteWith(helper, engine, racePath, onlineParams),
-					r -> r != null && r.isCalculated(),
-					// The offline loser is marked cancelled the moment online wins. The native
-					// search polls this and stops, which is the only mechanism there is - by the
-					// time the race returns, afterExecute has already removed the task from
-					// tasksMap, so stopCalculation() can never reach it again.
+					// NO abandon callback, and this is the one line in the file that must not be
+					// "improved" without reading the next paragraph.
 					//
-					// Three things it stops, and two of them are measurement rather than battery:
-					// the abandoned calculation was holding warmSessionOwner (so the NEXT reroute
-					// reported reuse=0 with nothing wrong with the cache), and it wrote a
-					// CD_ROUTE_TIMING line seconds AFTER CD_REROUTE finished, describing a search
-					// whose result was discarded and which cd-analyze.py cannot tell from a real
-					// one. On a drive where online wins often, that is most of the timing data.
-					() -> {
-						RouteCalculationProgress p = params.calculationProgress;
-						if (p != null) {
-							p.isCancelled = true;
-						}
-					});
+					// It used to set params.calculationProgress.isCancelled when the online side
+					// won, to stop the abandoned offline search wasting CPU and writing a phantom
+					// CD_ROUTE_TIMING line. That progress object is SHARED: RouteRecalculationTask
+					// checks the very same flag immediately after calculateRouteImpl returns
+					// (RouteRecalculationHelper:1206) and discards the result when it is set.
+					//
+					// So every online win cancelled itself. The 2026-08-07 drive logged
+					// "ONLINE won in 583 ms" ten times over, dispatched=10, finished=0, and no
+					// route was ever drawn - the app could not navigate at all.
+					//
+					// Cancelling the loser needs the offline leg to own a progress object the task
+					// does not read. Until that exists, the abandoned search runs to completion:
+					// battery and a confusing timing line, which is the cheaper failure by a very
+					// wide margin.
+					r -> r != null && r.isCalculated());
 		} catch (Throwable t) {
 			// A broken race must never cost a route. Fall through to the offline path.
 			CairoDriveLogger.getInstance().log("ROUTE_RACE", "race setup failed, offline only", t);

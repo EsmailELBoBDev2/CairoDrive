@@ -243,6 +243,21 @@ def reroute_speed(rows):
             print("  active but never changed a verdict: no deviation in this drive fell between")
             print("  the old threshold and the new one. Neutral result, not a good one.")
 
+    # --- did any reroute actually finish? ---------------------------------
+    rr = rows.get("CD_REROUTE", [])
+    disp = len([l for l in rr if "dispatched" in l])
+    fin = len([l for l in rr if "finished" in l])
+    if disp and not fin:
+        print("\n  *** %d reroutes DISPATCHED, 0 FINISHED. No route was installed at all." % disp)
+        print("      The app could not navigate. Check, in this order:")
+        print("        1. cancelled=1 on the CD_ROUTE_TIMING lines - something set")
+        print("           calculationProgress.isCancelled before the task read it. That flag is")
+        print("           SHARED, and RouteRecalculationHelper discards the result when it is set.")
+        print("        2. CD_ROUTE_RACE 'ONLINE won' with no matching finish - the race returned a")
+        print("           route the task then threw away.")
+        print("        3. fast=FAILED_* on every line - the engine refused and there was no")
+        print("           fallback.")
+
     # --- the warm routing environment -------------------------------------
     print("\n  --- WARM ROUTING ENVIRONMENT (reused router/config/context) ---")
     timing = rows.get("CD_ROUTE_TIMING", [])
