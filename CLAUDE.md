@@ -98,11 +98,34 @@ to look for**, because `engine=` is computed from `router.isHHRoutingConfigured(
 
 A map with no HH section - which is what a self-built OsmAndMapCreator extract usually is - gives
 `selectBestRoutingFiles` no group, so routing silently falls through to the native C++ A*. It
-reads **`engine=hh-cpp fast=FAILED_NO_HH_ROUTING_DATA`**. `fast=` is the ONLY tell. Also watch
-`fast=FAILED_UNSUPPORTED_PARAMETERS`, which this fork's `avoid_narrow_streets` work can trigger
-when a map's `profileParams` does not cover the parameters in use.
+reads **`engine=hh-cpp fast=FAILED_NO_HH_ROUTING_DATA`**. `fast=` is the ONLY tell.
 
 C++ HH search times are ~200-400 ms; the seconds are the load, not the search.
+
+### `fast=FAILED_UNSUPPORTED_PARAMETERS` fires on EVERY calculation — read `badParams=`, do not guess
+
+The 2026-08-07 drive got it on all **69** calculations, so the HH fast path is refused every single
+time and every route on that drive was produced the slow way. The status names no parameter, and
+the guess recorded here was `avoid_narrow_streets`. **A guess is not an answer and it has already
+cost this project six wrong hypotheses on this exact router.**
+
+`CD_ROUTE_TIMING` now carries **`badParams=`**, which names it. It mirrors
+`HHRoutePlanner.matchGroupRoutingParams` rather than approximating it — a parameter counts only when
+it is absent from the map's declared `profileParams` **and** differs from its own declared default,
+with `allow_private` exempt exactly as `IGNORE_FAILED_UNSUPPORTED_PARAMETERS` exempts it — and it
+reduces per **group**, because each entry of a region's `profileParams` forms its own candidate
+group and only the ranked best group's count sets the flag. A union across groups would name
+parameters the chosen group supports.
+
+Three readings, three different conclusions:
+
+| `badParams=` | Means | Next move |
+|---|---|---|
+| a parameter name | That is the culprit, measured | Bake it into a custom map with `generate-hh-routing.sh --routing_params`, or clear the setting |
+| `none` | No non-default parameter is unsupported. **The `avoid_narrow_streets` explanation above is wrong** | Do not repeat it. The cause is elsewhere — start from `matchGroupRoutingParams` on the C++ side |
+| `noHHIndex` | No HH section for this profile at all | A map problem wearing a parameter problem's status. Same fix as `FAILED_NO_HH_ROUTING_DATA` |
+
+`cd-analyze.py` prints the breakdown and says plainly when the reading contradicts this file.
 
 ### The offline search is no longer the reroute bottleneck — simulated, 2026-08-07
 
@@ -232,6 +255,27 @@ the prefix cache collapsed.
 prompts are silent — the feature looks broken but is not. Always read the `SESSION` header and
 state which build produced the log (`buildType`, `versionCode`, `flavor`); a stale sideload
 masquerading as a Play build has wasted a drive before.
+
+### 5. `CD_MATCH` — and why a slow fix is not one thing
+
+The HMM matcher watchdog latches the whole feature off for the rest of the process, so a
+`disabled reason=` line means the rest of that drive says nothing about map matching. **Read it
+before concluding the feature did nothing.**
+
+The 2026-08-07 drive measured a worst case of **2162 ms** against an ordinary case in the low tens.
+Those are two different events and the watchdog used to conflate them: a fix that crosses into
+unloaded `.obf` tiles pays for a disk read, and five tile-crossing fixes in a row is what driving in
+a straight line looks like — not evidence the algorithm is too expensive. So the streak
+(`MAX_CONSECUTIVE_SLOW` × `SLOW_MATCH_MS`) now **excuses any fix that loaded tiles**; such a fix
+neither increments the streak nor clears it, because clearing would let alternating load/no-load
+fixes hide a genuinely slow matcher forever.
+
+Underneath it sits a second latch with no exemption — `MAX_CONSECUTIVE_STALLS` × `STALL_MATCH_MS`
+(3 × 1500 ms) — closing the hole where every fix loads tiles and takes two seconds. 1500 ms is past
+any plausible tile read on this device and past the 1 Hz fix interval, so three in a row means
+matching is running behind the GPS and a matched position arrives after the fix that replaces it.
+
+`msMax` in the summary still reports the excused cost, so nothing is hidden by the exemption.
 
 ---
 
