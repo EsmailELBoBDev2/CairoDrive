@@ -118,8 +118,12 @@ public class RouteProvider {
 	//
 	// Read `reuse=` in CD_ROUTE_TIMING on the next drive. Zero means the cache never warmed and this
 	// is pure risk for nothing; anything above zero should show `search=` unchanged and
-	// `CD_HHLOAD loadMs=` unchanged, because those are what the cache does NOT touch. If any warm
-	// environment line reads "dropped" every calculation, turn this back off.
+	// `CD_HHLOAD loadMs=` unchanged, because those are what the cache does NOT touch.
+	//
+	// Expect zero while the traffic detour is active, and do NOT read that as a fault.
+	// TrafficDetourHelper:171 adds jam ids to the same shared Builder and removes them afterwards
+	// (:178), so every poll changes the avoided-roads set twice and correctly invalidates the entry
+	// both times. That is the cache refusing to serve a route that ignores a jam it was told about.
 	public static boolean USE_WARM_ROUTING_ENVIRONMENT = true;
 
 	/** Grep handle for the per-calculation timing line. */
@@ -155,26 +159,59 @@ public class RouteProvider {
 		/** May be null when this profile never uses the two phase COMPLEX context. */
 		final RoutingContext complexCtx;
 		/**
-		 * penaltyForReverseDirection as built from the routing profile. HHRoutePlanner.runHHRoute halves it
-		 * for intermediate targets and restores it afterwards, but not through a finally block - so snapshot
-		 * the built value and restore it on every reuse rather than trusting that it was put back.
+		 * The RoutingConfiguration fields the HH planner writes during a search, as built from the routing
+		 * profile. Restored on every reuse rather than trusted to have been put back.
+		 * <p>
+		 * These are on the CONFIGURATION, not the context, so {@code resetForNewCalculation} cannot reach
+		 * them - and the Java HH planner leaves two of them poisoned:
+		 * {@code HHRoutePlanner.runDetailedRouting:1338} sets {@code planRoadDirection=0,
+		 * heuristicCoefficient=1} and its cleanup at {@code :1369} restores neither, while
+		 * {@code recalculateNetworkCluster:1439} sets {@code planRoadDirection=1, heuristicCoefficient=0}
+		 * and restores only MAX_VISITED. The same method saves and restores both at {@code :1009-1021}, so
+		 * the omission is an oversight rather than a convention.
+		 * <p>
+		 * Before this cache that died with the throwaway configuration. Cached, it would be the next route's
+		 * planning parameters: {@code heuristicCoefficient=0} is Dijkstra and {@code planRoadDirection=1} is
+		 * a one-direction search - a different route, silently, for the rest of the process. Reachable
+		 * whenever the Java HH branch is taken ({@code RoutePlannerFrontEnd:511}, i.e. {@code engine=java}),
+		 * and that case does not self-heal, because with the native library absent {@code lib=} is
+		 * {@code identityHashCode(null)} and the signature never changes.
 		 */
 		final double penaltyForReverseDirection;
+		final int planRoadDirection;
+		final float heuristicCoefficient;
+		final int maxVisited;
+		/**
+		 * Identity of the GeneralRouter this configuration was built with.
+		 * <p>
+		 * {@code RoutePlannerFrontEnd:459} swaps a throwaway private-access probe router into
+		 * {@code config.router} via {@code RoutingContext.setRouter} and puts the real one back at
+		 * {@code :470} - but {@code findRouteSegment} between them throws IOException and the pair is not in
+		 * a try/finally. On a throw the configuration keeps a router built from
+		 * {@code {allow_private, check_allow_private_needed}} alone: none of the user's routing parameters
+		 * and no avoided roads. The impassable check cannot see this in the ordinary case, because an empty
+		 * avoided set and a lost avoided set both read "none". Identity can.
+		 */
+		final int routerIdentity;
 		/** Value of {@link RouteProvider#mapGeneration} when the reader array behind this entry was read. */
 		final long mapGeneration;
 		int reuseCount;
 
 		WarmRoutingEnvironment(String signature, String impassable, RoutePlannerFrontEnd router,
 		                       RoutingConfiguration config,
-		                       RoutingContext ctx, RoutingContext complexCtx, double penaltyForReverseDirection,
+		                       RoutingContext ctx, RoutingContext complexCtx,
 		                       long mapGeneration) {
 			this.signature = signature;
 			this.impassable = impassable;
+			this.penaltyForReverseDirection = config.penaltyForReverseDirection;
+			this.planRoadDirection = config.planRoadDirection;
+			this.heuristicCoefficient = config.heuristicCoefficient;
+			this.maxVisited = config.MAX_VISITED;
+			this.routerIdentity = System.identityHashCode(config.router);
 			this.router = router;
 			this.config = config;
 			this.ctx = ctx;
 			this.complexCtx = complexCtx;
-			this.penaltyForReverseDirection = penaltyForReverseDirection;
 			this.mapGeneration = mapGeneration;
 		}
 	}
@@ -213,7 +250,8 @@ public class RouteProvider {
 	 * The listener additionally covers a reader object surviving while its content is re-indexed.
 	 */
 	private volatile long mapGeneration;
-	private boolean resourceListenerRegistered;
+	/** Written on the UI thread, read from the routing thread. */
+	private volatile boolean resourceListenerRegistered;
 
 	/**
 	 * The application, captured the first time one is handed to this class.
@@ -236,23 +274,31 @@ public class RouteProvider {
 	 */
 	private void ensureResourceListenerRegistered(@NonNull OsmandApplication app) {
 		resolvedApp = app;
-		synchronized (warmLock) {
-			if (resourceListenerRegistered) {
-				return;
-			}
-			resourceListenerRegistered = true;
+		if (resourceListenerRegistered) {
+			return;
 		}
+		// The flag is raised by registerResourceListener, AFTER the listener is actually attached - not
+		// here. Raising it here would latch on a post that never runs (teardown) or that throws, and the
+		// listener would then be missing for the life of the process with nothing saying so. Its unique job
+		// is onReaderIndexed, where the BinaryMapIndexReader object SURVIVES a re-index: identity unchanged,
+		// so the signature is unchanged too, so nothing else in this class can notice. The cost of the
+		// duplicate posts this allows is nil - addResourceListener is contains()-guarded (ResourceManager:218).
+		//
 		// Posted, not called here. ResourceManager.resourceListeners is a plain ArrayList with no
 		// synchronisation (ResourceManager:107), added to from fragments on the UI thread and ITERATED from
 		// the indexing threads. Adding to it from the routing thread - which is where this method is reached
 		// from, once per process - is a write racing those iterations, and its failure mode is a
 		// ConcurrentModificationException thrown inside map indexing, nowhere near here. Every other caller
-		// in the app is on the UI thread; joining them costs nothing, because the very first calculation
-		// simply runs without the listener and is covered by the signature anyway.
+		// in the app is on the UI thread; joining them costs one calculation's worth of exposure, on the
+		// very first calculation of a session, to a re-index landing in that same instant.
 		app.runInUIThread(() -> registerResourceListener(app));
 	}
 
+	/** UI thread only, which is what makes the unsynchronised flag below safe. */
 	private void registerResourceListener(@NonNull OsmandApplication app) {
+		if (resourceListenerRegistered) {
+			return;
+		}
 		app.getResourceManager().addResourceListener(new ResourceManager.ResourceListener() {
 			@Override
 			public void onMapsIndexed() {
@@ -274,6 +320,7 @@ public class RouteProvider {
 				invalidateWarmEnvironment("map closed");
 			}
 		});
+		resourceListenerRegistered = true;
 	}
 
 	/**
@@ -332,6 +379,18 @@ public class RouteProvider {
 			}
 			if (cached != null && !cached.signature.equals(signature)) {
 				log.info(TIMING_TAG + " warm environment dropped: routing signature changed");
+				cached = null;
+				warmEnvironment = null;
+			}
+			// Is the configuration still carrying the router it was built with?
+			//
+			// RoutePlannerFrontEnd:459 swaps a private-access probe router into config.router and restores
+			// it at :470 - outside any finally, with a throwing call between them. On a throw the
+			// configuration is left holding a router that has none of the user's routing parameters. The
+			// impassable test below cannot see that: an empty avoided set and a LOST avoided set both read
+			// "none", which is the ordinary case. Identity sees it.
+			if (cached != null && cached.routerIdentity != System.identityHashCode(cached.config.router)) {
+				log.info(TIMING_TAG + " warm environment dropped: configuration router was replaced");
 				cached = null;
 				warmEnvironment = null;
 			}
@@ -783,9 +842,17 @@ public class RouteProvider {
 			router = warm.router;
 			cf = warm.config;
 			// The HH network cache and the built GeneralRouter come along untouched - the signature above is
-			// what guarantees they still describe the current profile, parameters and map files. Only the
-			// genuinely per-calculation fields are refreshed.
+			// what guarantees they still describe the current profile, parameters and map files.
+			//
+			// These four are the configuration fields a search WRITES, restored to their built values rather
+			// than trusted to have been put back. See WarmRoutingEnvironment.penaltyForReverseDirection: the
+			// Java HH planner leaves planRoadDirection and heuristicCoefficient poisoned, and on that path
+			// the signature never changes, so nothing else would ever notice.
 			cf.penaltyForReverseDirection = warm.penaltyForReverseDirection;
+			cf.planRoadDirection = warm.planRoadDirection;
+			cf.heuristicCoefficient = warm.heuristicCoefficient;
+			cf.MAX_VISITED = warm.maxVisited;
+			cf.targetDirection = null;
 			config.applyMemoryLimits(cf, currentMemoryLimits(settings, false));
 			applyPerCalculationSettings(cf, params, settings);
 		} else {
@@ -931,7 +998,7 @@ public class RouteProvider {
 				log.info(TIMING_TAG + " avoided roads changed while building: labelling the entry from the router");
 			}
 			env.setWarmEnvironment(new WarmRoutingEnvironment(signature, builtImpassable, router, cf, ctx,
-					cachedComplexCtx, cf.penaltyForReverseDirection, mapGenerationAtStart));
+					cachedComplexCtx, mapGenerationAtStart));
 		}
 		return env;
 	}
@@ -1271,7 +1338,13 @@ public class RouteProvider {
 					"repair search FAILED " + t.getClass().getSimpleName() + ": " + t.getMessage());
 			return null;
 		} finally {
-			if (env != null) {
+			// Only if this env actually holds a session. The repair search asks for the 3-arg overload, so
+			// allowWarmEnvironment is false and it never checks the cache out - but finishWarmSession keys
+			// on the OWNING THREAD, not on the env, so calling it unconditionally would release somebody
+			// else's session. Inert today (tryRepairRoute runs before calculateRouteImpl on the same
+			// thread, so no session is open) and a live footgun tomorrow: it would clear warmSessionOwner
+			// mid-calculation and let another thread be handed the RoutingContext still being searched.
+			if (env != null && env.getWarmEnvironment() != null) {
 				try {
 					finishWarmSession(env, false);
 				} catch (Throwable ignored) {

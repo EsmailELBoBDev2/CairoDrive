@@ -457,17 +457,25 @@ public class RoutePlannerFrontEnd {
 				mp.put(allowPrivateKey, "true");
 				mp.put(GeneralRouter.CHECK_ALLOW_PRIVATE_NEEDED, "true");
 				ctx.setRouter(new GeneralRouter(router.getProfile(), mp));
-				for (LatLon latLon : points) {
-					RouteSegmentPoint rp = findRouteSegment(latLon.getLatitude(), latLon.getLongitude(), ctx, null);
-					if (rp != null && rp.road != null) {
-						if (rp.road.hasPrivateAccess(ctx.config.router.getProfile())) {
-							res = true;
-							break;
+				// try/finally, because findRouteSegment throws IOException and the restore below used to sit
+				// after it. On a throw the RoutingConfiguration was left holding this probe router - built
+				// from {allow_private, check_allow_private_needed} alone, with none of the user's routing
+				// parameters and no impassable roads. Harmless while every calculation threw its
+				// configuration away; not harmless now that CairoDrive can reuse one.
+				try {
+					for (LatLon latLon : points) {
+						RouteSegmentPoint rp = findRouteSegment(latLon.getLatitude(), latLon.getLongitude(), ctx, null);
+						if (rp != null && rp.road != null) {
+							if (rp.road.hasPrivateAccess(ctx.config.router.getProfile())) {
+								res = true;
+								break;
+							}
 						}
 					}
+				} finally {
+					ctx.unloadAllData();
+					ctx.setRouter(router);
 				}
-				ctx.unloadAllData();
-				ctx.setRouter(router);
 			}
 		}
 		return res;
