@@ -1471,8 +1471,20 @@ jobs:
           # sharper: the cached object is a BINARY that ships inside the reviewer-approved,
           # signed APK. GitHub caches are writable from any branch of the repository and keyed
           # on inputs an attacker controls the same way the legitimate build does, so a signed
-          # build restoring one would put an unreviewed .so into the Play upload. This job pays
-          # the ~8 minutes and compiles it. That is the whole point of the production gate.
+          # build restoring one would put an unreviewed .so into the Play upload. This job
+          # compiles it instead. That is the whole point of the production gate.
+          #
+          # WHAT THAT COSTS, measured on run 279 rather than estimated: ~50 minutes in the AAB
+          # step alone, and roughly 70-90 minutes end to end. An earlier version of this note
+          # said "~8 minutes", which priced the ndk-build of libosmand.so and forgot that the
+          # `Cache core-legacy externals` entry is missing here too - so this job also downloads
+          # and builds Qt, boost and protobuf from scratch, which is most of the wall clock.
+          #
+          # It does NOT get faster on later runs. There is no cache to warm: the absence is the
+          # feature. Every signed build pays this in full, every time. If that ever becomes
+          # intolerable the answer is NOT to restore a cache here - it is to publish a
+          # digest-pinned libosmand.so as a release asset and verify its sha256 in this job,
+          # which keeps the property that nothing unreviewed reaches the Play upload.
           distribution: 'temurin'
 
       - name: Resolve variant names
