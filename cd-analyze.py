@@ -672,6 +672,41 @@ def providers(rows):
         print("     again. Those lines are in the file under a tag nobody greps for.")
 
 
+def narrow_verdict(lines):
+    """States the one comparison CD_NARROW exists to settle, instead of leaving it to be eyeballed.
+
+    CLAUDE.md's case for building a custom Egypt .obf rests on the ALLEY NAME signal beating the
+    ACTIONABLE TAG signal - because the router can act on tags and cannot read names, so a signal
+    that lives only in names needs to be baked into a map before it can do anything. City-wide
+    Overpass measured tags ~2.5% and alley names ~16.6%.
+
+    If a drive keeps reading the other way round, the custom map buys less than the note assumes.
+    Reported as counts as well as percentages: this is a per-window sample of whatever roads were
+    near the car, and a handful of ways is not a measurement of Cairo.
+    """
+    ways = actionable = alley = street = 0
+    for line in lines:
+        d = kv(line)
+        ways += int(num(d, "ways", 0) or 0)
+        actionable += int(num(d, "actionable", 0) or 0)
+        alley += int(num(d, "nameAlley", 0) or 0)
+        street += int(num(d, "nameStreet", 0) or 0)
+    if ways == 0:
+        return
+    print("    totals: ways=%d actionable=%d (%.0f%%) nameAlley=%d (%.0f%%) nameStreet=%d"
+          % (ways, actionable, 100.0 * actionable / ways, alley, 100.0 * alley / ways, street))
+    if ways < 200:
+        print("    (%d ways is a sample of what was near the car, NOT a measurement of Cairo -" % ways)
+        print("     city-wide Overpass gave tags ~2.5%, alley names ~16.6%. Do not conclude yet.)")
+    if alley > actionable:
+        print("    ==> alley names beat actionable tags, as CLAUDE.md predicts: the signal lives")
+        print("        where the router CANNOT read it, which is the case for a custom Egypt .obf.")
+    elif actionable > alley:
+        print("    ==> actionable tags beat alley names - the OPPOSITE of CLAUDE.md's premise.")
+        print("        If a real drive reproduces this, the custom .obf argument is WEAKER, not")
+        print("        stronger: the router can already act on what is there.")
+
+
 def misc(rows):
     section("EVERYTHING ELSE")
     for tag, hint in (("CD_TRIP", "head unit accepted the manoeuvre card during reroute?"),
@@ -687,6 +722,8 @@ def misc(rows):
             continue
         for line in list(dict.fromkeys(lines))[:4]:
             print("    " + line[:150])
+        if tag == "CD_NARROW":
+            narrow_verdict(lines)
     nav = rows.get("CD_NAV", [])
     if nav:
         degraded = sum(1 for l in nav if "gnss=DEGRADED" in l)
