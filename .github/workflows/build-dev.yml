@@ -2067,6 +2067,7 @@ jobs:
           SHORT_SHA: ${{ steps.variant.outputs.short_sha }}
           VERSION_CODE: ${{ steps.variant.outputs.version_code }}
           STAMP: ${{ steps.stage.outputs.stamp }}
+          PREBUILT_USED: ${{ steps.prebuilt.outputs.used }}
         run: |
           {
             echo "## CairoDrive release build"
@@ -2083,6 +2084,19 @@ jobs:
               echo "  to users on the ABIs it omits. Rebuild with the \`fat\` flavor to publish."
             fi
             echo "- Signing: release keystore from the \`production\` environment - **uploadable to Google Play**"
+            # Say which way the native library went, in the place somebody already reads. A prebuilt
+            # miss costs ~50 minutes and is otherwise invisible except as "why was that slow" - and
+            # the likeliest cause is the runner's NDK being bumped by GitHub, which happens on its
+            # own schedule and to nobody's plan.
+            if [ "${PREBUILT_USED}" = "true" ]; then
+            echo "- Native library: digest-verified prebuilt (this is why the build was ~15 min, not ~90)"
+            else
+            echo "- Native library: :warning: **compiled from source** - this build paid ~50 extra minutes."
+            echo "  Nothing is wrong with the artifact; the prebuilt was missing, stale or unverified."
+            echo "  Fix: run **Prebuild native routing library**, then commit the digest it prints to"
+            echo "  \`native/prebuilt-${ABI}.sha256\`. The reason is a \`::warning::\` on the"
+            echo "  *Use the verified prebuilt native library* step above."
+            fi
             if [ "${HAS_PLACES_KEY}" = "true" ]; then
               echo "- Search: Google Places"
             else
