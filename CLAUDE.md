@@ -104,6 +104,42 @@ when a map's `profileParams` does not cover the parameters in use.
 
 C++ HH search times are ~200-400 ms; the seconds are the load, not the search.
 
+### The warm routing environment — ON, unverified, and read `reuse=` before defending it
+
+`USE_WARM_ROUTING_ENVIRONMENT` (`RouteProvider:109`) reuses one `RoutePlannerFrontEnd`,
+`RoutingConfiguration` and `RoutingContext` across calculations instead of building them per query.
+It was **off on purpose** and was turned on at the owner's explicit instruction, after he was told
+what it risks. Do not present it as a win until a log says so.
+
+**What it can possibly buy: the setup phase only — 2-12%.** On the C++ HH engine the search runs in
+native code the cache does not reach, and `CD_ROUTE_PHASE` has never named setup as dominant. It is
+not a second. `search=` and `CD_HHLOAD loadMs=` must come back UNCHANGED; if they move, the
+attribution is wrong and something else changed.
+
+**What it risks: a wrong route, silently, that outlives the calculation.** Two such faults were
+found by adversarial review after it was flipped on, and both were invisible to the signature:
+
+| Fault | Why the signature could not see it |
+|---|---|
+| `planRoadDirection` / `heuristicCoefficient` poisoned by the Java HH planner (`HHRoutePlanner:1338`, `:1439` set them; the cleanups at `:1369`/`:1454` restore neither, though `:1009-1021` restores both) | They live on `RoutingConfiguration`, so `resetForNewCalculation` cannot reach them. Worse, this only fires on `engine=java` — where `lib=` is `identityHashCode(null)`, so the signature is constant and the poison **never self-heals** |
+| `config.router` replaced by the private-access probe (`RoutePlannerFrontEnd:459` swaps, `:470` restores, with a throwing call between and no `finally`) | The probe router has no impassable set, so `getImpassableRoadIds()` reads `none` — identical to the ordinary case of no closures |
+
+Both are fixed: the entry snapshots all four config fields a search writes and restores them on
+reuse, records the router's identity and drops on mismatch, and the upstream restore is now in a
+`finally`. **The lesson is the one to keep: a signature over INPUTS does not cover state a search
+WRITES.** Anything added to this cache must be checked against that, not against the signature.
+
+The avoided-roads component of the signature is deliberately read back out of `cf.router` AFTER the
+build, not from `configBuilder` before it — `Builder.build` re-reads the live set at
+`RoutingConfiguration:219`, so labelling from the earlier read could cache a router under a
+description of a different one, and that mislabel **latches** because the label is what every later
+lookup compares against.
+
+**Expect `reuse=` near zero while the traffic detour polls** — `TrafficDetourHelper:171/:178` adds
+and removes jam ids on the shared builder and each change correctly invalidates the entry. That is
+the cache refusing to serve a route that ignores a jam. A zero for that reason is not a fault; a
+zero with `routing signature changed` on every calculation is. `cd-analyze.py` separates the two.
+
 ### 3. `CD_NARROW` — narrow-street data coverage
 
 Compare against the city-wide Overpass numbers already measured for Cairo: **tags ~2.5%**,

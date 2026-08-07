@@ -208,6 +208,51 @@ def reroute_speed(rows):
         for l in early[:6]:
             print("      " + l.strip()[:110])
 
+    # --- the warm routing environment -------------------------------------
+    print("\n  --- WARM ROUTING ENVIRONMENT (reused router/config/context) ---")
+    timing = rows.get("CD_ROUTE_TIMING", [])
+    reuses = [num(kv(l), "reuse", 0) for l in timing if "reuse=" in l]
+    drops = [l for l in timing if "warm environment dropped" in l]
+    if not timing:
+        print("  no CD_ROUTE_TIMING lines - nothing to say.")
+    elif not reuses:
+        print("  no reuse= field. This build predates the warm environment.")
+    else:
+        warm = [r for r in reuses if r and r > 0]
+        print("  calculations=%d  served warm=%d  peak reuse count=%d"
+              % (len(reuses), len(warm), max(reuses) if reuses else 0))
+        if not warm:
+            print("  ==> the cache NEVER warmed. Every calculation paid full setup and this")
+            print("      feature is carrying its risk for nothing. Read the drop reasons below")
+            print("      before turning USE_WARM_ROUTING_ENVIRONMENT back off.")
+        else:
+            print("  ==> %d calculations skipped the setup phase." % len(warm))
+            print("      Now check it bought something REAL: search= and CD_HHLOAD loadMs=")
+            print("      are what the cache does NOT touch, so they must be unchanged. If they")
+            print("      are, the saving is setup only - the 2-12% this was always modelled at.")
+    if drops:
+        why = defaultdict(int)
+        for l in drops:
+            why[l.split("dropped:", 1)[-1].strip()] += 1
+        print("  invalidations:")
+        for reason, n in sorted(why.items(), key=lambda kv_: -kv_[1]):
+            print("      %4d  %s" % (n, reason))
+        # Two of these reasons mean the cache is working; two mean it is broken.
+        if why.get("avoided roads changed") or why.get("avoided roads mutated under the cache"):
+            print("      NOTE 'avoided roads changed' is EXPECTED whenever the traffic detour")
+            print("      is polling - it adds and removes jam ids on the shared builder, and")
+            print("      each change correctly invalidates the entry. That is the cache")
+            print("      refusing to serve a route that ignores a jam, not a fault.")
+        if why.get("configuration router was replaced"):
+            print("      *** 'configuration router was replaced' means the private-access probe")
+            print("      in RoutePlannerFrontEnd threw and left its throwaway router behind.")
+            print("      The guard caught it - but find out WHY it threw, because before the")
+            print("      guard existed that router would have planned every later route.")
+        if why.get("routing signature changed") and len(drops) >= len(reuses) > 0:
+            print("      *** the signature changes on EVERY calculation, so the cache can never")
+            print("      warm. Something in buildWarmSignature is not stable across calls -")
+            print("      print the two signatures and diff them before doing anything else.")
+
     # --- road identity ---------------------------------------------------
     print("\n  --- WRONG-ROAD DETECTOR (observe only) ---")
     wr = rows.get("CD_WRONGROAD", [])
