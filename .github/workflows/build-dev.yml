@@ -1651,6 +1651,10 @@ jobs:
         id: prebuilt
         env:
           GH_TOKEN: ${{ github.token }}
+          # Same reason as in native-prebuild.yml: this step runs in the workspace root,
+          # which is not a git checkout, and gh would otherwise fail to work out which
+          # repository to download the release from.
+          GH_REPO: ${{ github.repository }}
           ABI: ${{ env.ABI }}
         run: |
           set -uo pipefail
