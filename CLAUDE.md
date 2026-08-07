@@ -137,8 +137,15 @@ That 5-second prize is real and so is its price: loosening exactly those two rul
 default once already.
 
 **It has been taken, on 2026-08-07, at the owner's explicit and repeated instruction** —
-`CAIRODRIVE_FAST_REROUTE` (threshold × 0.6 with a hard 30 m floor, hysteresis capped at 3 fixes) and
-`CAIRODRIVE_WRONG_ROAD_ACT`, both ON. Simulated at **14.5 s → 8.8 s median, p90 30.1 → 16.2 s**.
+`CAIRODRIVE_FAST_REROUTE` (threshold × 0.5 with a hard 30 m floor, hysteresis capped at 3 fixes) and
+`CAIRODRIVE_WRONG_ROAD_ACT`, both ON. Simulated at **14.5 s → 8.5 s median, p90 30.1 → 14.3 s**.
+
+**The "5.2 s floor" quoted above is RETRACTED.** It came from removing the rules without keeping the
+floor. Sweeping the knobs the code actually has gives: 0.6/30 m → 8.8 s (p90 16.3, 0.0% false),
+0.5/30 m → 8.5 s (p90 14.3, 0.0%), 0.45/25 m → 8.3 s (0.2%), 0.4/20 m → 7.9 s (0.5%),
+0.3/15 m → 7.4 s (**3.2%**). 0.5 is the last row that is free. The remaining prize past it is
+**1.4 s**, not five, and it is bought with a 3.2% chance of rerouting a driver who never left the
+route. Do not re-derive this; re-run the sweep in `tools/sim/reroute_sim.py` instead.
 
 What makes that testable in the ONE drive per build he gets: `CairoDriveFastReroute` carries its own
 falsification test. Four reroutes inside 90 s is flapping rather than driving, so the package

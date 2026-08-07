@@ -257,6 +257,13 @@ public abstract class BaseRouteLayer extends OsmandMapLayer {
 			}
 			// Alpha only. Changing the hue would collide with the colouring types the user can
 			// choose - slope, speed, altitude - and make the line mean two things at once.
+			//
+			// KNOWN LIMIT, stated rather than hidden: this feeds customColor, and RouteGeometryWay
+			// consults customColor only on the SOLID path. A user on slope/speed/altitude colouring
+			// takes updateGradientWay instead and gets no off-route feedback at all. Dimming a
+			// palette is not a matter of one alpha value, so it is out of scope here - but "alpha
+			// only, so it coexists with the colouring types" was overstating it, and the next
+			// person to read that line deserves to know which users this feature does not reach.
 			int alpha = Math.round(Color.alpha(color) * OFF_ROUTE_ALPHA);
 			return Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color));
 		} catch (Throwable t) {

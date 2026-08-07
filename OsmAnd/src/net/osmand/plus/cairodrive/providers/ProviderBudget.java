@@ -67,7 +67,12 @@ public final class ProviderBudget {
 			int today = (int) (System.currentTimeMillis() / MS_PER_DAY);
 			synchronized (ProviderBudget.class) {
 				int day = prefs.getInt(dayPref, -1);
-				int count = day == today ? prefs.getInt(countPref, 0) : 0;
+				// day > today means the clock went BACKWARDS - an NTP correction, or the user
+				// changing the date. Treating that as "a new day" hands out a fresh full allowance
+				// and is the one way this counter can be reset from outside. Carrying the count
+				// forward instead means the worst a backward clock can do is keep the existing
+				// spend, which is the safe direction for a paid quota.
+				int count = (day == today || day > today) ? prefs.getInt(countPref, 0) : 0;
 				if (count >= cap) {
 					// Published on the refusal too. This is the exact moment the number matters,
 					// and it is the one moment no request is made and nothing else records it.

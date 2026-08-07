@@ -24,8 +24,13 @@ import net.osmand.plus.helpers.CairoDriveLog;
  *   today                                  14.6 s
  *   hysteresis removed                     10.2 s
  *   threshold halved again                  9.2 s
- *   both, plus an instant search            5.2 s
  * </pre>
+ *
+ * <p>An earlier version of this note also quoted "5.2 s, both plus an instant search". That figure
+ * is RETRACTED: it came from a model that removed the rules without keeping the floor, and sweeping
+ * the actual shipped knobs puts the most aggressive reachable configuration at 7.4 s, 1.4 s better
+ * than what ships here and at a 3.2% chance of rerouting a driver who never left the route. See
+ * {@link #TOLERANCE_MULT} for the whole sweep.
  *
  * <p>Every second of that comes out of caution, and this fork has already paid once for taking it:
  * loosening these two rules is what produced "reroute after reroute while trying to turn around"
@@ -62,13 +67,33 @@ public final class CairoDriveFastReroute {
 	/**
 	 * Global tightening of the off-route threshold, on top of the near-manoeuvre halving.
 	 *
-	 * <p>0.6 rather than 0.5 because the two compose: at a junction, where most wrong turns happen,
-	 * the driver already gets {@code 0.5 * 0.6 = 0.3} of the default, and that is as far as the
-	 * simulation's "threshold halved again" row goes. Away from a junction this is the only
+	 * <p>0.5, chosen by sweeping the knob rather than by argument. The sweep measures two things at
+	 * once: the median wait, and how often a driver CORRECTLY in an outer lane of a wide arterial
+	 * is already past the threshold - which is the number that decides whether a drive is usable at
+	 * all, because a reroute fired on a correct road is worse than any latency.
+	 *
+	 * <pre>
+	 *   mult  floor  fixes    median   p90   false-positive risk
+	 *   0.6   30 m   3         8.8    16.3        0.0%
+	 *   0.5   30 m   3         8.5    14.3        0.0%     &lt;- here
+	 *   0.45  25 m   2         8.3    12.2        0.2%
+	 *   0.4   20 m   2         7.9    10.8        0.5%
+	 *   0.3   15 m   1         7.4     9.3        3.2%
+	 * </pre>
+	 *
+	 * <p>0.5 is the last row that is FREE: it takes p90 from 16.3 s to 14.3 s with the false-positive
+	 * rate still measuring zero. Everything past it buys tenths of a second at a rate of risk that
+	 * climbs fast, and the bottom row - which an earlier note in this project wrongly priced at
+	 * "5.2 s" - is worth 1.4 s over what ships here and costs a 3.2% chance of rerouting a driver
+	 * who never left the route.
+	 *
+	 * <p>Note the composition: at a junction, where most wrong turns happen, the near-manoeuvre rule
+	 * has already halved the threshold, so the driver gets {@code 0.5 * 0.5 = 0.25} of the default
+	 * and {@link #MIN_ALLOWABLE_M} is doing the real work. Away from a junction this is the only
 	 * tightening that applies, which is the case the near-manoeuvre rule could never reach - a
 	 * missed motorway exit noticed late, or a driver who drifts onto a service road mid-block.
 	 */
-	private static final double TOLERANCE_MULT = 0.6;
+	private static final double TOLERANCE_MULT = 0.5;
 
 	/**
 	 * Never let the composed threshold go below this, in metres.
@@ -89,6 +114,12 @@ public final class CairoDriveFastReroute {
 	 * rule demands on a PERFECT fix. This does not invent a weaker rule; it says a degraded fix
 	 * should not be trusted less than three times over, because at 20 the accuracy scaling stopped
 	 * protecting anything and started just being slow.
+	 *
+	 * <p>MEASURED CAVEAT: requiredFixes scales as {@code accuracy / 4}, so base reaches 20 only at
+	 * 80 m of reported accuracy and reaches 4 only at 16 m. This drive's fixes report 2.1-2.5 m, so
+	 * base is already MIN_CONSECUTIVE_FIXES = 3 and {@code min(3, 3)} changes nothing. On this
+	 * device the cap is inert and the distance tightening is doing all the work - do not read a
+	 * good drive as evidence that capping the hysteresis was safe, because it was never exercised.
 	 */
 	private static final int MAX_REQUIRED_FIXES = 3;
 
@@ -121,8 +152,8 @@ public final class CairoDriveFastReroute {
 		}
 		double tightened = allowableM * TOLERANCE_MULT;
 		// The floor applies to the COMPOSED value, which is why it lives here and not beside the
-		// multiplier: near a manoeuvre this is the second tightening, and 0.5 * 0.6 of a 50 m
-		// threshold is 15 m - inside the jitter of a degraded fix.
+		// multiplier: near a manoeuvre this is the second tightening, and 0.5 * 0.5 of a 50 m
+		// threshold is 12.5 m - inside the jitter of a degraded fix.
 		if (tightened < MIN_ALLOWABLE_M) {
 			tightened = Math.min(allowableM, MIN_ALLOWABLE_M);
 		}

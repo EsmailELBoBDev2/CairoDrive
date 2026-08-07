@@ -1353,10 +1353,19 @@ public class RouteProvider {
 			repairParams.fast = params.fast;
 			repairParams.mode = params.mode;
 			repairParams.ctx = params.ctx;
+			// Its OWN progress object, but the caller's cancellation is mirrored into it below.
+			// stopCalculation() sets isCancelled on the TASK's progress only, so a repair with a
+			// private one was uncancellable - and it runs prepareResult over the whole remaining
+			// route, which is seconds. A driver who deviates again mid-repair had to wait for work
+			// already known to be pointless.
 			repairParams.calculationProgress = new RouteCalculationProgress();
+			RouteCalculationProgress outer = params.calculationProgress;
 
 			env = calculateRoutingEnvironment(repairParams, false, true);
 			if (env == null) {
+				return null;
+			}
+			if (outer != null && outer.isCancelled) {
 				return null;
 			}
 			RoutingContext ctx = env.getComplexCtx() != null ? env.getComplexCtx() : env.getCtx();
@@ -1364,6 +1373,12 @@ public class RouteProvider {
 					new LatLon(params.start.getLatitude(), params.start.getLongitude()),
 					rejoin, null, env.getPrecalculated());
 			if (raw == null || !raw.isCorrect() || raw.getList().isEmpty()) {
+				return null;
+			}
+			// Checked again here because the splice below runs prepareResult over the repair leg
+			// PLUS the whole remaining route, which is the expensive half of a repair, and a
+			// deviation that arrived during the search has already made this answer stale.
+			if (outer != null && outer.isCancelled) {
 				return null;
 			}
 			// Spliced with the ORIGINAL params, so the result ends at the real destination.
