@@ -127,6 +127,70 @@ Three readings, three different conclusions:
 
 `cd-analyze.py` prints the breakdown and says plainly when the reading contradicts this file.
 
+### `FAILED_UNSUPPORTED_PARAMETERS` is a LABEL, not a cause — and `badParams=short_way`
+
+Measured 2026-08-07 20:31, first drive with `badParams=`: the answer is **`short_way`**, not
+`avoid_narrow_streets`. `short_way` enters the parameter map only when `FAST_ROUTE_MODE` is FALSE
+(`RouteProvider.collectRoutingParameters`), so the car profile is set to **Shortest route** rather
+than Fastest, and no map's HH index is built for that cost model. It is one toggle in the UI, and
+in Cairo "shortest" is also the setting most likely to send the router down the alleys this fork
+exists to avoid.
+
+**But do not now claim `short_way` caused the 69 failures on the earlier drive.** Read
+`FastRoutingState.fail()`: when the HH search fails it picks between `FAILED_UNSUPPORTED_PARAMETERS`
+and `FAILED_NEED_MORE_LAND_MAPS` purely on whether ANY non-default parameter is unsupported. The
+status is the label on a failure, not its mechanism. The mechanism is at `HHRoutePlanner:233`
+("No finalPnt found — points might be filtered by params") or `:261` (too many recalculations).
+This drive proves the point: `badParams=short_way` on both calculations and `fast=SUCCESS` anyway.
+
+### The reroute is answered: 279–947 ms, measured
+
+`CD_ROUTE_RACE ONLINE won in 279 ms` / `947 ms`, `CD_REROUTE finished ... calculated=true`,
+dispatched=2 finished=2 dropped=0. The offline leg ran on for another ~7 s and was discarded. The
+felt reroute is now under a second and the 8.5 s / 7.9 s simulation figures are the OFFLINE-only
+floor, not what the driver experiences with a signal.
+
+Two consequences to keep:
+
+- **The INITIAL route does not race.** The gate is `params.cairoDriveDispatchedAt > 0`, stamped only
+  by `recalculateRouteInBackground`, so planning a route from the search screen still costs the full
+  offline 7–8 s. That is the wait the driver sits through before setting off, and it is now the
+  larger of the two.
+- **`CD_WRONGROAD` reads `route has no segments - inert for this route` after every online win**, and
+  that is structural: an online route is Locations plus directions with no `RouteSegmentResult`, so
+  road identity cannot be read. The faster the online side wins, the more often
+  `CAIRODRIVE_WRONG_ROAD_ACT` is dead. The two features are in tension; judge neither by the other's
+  drive.
+
+### The wrong-direction trigger had no speed floor
+
+`checkWrongMovementDirection` needs only `hasBearing()`, and the trigger that consumes it has **no
+hysteresis at all** — one fix reroutes. Parked at 30.08706/31.26917 the log recorded `wrongDir=true`
+at **0.9, 2.0 and 4.3 km/h** from fused-provider jitter. Nothing rerouted only because the next route
+node happened to be 2–7 m away, and that distance is routinely 40–150 m on sparse OSM geometry.
+Stop-and-go Cairo traffic plus sparse geometry is a reroute on a driver who has not moved. Gated at
+`WRONG_DIRECTION_MIN_SPEED_MS = 2.5` m/s, the same reasoning as
+`CairoDriveMapMatching.HEADING_MIN_SPEED_MS`.
+
+### The four providers were dead on arrival, in every build — fixed 2026-08-07
+
+`CairoDriveProviders.install` ran in `OsmandApplication.onCreate` **before**
+`settings = appCustomization.getOsmandSettings()`. Every provider's `isAvailable` reads a runtime
+preference (`TOMTOM_TRAFFIC_ON`, `WEATHER_HAZARD_ON`), so all three threw NPE into `arbitrate`'s
+catch and were recorded unavailable — on every cold start this fork has ever had:
+
+```
+CD_PROVIDERS: flow=none incidents=none hazard=none glare=none
+CD_TRAFFIC:   available but serving neither capability - no polls will be made
+```
+
+TomTom traffic, OpenWeather hazards and sun glare have never run once. Nothing retried, because
+`install`'s javadoc asserted availability was decided by BuildConfig constants and therefore could
+not change — true of the keys, false of the preferences gating them. **The lesson generalises past
+this one call: a comment asserting an invariant is not the same as the invariant holding, and three
+"treating as unavailable" lines are what a silent feature looks like in a log.** Read `CD_PROVIDERS`
+before believing anything about traffic, weather or glare.
+
 ### The offline search is no longer the reroute bottleneck — simulated, 2026-08-07
 
 `tools/sim/reroute_sim.py` is a 40k-trial Monte Carlo of the WHOLE wait, from the wrong turn to the

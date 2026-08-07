@@ -57,6 +57,11 @@ public class RoutingHelper {
 	private static final float POS_TOLERANCE = 60; // 60m or 30m + accuracy
 	private static final float POS_TOLERANCE_DEVIATION_MULTIPLIER = 2;
 	private static final int MAX_POSSIBLE_SPEED = 340; // ~ 1 Mach
+	/**
+	 * Below this ground speed the fix's bearing is ignored by the wrong-movement-direction trigger.
+	 * 2.5 m/s = 9 km/h. See the note at the trigger in {@code setCurrentLocation}.
+	 */
+	private static final float WRONG_DIRECTION_MIN_SPEED_MS = 2.5f;
 	private static final boolean ENABLE_LOG_POS_PROCESSED = false;
 	private static final int STOP_NAVIGATION_ON_AA_DISCONNECT_DISTANCE_THRESHOLD = 100;
 	private static final long ETA_LOG_INTERVAL_MS = 30_000;
@@ -730,6 +735,33 @@ public class RoutingHelper {
 				boolean isStraight =
 						route.getRouteService() == RouteService.DIRECT_TO || route.getRouteService() == RouteService.STRAIGHT;
 				boolean wrongMovementDirection = RoutingHelperUtils.checkWrongMovementDirection(currentLocation, prev, next);
+					// A GPS bearing below walking pace is noise, and this trigger has no hysteresis
+					// to absorb it. Measured, 2026-08-07 20:31: the phone parked at 30.08706/31.26917
+					// logged wrongDir=true on three separate fixes at 0.9, 2.0 and 4.3 km/h, purely
+					// from fused-provider jitter. Nothing rerouted only because the next route node
+					// happened to be 2-7 m away.
+					//
+					// That is the whole failure waiting to happen. checkWrongMovementDirection needs
+					// only hasBearing(); the distance it is then compared against is to the next route
+					// NODE, which the note below records as routinely 40-150 m on sparse OSM geometry.
+					// Stop-and-go Cairo traffic supplies the crawl and sparse geometry supplies the
+					// distance, so the two together are a reroute on a driver who has not moved -
+					// exactly the "reroute after reroute" complaint that took the hysteresis off by
+					// default once already, and this path bypasses the hysteresis entirely.
+					//
+					// The precedent and the reasoning are already in this fork:
+					// CairoDriveMapMatching.HEADING_MIN_SPEED_MS ignores heading below 3 m/s for the
+					// same reason. This is lower - 2.5 m/s, 9 km/h - because a genuine wrong turn is
+					// taken at more than a crawl, and below it the orthogonal deviation test (which
+					// DOES have hysteresis) still covers the case.
+					//
+					// No speed at all is left alone: that is the stale-fix case upstream sizes for,
+					// and refusing it here would be a behaviour change on a path this note is not
+					// about.
+					if (wrongMovementDirection && currentLocation.hasSpeed()
+							&& currentLocation.getSpeed() < WRONG_DIRECTION_MIN_SPEED_MS) {
+						wrongMovementDirection = false;
+					}
 				// beforeFast, NOT allowableDeviation - and this one matters more than the
 				// orthogonal test, because this trigger has NO hysteresis at all. One fix whose
 				// bearing differs by 90 degrees reroutes, and the distance it is compared against

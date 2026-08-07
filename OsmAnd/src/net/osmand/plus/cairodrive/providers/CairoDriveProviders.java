@@ -393,9 +393,18 @@ public final class CairoDriveProviders {
 	 * until its writer thread is up, so an earlier call arbitrates correctly and loses the log
 	 * line - which is the one artefact that makes a drive log attributable to a provider.
 	 *
-	 * <p>Idempotent. Availability is decided by BuildConfig values, which are compile-time
-	 * constants, so the answer cannot change while the process lives; calling twice re-derives
-	 * the same assignment and stays quiet rather than logging it again.
+	 * <p><b>And after {@code settings} exists on the application.</b> This is not a stylistic
+	 * ordering note: every registered provider's {@code isAvailable} reads a runtime preference,
+	 * so calling this before {@code OsmandApplication.settings} is assigned makes all three throw
+	 * NullPointerException into {@link #arbitrate}'s catch and be recorded as unavailable. That is
+	 * exactly what happened on every cold start until 2026-08-07 - see the note at the call site
+	 * in {@code OsmandApplication.onCreate}.
+	 *
+	 * <p>Idempotent, and re-arbitrating: calling it again re-runs {@link #arbitrate} and only the
+	 * LOG line is suppressed when the resulting assignment is unchanged. The suppression used to be
+	 * justified by "availability is decided by BuildConfig values, which are compile-time constants,
+	 * so the answer cannot change while the process lives". That is true of the API keys and false
+	 * of the preferences they are gated behind, and believing it is why nothing ever retried.
 	 */
 	public static void install(@NonNull OsmandApplication app) {
 		String assignment;

@@ -268,36 +268,6 @@ public class OsmandApplication extends MultiDexApplication {
 			CairoDriveLogger.getInstance().log("CD_MAPILLARY", "token injection failed", t);
 		}
 
-		// The provider stack. Registration is side-effect free and safe this early; install()
-		// arbitrates one provider per capability and writes the CD_PROVIDERS line saying which
-		// won - which is what lets a drive log answer "who actually served this".
-		//
-		// AFTER the logger init above, deliberately: the logger is a silent no-op until its writer
-		// thread exists, so installing earlier would still arbitrate correctly but would lose the
-		// one line that makes the arbitration auditable.
-		try {
-			net.osmand.plus.cairodrive.providers.CairoDriveProviders.register(
-					net.osmand.plus.cairodrive.providers.TomTomTrafficProvider.getInstance());
-			net.osmand.plus.cairodrive.providers.CairoDriveProviders.register(
-					net.osmand.plus.cairodrive.providers.OpenWeatherHazardProvider.getInstance());
-			net.osmand.plus.cairodrive.providers.CairoDriveProviders.register(
-					net.osmand.plus.cairodrive.providers.SunGlareProvider.getInstance());
-			net.osmand.plus.cairodrive.providers.CairoDriveProviders.install(this);
-		} catch (Throwable t) {
-			// A provider failing to register must never take the app down with it.
-			CairoDriveLogger.getInstance().log("CD_PROVIDERS", "install failed", t);
-		}
-
-		// Build the online routing engines from the build keys, here rather than lazily, because
-		// the lazy path runs on the NAVIGATION thread: the first reroute of a drive would pay a
-		// SharedPreferences write on the one code path where latency is the entire point of the
-		// feature. Doing it once at startup costs nothing measurable and the engine is ready
-		// before the car moves.
-		//
-		// Safe to be wrong about the ordering here: if the routing helper is not ready yet this
-		// logs and returns, and the next reroute reconfigures. It is idempotent either way.
-		net.osmand.plus.cairodrive.CairoDriveRoutingEngines.ensureConfigured(this);
-
 		LifecycleObserver appLifecycleObserver = new DefaultLifecycleObserver() {
 			@Override
 			public void onStart(@NonNull LifecycleOwner owner) {
@@ -318,6 +288,41 @@ public class OsmandApplication extends MultiDexApplication {
 		appCustomization = new OsmAndAppCustomization();
 		appCustomization.setup(this);
 		settings = appCustomization.getOsmandSettings();
+
+		// The provider stack. Registration is side-effect free; install() arbitrates one provider
+		// per capability and writes the CD_PROVIDERS line saying which won - which is what lets a
+		// drive log answer "who actually served this".
+		//
+		// HERE, one line after settings exist, and the 2026-08-07 20:30 drive log is why. This used
+		// to sit up beside the logger init, which is BEFORE the line above. Every provider's
+		// isAvailable() reads a runtime preference - TOMTOM_TRAFFIC_ON, WEATHER_HAZARD_ON - so all
+		// three threw NullPointerException into arbitrate's catch and were "treated as unavailable"
+		// on every cold start this fork has ever had. The log recorded the result plainly:
+		//
+		//   CD_PROVIDERS: flow=none incidents=none hazard=none glare=none
+		//   CD_TRAFFIC: available but serving neither capability - no polls will be made
+		//
+		// TomTom traffic, OpenWeather hazards and sun glare have never once run. Nothing retried,
+		// because install()'s javadoc claimed availability was decided by BuildConfig constants and
+		// therefore could not change - true of the keys, false of the preferences it actually reads,
+		// and a comment asserting an invariant is not the same as one holding.
+		//
+		// Still after CairoDriveLogger.init for the original reason: the logger is a silent no-op
+		// until its writer thread exists, and losing the CD_PROVIDERS line would leave the
+		// arbitration unauditable - which is exactly how this went unnoticed.
+		try {
+			net.osmand.plus.cairodrive.providers.CairoDriveProviders.register(
+					net.osmand.plus.cairodrive.providers.TomTomTrafficProvider.getInstance());
+			net.osmand.plus.cairodrive.providers.CairoDriveProviders.register(
+					net.osmand.plus.cairodrive.providers.OpenWeatherHazardProvider.getInstance());
+			net.osmand.plus.cairodrive.providers.CairoDriveProviders.register(
+					net.osmand.plus.cairodrive.providers.SunGlareProvider.getInstance());
+			net.osmand.plus.cairodrive.providers.CairoDriveProviders.install(this);
+		} catch (Throwable t) {
+			// A provider failing to register must never take the app down with it.
+			CairoDriveLogger.getInstance().log("CD_PROVIDERS", "install failed", t);
+		}
+
 		// MapTileDownloader is in OsmAnd-java and has no Context, so it cannot check metering
 		// itself - it was the only network path in the app with no data-saver gate at all. Install
 		// the veto here, once, before anything can request a tile.

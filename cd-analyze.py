@@ -54,9 +54,21 @@ def build_identity(rows):
     if not lines:
         print("  NO SESSION HEADER. Cannot attribute any number below to a build.")
         return
-    seen = set()
+    # A SESSION header is ~14 LINES, not one: flavor and buildType on the app= line, versionCode
+    # on the next, the build flags two lines further down. Reading each line as its own header
+    # printed four quarter-filled builds and then warned that the folder held several - crying
+    # wolf about the exact failure ("a stale sideload masquerading as a Play build") this section
+    # exists to catch, which is worse than not checking. Merge each header into one dict, split on
+    # the `session start` banner that begins every one of them.
+    headers = []
     for line in lines:
-        d = kv(line)
+        if "session start" in line:
+            headers.append({})
+        if not headers:
+            headers.append({})
+        headers[-1].update(kv(line))
+    seen = set()
+    for d in headers:
         key = tuple(d.get(k) for k in ("versionCode", "buildType", "flavor", "hwCanvas",
                                        "presentation", "renderScale", "offRouteHysteresis"))
         if key in seen:
