@@ -17,6 +17,34 @@ if [ ! -d "$ANDROID_NDK_ROOT" ]; then
 	echo "ANDROID_NDK is not set"
 	exit
 fi
+# CairoDrive: skip the whole native build when a DIGEST-VERIFIED prebuilt library is
+# already in place.
+#
+# Everything below this point - configure.sh building Qt, boost and protobuf, then
+# ndk-build compiling the C++ routing core - is ~40 of the ~50 minutes a signed build
+# spends, and it produces a byte-identical result every time until CORE_LEGACY_REF, the
+# NDK, jni/*.mk, this script or the diagnostics patch changes. The signed job deliberately
+# has no caches (a GitHub cache is writable from any branch, and this .so ships inside the
+# Play upload), so it paid that cost on every single release.
+#
+# The prebuilt is trusted by SHA-256 against a digest committed to this repository, not by
+# being in a cache. The verification lives in the workflow; by the time this variable is
+# set the file has already been checked. If anything about that fails the workflow simply
+# does not set it, and this script builds from source exactly as before - the failure mode
+# is slow, never wrong.
+if [ "${CAIRODRIVE_PREBUILT_NATIVE:-}" = "1" ]; then
+	missing=0
+	for abi in ${CAIRODRIVE_PREBUILT_ABIS:-arm64-v8a}; do
+		[ -f "$SCRIPT_LOC/libs/$abi/libosmand.so" ] || missing=1
+		[ -f "$SCRIPT_LOC/libc++/$abi/libc++_shared.so" ] || missing=1
+	done
+	if [ "$missing" = "0" ]; then
+		echo "CairoDrive: using the digest-verified prebuilt native library; skipping externals and ndk-build."
+		exit 0
+	fi
+	echo "CairoDrive: CAIRODRIVE_PREBUILT_NATIVE is set but a library is missing - building from source."
+fi
+
 export BUILD_ONLY_OLD_LIB=1
 "$SCRIPT_LOC/../../core-legacy/externals/configure.sh"
 # -j2 was hardcoded upstream and is the single biggest lever on this build's wall time:

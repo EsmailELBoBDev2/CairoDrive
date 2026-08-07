@@ -1621,6 +1621,85 @@ jobs:
             fi
           done
 
+      # Skip ~40 of the ~50 minutes a signed build spends compiling Qt, boost, protobuf and
+      # the C++ routing core - WITHOUT restoring a cache, which is the thing this job must
+      # never do.
+      #
+      # The distinction is the whole design. A cache is trusted because of where it came
+      # from, and any branch of this repository can write one. This archive is trusted
+      # because of WHAT IT IS: its SHA-256 is committed to the repository, and this step
+      # refuses anything that does not match. Changing what a signed build links against
+      # therefore takes a commit, which is the same bar as changing any other source file.
+      #
+      # Produced by .github/workflows/native-prebuild.yml. The tag is derived from every
+      # input that can change the binary - CORE_LEGACY_REF, the NDK revision, jni/*.mk,
+      # old-ndk-build.sh and the diagnostics patch - so when any of them moves this lookup
+      # misses and the build falls back to source. A stale prebuilt cannot be picked up.
+      #
+      # EVERY failure path here is a warning, never an error, and leaves
+      # CAIRODRIVE_PREBUILT_NATIVE unset so old-ndk-build.sh compiles as it always has.
+      # Slow is an acceptable outcome; wrong is not.
+      - name: Use the verified prebuilt native library, if there is one
+        id: prebuilt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ABI: ${{ env.ABI }}
+        run: |
+          set -uo pipefail
+          digest_file="android/native/prebuilt-${ABI}.sha256"
+          if [ ! -f "${digest_file}" ]; then
+            echo "::notice::No ${digest_file} - building the native library from source."
+            exit 0
+          fi
+          expected="$(awk '{print $1}' "${digest_file}")"
+          tag="$(awk '{print $2}' "${digest_file}")"
+          if [ -z "${expected}" ] || [ -z "${tag}" ]; then
+            echo "::warning::${digest_file} is malformed (expected '<sha256>  <tag>'). Building from source."
+            exit 0
+          fi
+
+          # Re-derive the fingerprint from THIS checkout and refuse a digest that was
+          # committed against different inputs. Without this, editing old-ndk-build.sh and
+          # forgetting to re-run the prebuild would silently ship the previous binary.
+          props="${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-}}/source.properties"
+          rev="$(awk -F= '/^Pkg.Revision/ {gsub(/ /,"",$2); print $2}' "${props}" 2>/dev/null || true)"
+          inputs_hash="$(cat android/OsmAnd/jni/*.mk \
+                             android/OsmAnd/old-ndk-build.sh \
+                             android/patches/cairodrive_native_diag.py \
+                         | sha256sum | cut -c1-16)"
+          want="native-${ABI}-${CORE_LEGACY_REF:0:12}-ndk${rev}-${inputs_hash}"
+          if [ "${tag}" != "${want}" ]; then
+            echo "::warning::The committed prebuilt is for '${tag}' but this build needs '${want}'. Something that changes the binary has moved - re-run native-prebuild.yml. Building from source."
+            exit 0
+          fi
+
+          if ! gh release download "${tag}" --pattern '*.tar.gz' --dir "${RUNNER_TEMP}" 2>/dev/null; then
+            echo "::warning::Could not download release ${tag}. Building from source."
+            exit 0
+          fi
+          archive="$(find "${RUNNER_TEMP}" -maxdepth 1 -name '*.tar.gz' | head -1)"
+          actual="$(sha256sum "${archive}" | cut -d' ' -f1)"
+          if [ "${actual}" != "${expected}" ]; then
+            echo "::error::DIGEST MISMATCH for ${tag}. Committed ${expected}, downloaded ${actual}. Refusing it and building from source - but find out why before shipping this."
+            exit 0
+          fi
+
+          tar -xzf "${archive}" -C android
+          abis=""
+          for d in android/OsmAnd/libs/*/; do
+            [ -f "${d}libosmand.so" ] && abis="${abis} $(basename "${d}")"
+          done
+          if [ -z "${abis# }" ]; then
+            echo "::warning::The archive contained no libosmand.so. Building from source."
+            exit 0
+          fi
+          {
+            echo "CAIRODRIVE_PREBUILT_NATIVE=1"
+            echo "CAIRODRIVE_PREBUILT_ABIS=${abis# }"
+          } >> "$GITHUB_ENV"
+          echo "used=true" >> "$GITHUB_OUTPUT"
+          echo "Verified prebuilt ${tag} (sha256 matches the committed digest); ABIs:${abis}"
+
       - name: Build release bundle (AAB)
         working-directory: android
         env:
