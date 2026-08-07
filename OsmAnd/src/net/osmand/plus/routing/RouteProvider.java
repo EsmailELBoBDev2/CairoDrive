@@ -864,6 +864,29 @@ public class RouteProvider {
 			cf.targetDirection = null;
 			config.applyMemoryLimits(cf, currentMemoryLimits(settings, false));
 			applyPerCalculationSettings(cf, params, settings);
+			// REBUILD the HH routing config on the warm path too, exactly as the cold path does.
+			//
+			// It hangs off RoutePlannerFrontEnd, not off the RoutingConfiguration or the
+			// RoutingContext, so reusing the front end silently made a PER-CALCULATION object into
+			// a per-process one. Two things follow, and both are invisible:
+			//
+			//   FULL_DIJKSTRA_NETWORK_RECALC is a decrement-only budget of 10 that upstream reset
+			//   by rebuilding this object. Frozen, it goes permanently negative, HH stops
+			//   recalculating clusters it could not reach and starts giving up into the Java A* -
+			//   a drive that gets progressively slower rather than uniformly slow.
+			//
+			//   defaultHHConfig() is also where the alternatives A/B flips its arm
+			//   (alternativesCallCounter % 2). Never called on the warm path, the arm freezes at
+			//   whatever the last cold build chose, and alt= reads consistent rather than broken -
+			//   which would quietly turn a two-arm drive into a one-arm drive.
+			//
+			// Cheap: it allocates one small config object. Nothing is lost by rebuilding it,
+			// because the network cache it can carry is deliberately off (see the cold branch).
+			if (method.isFastRoutingPossible(params.mode)) {
+				router.setDefaultHHRoutingConfig(false);
+			} else {
+				router.setHHRoutingConfig(null);
+			}
 		} else {
 			router = new RoutePlannerFrontEnd();
 			if (method.isFastRoutingPossible(params.mode)) {

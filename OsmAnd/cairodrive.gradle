@@ -803,7 +803,14 @@ def alternateAltEnv = System.getenv("CAIRODRIVE_ALTERNATE_ALTERNATIVES")
 // There is nothing left to measure: the benefit is zero by construction, so any cost above zero
 // is waste. Keeping the A/B running would only price something already known to be worthless,
 // and it would keep half of all reroutes paying it while we watched.
-def alternateAlternatives = alternateAltEnv?.trim() ? alternateAltEnv.trim() : "false"
+// ON. This flag exists PRECISELY so alternatives can ship in the same drive as everything
+// else: it alternates the arm per calculation, so one drive contains both arms minutes apart
+// on the same roads in the same traffic, and every CD_ROUTE_TIMING line carries its own alt=.
+// Holding it off was the cautious choice back when the search time was believed to be what
+// the driver feels; the simulation has since shown the search is fully hidden behind the
+// confirmation window, so adding cost there cannot move the wait. It can still move battery
+// and heat, which is exactly what alt= is there to price.
+def alternateAlternatives = alternateAltEnv?.trim() ? alternateAltEnv.trim() : "true"
 
 def lockExternalApiEnv = System.getenv("CAIRODRIVE_LOCK_EXTERNAL_API")
 def lockExternalApi = lockExternalApiEnv?.trim() ? lockExternalApiEnv.trim() : "true"
