@@ -59,17 +59,16 @@ public class RoutePlannerFrontEnd {
 	 * so alternatives may fall out of the same search at marginal cost rather than costing a
 	 * second one. Google's own documentation says alternative routes are NOT available offline.
 	 *
-	 * <p>Left off by default because the cost is unmeasured, and an unmeasured cost on the search
-	 * path is exactly what a drive testing B1 must not also be carrying. Set
-	 * CAIRODRIVE_ROUTE_ALTERNATIVES=true to build it on; CD_ROUTE_TIMING reports alt= either way.
-	 */
-	public static boolean CALCULATE_ALTERNATIVES = false;
-
-	/**
-	 * Alternate alternatives ON and OFF on successive calculations, instead of holding one setting
-	 * for a whole drive.
+	 * <p>There is no force-on switch. This flag supersedes it: it runs the same feature while
+	 * flipping the arm per calculation, so one drive carries both arms on the same roads and
+	 * {@code alt=} separates them. A force-on flag could only throw that baseline away, so it was
+	 * removed rather than left as a trap.
 	 *
-	 * <p>This is what makes the featuremeasurable at all. Held constant, every CD_ROUTE_TIMING
+	 * <h3>Alternate alternatives ON and OFF on successive calculations</h3>
+	 *
+	 * ...instead of holding one setting for a whole drive.
+	 *
+	 * <p>This is what makes the feature measurable at all. Held constant, every CD_ROUTE_TIMING
 	 * line on a drive carries the same setting, so there is no baseline to compare `search`
 	 * against except a different drive on different roads in different traffic - which is not a
 	 * comparison. Alternating gives both arms within one drive, minutes apart, on the same roads.
@@ -99,8 +98,7 @@ public class RoutePlannerFrontEnd {
 		HHRoutingConfig config = HHRoutingConfig.astar(0)
 				.calcDetailed(HHRoutingConfig.CALCULATE_ALL_DETAILED)
 				.applyCalculateMissingMaps(RoutePlannerFrontEnd.CALCULATE_MISSING_MAPS);
-		boolean useAlternatives = CALCULATE_ALTERNATIVES
-				|| (ALTERNATE_ALTERNATIVES && (alternativesCallCounter++ % 2 == 1));
+		boolean useAlternatives = ALTERNATE_ALTERNATIVES && (alternativesCallCounter++ % 2 == 1);
 		lastAlternativesUsed = useAlternatives;
 		if (useAlternatives) {
 			config = config.calcAlternative();

@@ -93,7 +93,50 @@ public final class CairoDriveFastReroute {
 	 * tightening that applies, which is the case the near-manoeuvre rule could never reach - a
 	 * missed motorway exit noticed late, or a driver who drifts onto a service road mid-block.
 	 */
-	private static final double TOLERANCE_MULT = 0.5;
+	private static final double TOLERANCE_MULT = tierMult();
+
+	/**
+	 * Which row of the sweep this build ships, from {@code CAIRODRIVE_FAST_REROUTE_TIER}.
+	 *
+	 * <p>{@code free} | {@code aggressive} | {@code max}. Default {@code aggressive}, at the
+	 * owner's explicit instruction after being shown the table above.
+	 *
+	 * <p>{@code max} is reachable and is NOT recommended, for a reason the table alone does not
+	 * show: at that row the hysteresis is capped at ONE fix, so a single position past the
+	 * threshold reroutes with no corroboration at all. Combined with a 3.2% false-positive rate
+	 * that is four reroutes inside 90 s on any drive with a wide arterial in it - which trips the
+	 * flap guard, disarms the whole package in the first minutes, and leaves the rest of the drive
+	 * running the conservative rules. It is self-defeating rather than merely risky: you would pay
+	 * the risk and still measure the safe configuration.
+	 */
+	private static String tier() {
+		String t = BuildConfig.CAIRODRIVE_FAST_REROUTE_TIER;
+		return t == null || t.trim().isEmpty() ? "aggressive" : t.trim().toLowerCase();
+	}
+
+	private static double tierMult() {
+		switch (tier()) {
+			case "free": return 0.5;
+			case "max": return 0.3;
+			default: return 0.4;
+		}
+	}
+
+	private static double tierFloor() {
+		switch (tier()) {
+			case "free": return 30;
+			case "max": return 15;
+			default: return 20;
+		}
+	}
+
+	private static int tierFixes() {
+		switch (tier()) {
+			case "free": return 3;
+			case "max": return 1;
+			default: return 2;
+		}
+	}
 
 	/**
 	 * Never let the composed threshold go below this, in metres.
@@ -101,7 +144,7 @@ public final class CairoDriveFastReroute {
 	 * <p>See the class note. This is the line between "notices a wrong turn sooner" and "reroutes
 	 * because the driver changed lane", and it is a floor rather than a target.
 	 */
-	private static final double MIN_ALLOWABLE_M = 30;
+	private static final double MIN_ALLOWABLE_M = tierFloor();
 
 	/**
 	 * Cap on the consecutive off-route fixes the hysteresis may demand.
@@ -121,7 +164,7 @@ public final class CairoDriveFastReroute {
 	 * device the cap is inert and the distance tightening is doing all the work - do not read a
 	 * good drive as evidence that capping the hysteresis was safe, because it was never exercised.
 	 */
-	private static final int MAX_REQUIRED_FIXES = 3;
+	private static final int MAX_REQUIRED_FIXES = tierFixes();
 
 	/** Reroutes inside {@link #FLAP_WINDOW_MS} that mean this is flapping, not driving. */
 	private static final int FLAP_COUNT = 4;
@@ -252,7 +295,8 @@ public final class CairoDriveFastReroute {
 					+ " tightenedFixes=" + applied
 					+ " toleranceMult=" + TOLERANCE_MULT
 					+ " floorM=" + (int) MIN_ALLOWABLE_M
-					+ " maxFixes=" + MAX_REQUIRED_FIXES);
+					+ " maxFixes=" + MAX_REQUIRED_FIXES
+					+ " tier=" + tier());
 		} catch (Throwable ignored) {
 		}
 	}

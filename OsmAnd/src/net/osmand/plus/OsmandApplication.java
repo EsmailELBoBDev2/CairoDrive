@@ -337,8 +337,6 @@ public class OsmandApplication extends MultiDexApplication {
 		});
 		// Item 7. Static on RoutePlannerFrontEnd because defaultHHConfig() is static and is read
 		// on every route calculation; set once here, before anything can calculate a route.
-		net.osmand.router.RoutePlannerFrontEnd.CALCULATE_ALTERNATIVES =
-				BuildConfig.CAIRODRIVE_ROUTE_ALTERNATIVES;
 		net.osmand.router.RoutePlannerFrontEnd.ALTERNATE_ALTERNATIVES =
 				BuildConfig.CAIRODRIVE_ALTERNATE_ALTERNATIVES;
 		appInitializer.initVariables();

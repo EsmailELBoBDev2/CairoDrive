@@ -882,9 +882,9 @@ public class CairoDriveLogger {
 				+ " wrongRoad=" + BuildConfig.CAIRODRIVE_WRONG_ROAD
 				+ " wrongRoadAct=" + BuildConfig.CAIRODRIVE_WRONG_ROAD_ACT
 				+ " fastReroute=" + BuildConfig.CAIRODRIVE_FAST_REROUTE
+				+ " fastRerouteTier=" + BuildConfig.CAIRODRIVE_FAST_REROUTE_TIER
 				+ " earlyOffRouteVoice=" + BuildConfig.CAIRODRIVE_ANNOUNCE_EARLY_OFFROUTE
 				+ " altAlternatives=" + BuildConfig.CAIRODRIVE_ALTERNATE_ALTERNATIVES
-				+ " routeAlternatives=" + BuildConfig.CAIRODRIVE_ROUTE_ALTERNATIVES
 				+ " lockExternalApi=" + BuildConfig.CAIRODRIVE_LOCK_EXTERNAL_API
 				+ " interpolation=" + BuildConfig.CAIRODRIVE_LOCATION_INTERPOLATION);
 		log("SESSION", "places"

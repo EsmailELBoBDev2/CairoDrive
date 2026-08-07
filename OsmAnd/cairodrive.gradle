@@ -214,8 +214,6 @@ def hwCanvas = hwCanvasEnv?.trim() ? hwCanvasEnv.trim() : "true"
 // blunt version. CAIRODRIVE_ALTERNATE_ALTERNATIVES below does the same thing while alternating
 // the arm per calculation, so one drive carries both arms on the same roads and alt= separates
 // them. Forcing alternatives on every calculation would throw that baseline away for nothing.
-def routeAlternativesEnv = System.getenv("CAIRODRIVE_ROUTE_ALTERNATIVES")
-def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim() : "false"
 
 // Item 7, resolved. Instead of holding alternatives on or off for a whole drive - which leaves no
 // baseline to compare `search` against except a different drive on different roads in different
@@ -227,8 +225,10 @@ def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim
 // constant. Safe to vary per call because it is an INPUT to the search and not state - the config
 // object is rebuilt every time and nothing caches across calls.
 //
-// Set CAIRODRIVE_ROUTE_ALTERNATIVES=true to force it on for every calculation instead, or
-// CAIRODRIVE_ALTERNATE_ALTERNATIVES=false to switch the A/B off entirely.
+// Set CAIRODRIVE_ALTERNATE_ALTERNATIVES=false to switch the A/B off entirely. There is no
+// force-on switch any more: CAIRODRIVE_ROUTE_ALTERNATIVES did that, it was strictly worse than
+// this one - it throws away the within-drive baseline and buys nothing in exchange - and leaving
+// a flag around whose only effect is to make the drive less readable is leaving a trap.
 // ITEM 4, LIVE. On a deviation, route only as far as a rejoin point on the previous route and
 // splice the untouched tail back on, instead of a full search to the destination.
 //
@@ -515,6 +515,25 @@ def wrongRoadAct = wrongRoadActEnv?.trim() ? wrongRoadActEnv.trim() : "true"
 // So it ships with its own falsification test. Four reroutes inside 90 seconds is flapping, not
 // driving; the package disarms itself for the rest of the session and says so in the log, and the
 // remainder of the drive is still valid data. A wrong answer here costs one line, not a trip.
+// Which row of the measured sweep to ship. free | aggressive | max.
+//
+//   tier         mult  floor  fixes   median   p90    false-positive risk
+//   free         0.5   30 m   3        8.5    14.3        0.0%
+//   aggressive   0.4   20 m   2        7.9    10.8        0.5%   <- default
+//   max          0.3   15 m   1        7.4     9.3        3.2%
+//
+// "false-positive risk" is the modelled fraction of fixes on which a driver CORRECTLY in an outer
+// lane of a wide arterial is already past the threshold. AGGRESSIVE at the owner's instruction,
+// after being shown this table: it is 0.6 s of median and 3.5 s of p90 for a fifth of max's risk.
+//
+// max is reachable and is not recommended, and the table understates why. At that row the
+// hysteresis is capped at ONE fix, so a single position past the threshold reroutes with no
+// corroboration whatever - which on any drive containing a wide road means four reroutes inside
+// 90 s, which trips the flap guard, disarms the package in the first minutes, and leaves the rest
+// of the drive on the conservative rules. You would pay the risk and still measure `free`.
+def fastRerouteTierEnv = System.getenv("CAIRODRIVE_FAST_REROUTE_TIER")
+def fastRerouteTier = fastRerouteTierEnv?.trim() ? fastRerouteTierEnv.trim() : "aggressive"
+
 def fastRerouteEnv = System.getenv("CAIRODRIVE_FAST_REROUTE")
 def fastReroute = fastRerouteEnv?.trim() ? fastRerouteEnv.trim() : "true"
 
@@ -566,9 +585,16 @@ def speechLead = speechLeadEnv?.trim() ? speechLeadEnv.trim() : "true"
 // ALL ON at the owner's explicit direction. Each still carries its own flag and its own
 // log tag, so a bad one is identifiable from the drive log and removable with one
 // environment variable - the property whose absence forced the mass revert last time.
-// PLACES: Place Details ON, the other four OFF at the owner's instruction - "remember them
-// for later". The code stays; only the defaults change, so re-enabling any one of them is a
-// single environment variable rather than re-implementing it.
+// PLACES: ALL FIVE ON. The "the other four are OFF, remember them for later" note this replaces
+// had gone stale - the defaults below were already true, so a reader checking the comment instead
+// of the tree would have got the opposite answer.
+//
+// One thing the build CANNOT switch on, and it decides whether these work at all: the per-endpoint
+// daily quotas in the Google Cloud console. CLAUDE.md records Nearby Search at 0/day, i.e. BLOCKED
+// - so CAIRODRIVE_PLACES_NEARBY=true still fails every request until that quota is raised, and it
+// fails as a quota error rather than as anything that names the cause. Photos are capped at 50/day
+// and Details/Autocomplete at 32/day, which autocomplete alone can spend in one typed name because
+// it bills per keystroke session. Raise them BEFORE the drive or the drive tests nothing.
 //
 // This lands exactly where CLAUDE.md's one-per-build rule wanted to be anyway: ONE feature
 // live, judged on its own drive. Place Details is the right one to keep - it is the whole
@@ -1063,7 +1089,6 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_HW_CANVAS", hwCanvas
 			buildConfigField "boolean", "CAIRODRIVE_PRESENTATION", presentation
 			buildConfigField "boolean", "CAIRODRIVE_LOCK_EXTERNAL_API", lockExternalApi
-			buildConfigField "boolean", "CAIRODRIVE_ROUTE_ALTERNATIVES", routeAlternatives
 			buildConfigField "boolean", "CAIRODRIVE_ALTERNATE_ALTERNATIVES", alternateAlternatives
 			buildConfigField "boolean", "CAIRODRIVE_ROUTE_REPAIR", routeRepair
 			buildConfigField "boolean", "CAIRODRIVE_SPECULATE", speculate
@@ -1076,6 +1101,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD", wrongRoad
 			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD_ACT", wrongRoadAct
 			buildConfigField "boolean", "CAIRODRIVE_FAST_REROUTE", fastReroute
+			buildConfigField "String", "CAIRODRIVE_FAST_REROUTE_TIER", javaStr(fastRerouteTier)
 			buildConfigField "boolean", "CAIRODRIVE_TIGHTEN_NEAR_TURN", tightenNearTurn
 			buildConfigField "boolean", "CAIRODRIVE_ANNOUNCE_EARLY_OFFROUTE", announceEarlyOffRoute
 			buildConfigField "boolean", "CAIRODRIVE_DIM_ROUTE_OFF_ROUTE", dimOffRoute
@@ -1130,7 +1156,6 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_HW_CANVAS", hwCanvas
 			buildConfigField "boolean", "CAIRODRIVE_PRESENTATION", presentation
 			buildConfigField "boolean", "CAIRODRIVE_LOCK_EXTERNAL_API", lockExternalApi
-			buildConfigField "boolean", "CAIRODRIVE_ROUTE_ALTERNATIVES", routeAlternatives
 			buildConfigField "boolean", "CAIRODRIVE_ALTERNATE_ALTERNATIVES", alternateAlternatives
 			buildConfigField "boolean", "CAIRODRIVE_ROUTE_REPAIR", routeRepair
 			buildConfigField "boolean", "CAIRODRIVE_SPECULATE", speculate
@@ -1143,6 +1168,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD", wrongRoad
 			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD_ACT", wrongRoadAct
 			buildConfigField "boolean", "CAIRODRIVE_FAST_REROUTE", fastReroute
+			buildConfigField "String", "CAIRODRIVE_FAST_REROUTE_TIER", javaStr(fastRerouteTier)
 			buildConfigField "boolean", "CAIRODRIVE_TIGHTEN_NEAR_TURN", tightenNearTurn
 			buildConfigField "boolean", "CAIRODRIVE_ANNOUNCE_EARLY_OFFROUTE", announceEarlyOffRoute
 			buildConfigField "boolean", "CAIRODRIVE_DIM_ROUTE_OFF_ROUTE", dimOffRoute

@@ -140,6 +140,12 @@ default once already.
 `CAIRODRIVE_FAST_REROUTE` (threshold × 0.5 with a hard 30 m floor, hysteresis capped at 3 fixes) and
 `CAIRODRIVE_WRONG_ROAD_ACT`, both ON. Simulated at **14.5 s → 8.5 s median, p90 30.1 → 14.3 s**.
 
+**Shipping tier is `aggressive` (0.4 / 20 m floor / 2 fixes) — 7.9 s median, p90 10.8 s, 0.5%
+false-positive risk — set by `CAIRODRIVE_FAST_REROUTE_TIER` (`free` | `aggressive` | `max`).**
+`max` is reachable and self-defeating: it caps the hysteresis at ONE fix, so a single position past
+the threshold reroutes uncorroborated, which trips the flap guard in the first minutes and leaves
+the rest of the drive on the conservative rules. You would pay the risk and still measure `free`.
+
 **The "5.2 s floor" quoted above is RETRACTED.** It came from removing the rules without keeping the
 floor. Sweeping the knobs the code actually has gives: 0.6/30 m → 8.8 s (p90 16.3, 0.0% false),
 0.5/30 m → 8.5 s (p90 14.3, 0.0%), 0.45/25 m → 8.3 s (0.2%), 0.4/20 m → 7.9 s (0.5%),
@@ -205,6 +211,20 @@ zero with `routing signature changed` on every calculation is. `cd-analyze.py` s
 Compare against the city-wide Overpass numbers already measured for Cairo: **tags ~2.5%**,
 **alley names (حارة/زقاق/درب/ممر/عطفة) ~16.6%**. If `nameAlley` again beats `actionable`, it
 re-confirms that only a custom Egypt `.obf` can act on the signal — the router cannot read names.
+
+### Google Places: all five features are ON, and the console can still block them
+
+`CAIRODRIVE_PLACES_DETAILS`, `_PHOTOS`, `_REVIEWS`, `_AUTOCOMPLETE`, `_NEARBY` all default true.
+The one-at-a-time rule above was the owner's earlier instruction and has been superseded by his
+explicit request to enable all of them; the code was already there for each.
+
+**The build cannot switch on the thing that decides whether they work.** The per-endpoint daily
+quotas live in the Google Cloud console, and CLAUDE.md's own table records **Nearby Search at 0/day
+— blocked**. So `CAIRODRIVE_PLACES_NEARBY=true` fails every request until that quota is raised, and
+fails as a quota error that names nothing. Photos are 50/day and Details/Autocomplete 32/day, which
+autocomplete alone can spend typing one name because it bills per keystroke session. Raise them
+before the drive or the drive tests nothing. Read `CD_SEARCH` for request count, latency and whether
+the prefix cache collapsed.
 
 ### 4. `LANG_` and the `SESSION` header
 
