@@ -1,0 +1,219 @@
+name: Prebuild native routing library
+
+# Builds libosmand.so once, so signed releases stop building it every time.
+#
+# THE PROBLEM THIS SOLVES
+#   The release job carries no cache, on purpose: a GitHub cache is writable from any
+#   branch of the repository, and the object in question is a BINARY that ships inside the
+#   reviewer-approved Play upload. So every signed build compiled Qt, boost, protobuf and
+#   the C++ routing core from scratch - measured at ~50 minutes of a ~90 minute run, on a
+#   result that is identical every time until one of five pinned inputs changes.
+#
+# WHY THIS IS NOT JUST A CACHE WITH EXTRA STEPS
+#   A cache is trusted because of WHERE it came from, and any branch can write one. This
+#   artifact is trusted because of WHAT IT IS: its SHA-256 is committed to the repository
+#   in native/prebuilt-<abi>.sha256, and the release job refuses to use a file that does
+#   not match. Changing what a signed build links against therefore requires a commit,
+#   which is the same bar as changing any other source file.
+#
+#   The failure mode is also the right way round. If the download fails, the digest file
+#   is missing, or the hash does not match, the workflow does not set
+#   CAIRODRIVE_PREBUILT_NATIVE - and old-ndk-build.sh builds from source exactly as it
+#   always did. Slow, never wrong.
+#
+# WHEN TO RE-RUN IT
+#   Only when something that actually changes the binary changes:
+#     - CORE_LEGACY_REF in build-dev.yml
+#     - patches/cairodrive_native_diag.py
+#     - OsmAnd/jni/*.mk or OsmAnd/old-ndk-build.sh
+#     - the runner's NDK revision (outside our control - the fingerprint below records it,
+#       so a mismatch is visible rather than silent)
+#   The fingerprint in the release name is built from exactly those, so a stale prebuilt
+#   cannot be picked up by accident: the release job looks for the name its own inputs
+#   produce, and simply does not find one when they have moved.
+#
+# AFTER IT RUNS
+#   It prints a SHA-256 and the exact line to commit. Nothing uses the artifact until that
+#   digest is in the repository - deliberately, because committing it is the review.
+
+on:
+  workflow_dispatch:
+    inputs:
+      abi:
+        description: 'ABI to prebuild'
+        type: choice
+        required: false
+        default: 'arm64'
+        options:
+          - arm64
+          - fat
+
+permissions:
+  contents: write   # creates the release that carries the artifact
+
+concurrency:
+  group: native-prebuild-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # MUST match build-dev.yml. There is no way to share it between workflow files, so the
+  # fingerprint below includes it and the release job's lookup will miss if they drift -
+  # which turns a silent mismatch into "no prebuilt found, building from source".
+  CORE_LEGACY_REF: 071503e280d77c2a959d3690845f5e56b2c7e4b3
+
+jobs:
+  prebuild:
+    name: Build and publish libosmand.so
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CairoDrive
+        uses: actions/checkout@v7
+        with:
+          ref: dev
+          path: android
+          persist-credentials: false
+
+      - name: Checkout OsmAnd-core-legacy
+        uses: actions/checkout@v7
+        with:
+          repository: osmandapp/OsmAnd-core-legacy
+          ref: ${{ env.CORE_LEGACY_REF }}
+          path: core-legacy
+          persist-credentials: false
+
+      - name: Patch OsmAnd-core-legacy diagnostics
+        run: python3 android/patches/cairodrive_native_diag.py core-legacy
+
+      - name: Read NDK revision
+        id: ndk
+        run: |
+          set -euo pipefail
+          props="${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-}}/source.properties"
+          rev=""
+          if [ -f "${props}" ]; then
+            rev="$(awk -F= '/^Pkg.Revision/ {gsub(/ /,"",$2); print $2}' "${props}")"
+          fi
+          if [ -z "${rev}" ]; then
+            echo "::error::Could not read NDK Pkg.Revision. A prebuilt without a compiler version in its fingerprint is worse than no prebuilt - it would be picked up by a build using a different NDK."
+            exit 1
+          fi
+          echo "rev=${rev}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute fingerprint
+        id: fp
+        env:
+          ABI: ${{ inputs.abi || 'arm64' }}
+          NDK_REV: ${{ steps.ndk.outputs.rev }}
+        run: |
+          set -euo pipefail
+          # Every input that can change the binary, and nothing else. Same set as the dev
+          # job's native cache key, deliberately: if that key is right, this is right.
+          inputs_hash="$(cat android/OsmAnd/jni/*.mk \
+                             android/OsmAnd/old-ndk-build.sh \
+                             android/patches/cairodrive_native_diag.py \
+                         | sha256sum | cut -c1-16)"
+          fp="${ABI}-${CORE_LEGACY_REF:0:12}-ndk${NDK_REV}-${inputs_hash}"
+          echo "fp=${fp}" >> "$GITHUB_OUTPUT"
+          echo "tag=native-${fp}" >> "$GITHUB_OUTPUT"
+          echo "Fingerprint: ${fp}"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: temurin
+
+      - name: Build the native library
+        working-directory: android
+        env:
+          ABI: ${{ inputs.abi || 'arm64' }}
+        run: |
+          set -euo pipefail
+          chmod +x gradlew OsmAnd/old-ndk-build.sh
+          # Straight to the script rather than through Gradle: nothing else here needs the
+          # Android plugin, and this keeps the step honest about what it is producing.
+          if [ "${ABI}" = "arm64" ]; then
+            export ARM64_ONLY=1
+          fi
+          bash OsmAnd/old-ndk-build.sh
+
+      - name: Package and hash
+        id: pack
+        working-directory: android
+        env:
+          FP: ${{ steps.fp.outputs.fp }}
+        run: |
+          set -euo pipefail
+          # Fails loudly on an empty build. An archive of nothing hashes perfectly well and
+          # would be published, pinned and then silently skip the native build forever.
+          shopt -s nullglob
+          libs=(OsmAnd/libs/*/libosmand.so)
+          if [ ${#libs[@]} -eq 0 ]; then
+            echo "::error::No libosmand.so was produced - refusing to publish an empty prebuilt."
+            exit 1
+          fi
+          for l in "${libs[@]}"; do
+            size=$(stat -c%s "$l")
+            echo "  ${l}  ${size} bytes"
+            if [ "${size}" -lt 1000000 ]; then
+              echo "::error::${l} is only ${size} bytes. That is not a routing core."
+              exit 1
+            fi
+          done
+          # The routing diagnostics patch has to be IN the binary, or a drive log loses
+          # CD_HHLOAD and nobody notices until the log is being read.
+          if ! strings "${libs[0]}" | grep -q CD_HHLOAD; then
+            echo "::error::CD_HHLOAD is not in the built library - the diagnostics patch did not reach it."
+            exit 1
+          fi
+          tar -czf "../native-${FP}.tar.gz" \
+            OsmAnd/libs/*/libosmand.so OsmAnd/libc++/*/libc++_shared.so
+          digest="$(sha256sum "../native-${FP}.tar.gz" | cut -d' ' -f1)"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "archive=native-${FP}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Publish as a release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.fp.outputs.tag }}
+          ARCHIVE: ${{ steps.pack.outputs.archive }}
+          DIGEST: ${{ steps.pack.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # A release rather than an artifact: artifacts expire after 90 days and are
+          # addressable only by run id, and this has to be fetchable by NAME from a job
+          # that knows nothing about the run that produced it.
+          if ! gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release create "${TAG}" \
+              --title "Native routing library - ${TAG}" \
+              --notes "Prebuilt libosmand.so. Trusted by SHA-256 against native/prebuilt-*.sha256 in the repository, never by provenance. sha256: ${DIGEST}" \
+              --prerelease
+          fi
+          gh release upload "${TAG}" "${ARCHIVE}" --clobber
+
+      - name: What to commit
+        env:
+          DIGEST: ${{ steps.pack.outputs.digest }}
+          TAG: ${{ steps.fp.outputs.tag }}
+          ABI: ${{ inputs.abi || 'arm64' }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Prebuilt native library published"
+            echo
+            echo "Nothing uses it yet. Commit the digest and it takes effect on the next signed build."
+            echo
+            echo '```bash'
+            echo "printf '%s  %s\\n' '${DIGEST}' '${TAG}' > native/prebuilt-${ABI}.sha256"
+            echo '```'
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Release tag | \`${TAG}\` |"
+            echo "| SHA-256 | \`${DIGEST}\` |"
+            echo
+            echo "The release job looks up the tag its OWN inputs produce, so if CORE_LEGACY_REF,"
+            echo "the NDK, \`jni/*.mk\`, \`old-ndk-build.sh\` or the diagnostics patch move, it simply"
+            echo "will not find this one and will build from source. A stale prebuilt cannot be"
+            echo "picked up by accident."
+          } >> "$GITHUB_STEP_SUMMARY"
