@@ -53,11 +53,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   <li><b>Memory.</b> The matcher's {@link RoutingContext} is its own, never the navigation one,
  *       and its tile cache is unloaded once it passes
  *       {@link CairoDriveMapMatching#MAX_LOADED_TILES}.</li>
- *   <li><b>Watchdog.</b> {@link CairoDriveMapMatching#MAX_CONSECUTIVE_SLOW} fixes over
- *       {@link CairoDriveMapMatching#SLOW_MATCH_MS} latch the whole feature off for the rest of
- *       the process, with the reason in the log. The fork has an explicit rule about measuring
- *       before optimising; this is the same rule pointed the other way - a feature that turns out
- *       to be expensive on the one real device removes itself rather than being defended.</li>
+ *   <li><b>Watchdog.</b> Two latches, both recording the reason in the log.
+ *       {@link CairoDriveMapMatching#MAX_CONSECUTIVE_SLOW} fixes over
+ *       {@link CairoDriveMapMatching#SLOW_MATCH_MS} that loaded no {@code .obf} tiles, or
+ *       {@link CairoDriveMapMatching#MAX_CONSECUTIVE_STALLS} over
+ *       {@link CairoDriveMapMatching#STALL_MATCH_MS} whatever they loaded. The fork has an explicit
+ *       rule about measuring before optimising; this is the same rule pointed the other way - a
+ *       feature that turns out to be expensive on the one real device removes itself rather than
+ *       being defended. The tile-load exemption is there so it removes itself for the right
+ *       reason: see {@link CairoDriveMapMatching#STALL_MATCH_MS}.</li>
  * </ul>
  *
  * <h3>Off by default</h3>
@@ -104,6 +108,7 @@ public class CairoDriveMapMatchService {
 
 	// Worker-thread-only counters.
 	private int consecutiveSlow;
+	private int consecutiveStalls;
 	private long summaryAt;
 	private long detailAt;
 	private int fixes;
@@ -258,11 +263,16 @@ public class CairoDriveMapMatchService {
 		if (!ensureEnvironment(fix)) {
 			return;
 		}
+		// Read before and after so the watchdog can tell an expensive MATCH from an expensive disk
+		// READ. See CairoDriveMapMatching.STALL_MATCH_MS for why that distinction decides whether
+		// the feature survives a drive.
+		int tilesBefore = loadedTiles();
 		long startNs = System.nanoTime();
 		CairoDriveMapMatcher.Match match = matcher.update(fix.lat, fix.lon, fix.accuracy,
 				fix.hasAccuracy, fix.degraded, fix.bearing, fix.hasBearing, fix.speed, fix.hasSpeed,
 				fix.time);
 		long elapsedMs = (System.nanoTime() - startNs) / 1_000_000L;
+		boolean loadedTiles = loadedTiles() > tilesBefore;
 
 		fixes++;
 		if (fix.degraded) {
@@ -285,11 +295,47 @@ public class CairoDriveMapMatchService {
 		logMatch(match, elapsedMs);
 		maybeLogSummary();
 		trimTiles();
-		watchdog(elapsedMs);
+		watchdog(elapsedMs, loadedTiles);
 	}
 
-	private void watchdog(long elapsedMs) {
+	/** Currently loaded routing tiles on the matcher's own context, or -1 if there is none. */
+	private int loadedTiles() {
+		RoutingEnvironment env = environment;
+		RoutingContext ctx = env != null ? env.getCtx() : null;
+		return ctx != null ? ctx.getCurrentlyLoadedTiles() : -1;
+	}
+
+	/**
+	 * Two independent latches, because "slow" turned out to be two different events.
+	 *
+	 * <p>The streak rule now ignores any fix that loaded {@code .obf} tiles: that fix paid for a
+	 * disk read, not for the HMM, and five tile-crossing fixes in a row is an ordinary consequence
+	 * of driving in a straight line rather than evidence the algorithm is too expensive. Such a fix
+	 * neither increments the streak nor CLEARS it - clearing would let a run of alternating
+	 * load/no-load fixes hide a genuinely slow matcher forever.
+	 *
+	 * <p>The stall rule has no such exemption and is the floor under the first: whatever the cause,
+	 * three consecutive fixes over {@link CairoDriveMapMatching#STALL_MATCH_MS} means matching is
+	 * running behind a 1 Hz GPS, and a matched position that arrives after the next fix is worth
+	 * nothing.
+	 */
+	private void watchdog(long elapsedMs, boolean loadedTiles) {
+		if (elapsedMs >= CairoDriveMapMatching.STALL_MATCH_MS) {
+			if (++consecutiveStalls >= CairoDriveMapMatching.MAX_CONSECUTIVE_STALLS) {
+				CairoDriveMapMatching.disable("stalled " + consecutiveStalls + "x>="
+						+ CairoDriveMapMatching.STALL_MATCH_MS + "ms lastMs=" + elapsedMs);
+				return;
+			}
+		} else {
+			consecutiveStalls = 0;
+		}
 		if (elapsedMs >= CairoDriveMapMatching.SLOW_MATCH_MS) {
+			if (loadedTiles) {
+				// Excused, and deliberately not logged per fix - it is the common case on a moving
+				// car. The cost still shows up in msMax and in the CD_MATCH summary, so it stays
+				// visible without the streak acting on it.
+				return;
+			}
 			if (++consecutiveSlow >= CairoDriveMapMatching.MAX_CONSECUTIVE_SLOW) {
 				CairoDriveMapMatching.disable("slow " + consecutiveSlow + "x>="
 						+ CairoDriveMapMatching.SLOW_MATCH_MS + "ms lastMs=" + elapsedMs);

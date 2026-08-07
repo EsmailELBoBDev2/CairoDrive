@@ -299,6 +299,25 @@ public final class CairoDriveMapMatching {
 	public static final long SLOW_MATCH_MS = 150;
 	/** This many consecutive slow fixes latches the feature off. */
 	public static final int MAX_CONSECUTIVE_SLOW = 5;
+	/**
+	 * A fix slower than this latches the feature off after {@link #MAX_CONSECUTIVE_STALLS},
+	 * whatever the cause - including the disk reads the ordinary streak excuses.
+	 *
+	 * <p>Both rules exist because the 2026-08-07 drive measured a worst case of 2162 ms against an
+	 * ordinary case in the low tens, and the two are not the same event. The slow one is a fix that
+	 * crossed into unloaded {@code .obf} tiles and paid for reading them; the watchdog's job is to
+	 * catch "the HMM is too expensive on this device", and disabling map matching for the rest of a
+	 * drive because five fixes in a row happened to cross tile boundaries answers a question nobody
+	 * asked. So {@link #SLOW_MATCH_MS} now only counts fixes that loaded nothing.
+	 *
+	 * <p>That alone would be a hole: a device where every single fix loads tiles and takes two
+	 * seconds would never latch, because every fix is excused. This is the floor under it. 1500 ms
+	 * is past any plausible tile read on this hardware and well past the 1 s fix interval, so three
+	 * in a row means matching is running behind the GPS and cannot catch up.
+	 */
+	public static final long STALL_MATCH_MS = 1500;
+	/** This many consecutive stalls latch the feature off regardless of tile loading. */
+	public static final int MAX_CONSECUTIVE_STALLS = 3;
 	/** Loaded routing tiles above this trigger an unload on the matcher's own context. */
 	public static final int MAX_LOADED_TILES = 60;
 	/** Memory budget handed to {@code RoutingContext.unloadUnusedTiles}. */

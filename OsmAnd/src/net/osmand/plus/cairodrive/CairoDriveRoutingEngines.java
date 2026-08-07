@@ -167,6 +167,15 @@ public final class CairoDriveRoutingEngines {
 		}
 		try {
 			OnlineRoutingHelper helper = app.getOnlineRoutingHelper();
+			if (helper == null) {
+				// NOT an error, and it used to be logged as one. OsmandApplication.onCreate calls
+				// this before AppInitializer:384 has built the helper, so the very first pass of
+				// every cold start threw an NPE, logged a stack trace, and left a fake fault at the
+				// top of every drive log. The retry from AppInitializer (immediately after the
+				// helper exists) and from pick() both succeed; only the noise was real.
+				CairoDriveLog.log(TRACE_TAG, "routing helper not built yet, deferring");
+				return;
+			}
 			if (hasOrsKey()) {
 				// Key re-applied on EVERY pass, not only at creation. It is deliberately not
 				// persisted (see OnlineRoutingUtils.writeToJson), so it has to be injected from

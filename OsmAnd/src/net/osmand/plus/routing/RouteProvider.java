@@ -1595,6 +1595,118 @@ public class RouteProvider {
 		}
 	}
 
+	/**
+	 * Names the routing parameters this map's Highway-Hierarchy index was not built for.
+	 *
+	 * <p>Pure diagnostics - it changes no behaviour, computes nothing the router will read, and
+	 * exists because {@code fast=FAILED_UNSUPPORTED_PARAMETERS} fired on every one of 69
+	 * calculations in the 2026-08-07 drive and the status names no parameter. CLAUDE.md's guess is
+	 * {@code avoid_narrow_streets}; a guess is exactly what this replaces. It is the cheapest
+	 * possible way to settle it - one field on a line that is already being written.
+	 *
+	 * <p>Mirrors {@link HHRoutePlanner}'s own test rather than approximating it: a parameter counts
+	 * as unsupported only when it is absent from the map's declared {@code profileParams} AND
+	 * differs from its own declared default, with {@code allow_private} exempt exactly as
+	 * {@code IGNORE_FAILED_UNSUPPORTED_PARAMETERS} exempts it.
+	 *
+	 * <p>Reported per GROUP and reduced to the smallest, because that is what the planner does:
+	 * each entry in a region's {@code profileParams} forms its own candidate group and the ranked
+	 * best group's count is what sets {@code hhHasUnsupportedParameters}. A union across groups
+	 * would name parameters the chosen group actually supports.
+	 *
+	 * <p>Values are parameter keys from {@code routing.xml}. Nothing user-identifying and nothing
+	 * secret passes through here.
+	 */
+	@NonNull
+	private static String hhUnsupportedParams(@NonNull RoutingContext ctx) {
+		try {
+			GeneralRouter router = ctx.config != null ? ctx.config.router : null;
+			if (router == null) {
+				return "noRouter";
+			}
+			String profile = router.getProfile().toString().toLowerCase();
+			List<String> routerParams = router.serializeParameterValues(router.getParameterValues());
+			List<String> best = null;
+			int groups = 0;
+			for (BinaryMapIndexReader reader : ctx.map.keySet()) {
+				for (net.osmand.binary.BinaryHHRouteReaderAdapter.HHRouteRegion hh
+						: reader.getHHRoutingIndexes()) {
+					if (!profile.equals(hh.profile)) {
+						continue;
+					}
+					for (String declared : hh.profileParams) {
+						groups++;
+						List<String> bad = unsupportedAgainst(router, routerParams,
+								Arrays.asList(declared.split(",")));
+						if (best == null || bad.size() < best.size()) {
+							best = bad;
+						}
+					}
+				}
+			}
+			if (groups == 0) {
+				// Not the same thing as "no unsupported parameters": no HH index for this profile
+				// at all, which reads as fast=FAILED_NO_HH_ROUTING_DATA rather than
+				// FAILED_UNSUPPORTED_PARAMETERS. Distinguishing them is half the point of the field.
+				return "noHHIndex";
+			}
+			if (best == null || best.isEmpty()) {
+				// The parameters are fine and the failure is something else - which would itself be
+				// news, since it would mean CLAUDE.md is wrong about the cause.
+				return "none";
+			}
+			// '+' rather than ',' as the separator: the log line is whitespace-delimited but the
+			// values themselves are key=value pairs, and a comma would make a multi-parameter
+			// result indistinguishable from one parameter with a list value.
+			StringBuilder sb = new StringBuilder();
+			for (String s : best) {
+				if (sb.length() > 0) {
+					sb.append('+');
+				}
+				sb.append(s);
+			}
+			return sb.toString();
+		} catch (Throwable t) {
+			return "err";
+		}
+	}
+
+	@NonNull
+	private static List<String> unsupportedAgainst(@NonNull GeneralRouter router,
+	                                               @NonNull List<String> routerParams,
+	                                               @NonNull List<String> declared) {
+		List<String> bad = new ArrayList<>();
+		for (String keyVal : routerParams) {
+			if (declared.contains(keyVal)) {
+				continue;
+			}
+			String key = keyVal.split("=")[0];
+			// Same exemption HHRoutePlanner:80 applies, and for the same reason: allow_private is
+			// toggled per calculation by the private-access probe, so counting it would name it on
+			// every single route and drown the parameter that is actually at fault.
+			if ("allow_private".equals(key)) {
+				continue;
+			}
+			RoutingParameter param = router.getParameters().get(key);
+			if (param == null) {
+				continue;
+			}
+			String val = keyVal.contains("=") ? keyVal.split("=")[1] : "";
+			if (RoutingParameterType.BOOLEAN.equals(param.getType())) {
+				boolean b = !"false".equals(val);
+				if (b == param.getDefaultBoolean()) {
+					continue;
+				}
+			} else if (RoutingParameterType.NUMERIC.equals(param.getType())) {
+				if (Algorithms.parseDoubleSilently(val, 0) == param.getDefaultNumeric()) {
+					continue;
+				}
+			}
+			bad.add(keyVal);
+		}
+		return bad;
+	}
+
 	private void logRouteCalculationTiming(@NonNull RouteCalculationParams params,
 	                                       @NonNull RoutePlannerFrontEnd router,
 	                                       @NonNull RoutingContext ctx,
@@ -1671,7 +1783,13 @@ public class RouteProvider {
 					//   FAILED_WITH_MIXED_MAPS / MISSING_MAPS / NEED_MORE_LAND_MAPS - map coverage.
 					// Without this, a degraded route and a fast one look identical in the log -
 					// which is how five hypotheses came to be tested against the wrong number.
-					.append(" fast=").append(fastRoutingStatus(progress));
+					.append(" fast=").append(fastRoutingStatus(progress))
+					// Which parameter fast= is complaining about. `none` with a FAILED_UNSUPPORTED_
+					// PARAMETERS status means the guess in CLAUDE.md is wrong and the cause is
+					// elsewhere; `noHHIndex` means the map has no Highway-Hierarchy section for this
+					// profile, which is a different failure wearing the same status. See
+					// hhUnsupportedParams.
+					.append(" badParams=").append(hhUnsupportedParams(ctx));
 			if (progress != null) {
 				// The pre-search block: missing-maps check, private-access probe, region lookup for
 				// all route points. On the HH C++ path `find` is structurally 0 - that path never

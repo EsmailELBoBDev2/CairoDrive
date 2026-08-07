@@ -404,7 +404,22 @@ def routing(rows):
             print("      installed, this is why - the HH section did not survive the cut.")
         if any("UNSUPPORTED_PARAMETERS" in k for k in bad_fast):
             print("      A routing parameter in use is not covered by the map's profileParams.")
-            print("      This fork's avoid_narrow_streets work is the usual cause.")
+            # badParams= names it. Before that field existed this line guessed at
+            # avoid_narrow_streets; the guess is no longer needed and must not be re-asserted
+            # over the top of a measurement that disagrees with it.
+            culprits = defaultdict(int)
+            for d in ds:
+                if "UNSUPPORTED_PARAMETERS" in d.get("fast", ""):
+                    culprits[d.get("badParams", "(no badParams= - old build)")] += 1
+            for name, n in sorted(culprits.items(), key=lambda kv: -kv[1]):
+                print("      badParams=%s on %d calculation(s)" % (name, n))
+            if any(c == "none" for c in culprits):
+                print("      *** `none` means NO non-default parameter is unsupported, so the")
+                print("          avoid_narrow_streets explanation in CLAUDE.md is WRONG and the")
+                print("          cause is elsewhere. Do not repeat it.")
+            if any(c == "noHHIndex" for c in culprits):
+                print("      *** `noHHIndex` means there is no HH section for this profile at all.")
+                print("          That is a map problem, not a parameter problem.")
     else:
         print("  fast: %s" % dict(fasts))
     finds = [num(d, "find", 0) for d in ds if d.get("engine") == "hh-cpp"]

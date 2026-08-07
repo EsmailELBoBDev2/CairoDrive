@@ -382,6 +382,12 @@ public class AppInitializer implements IProgress {
 		app.mapButtonsHelper = startupInit(new MapButtonsHelper(app), MapButtonsHelper.class);
 		app.osmOAuthHelper = startupInit(new OsmOAuthHelper(app), OsmOAuthHelper.class);
 		app.onlineRoutingHelper = startupInit(new OnlineRoutingHelper(app), OnlineRoutingHelper.class);
+		// Here, and not only in OsmandApplication.onCreate, because that call runs BEFORE this line
+		// and so can only ever defer. Building the engines must not fall to the first reroute: that
+		// runs on the navigation thread, where saveEngine's SharedPreferences write would be paid on
+		// the one code path whose entire purpose is latency. Idempotent - the latch inside means
+		// whichever call site gets there first is the only one that does work.
+		net.osmand.plus.cairodrive.CairoDriveRoutingEngines.ensureConfigured(app);
 		app.launcherShortcutsHelper = startupInit(new LauncherShortcutsHelper(app), LauncherShortcutsHelper.class);
 		app.gpsFilterHelper = startupInit(new GpsFilterHelper(app), GpsFilterHelper.class);
 		app.downloadTilesHelper = startupInit(new DownloadTilesHelper(app), DownloadTilesHelper.class);
