@@ -101,12 +101,26 @@ public class RouteProvider {
 	 * Master switch for the warm routing environment. Left as a mutable static so the behaviour can be
 	 * disabled from a debugger or a test without a rebuild; there is no user facing setting for it.
 	 */
-	// Off until a CD_ROUTE_TIMING log from a real drive says it is both safe and worth having.
-	// It reuses a RoutingContext across calculations, which is the highest-consequence change in
-	// this fork - a stale one does not crash, it returns a wrong route - and the measured benefit
-	// on a device running the C++ HH engine is the setup phase only. Unverified and load-bearing
-	// is the wrong combination to ship on by default.
-	public static boolean USE_WARM_ROUTING_ENVIRONMENT = false;
+	// ON, at the owner's explicit instruction and with the trade understood: this is the last
+	// remaining idea for the offline reroute, and he asked for it after being told what it risks.
+	//
+	// What it buys, honestly: the SETUP phase only. On the C++ HH engine the search itself runs in
+	// native code that this cache does not reach, so the modelled saving is 2-12% of a calculation
+	// and it sits on a phase that CD_ROUTE_PHASE has never named as dominant. It is not a second.
+	//
+	// What it risks: reusing a RoutingContext and a built router across calculations. A stale one
+	// does not crash - it returns a WRONG ROUTE, quietly, which is the failure this fork treats as
+	// worse than any amount of slowness. Everything the environment was built from is therefore
+	// fingerprinted, the map-file set twice over (signature and generation counter), and the
+	// avoided-roads set is read back out of the built router rather than the builder so a mislabel
+	// is impossible by construction - see WarmRoutingEnvironment.impassable for why that one
+	// mattered enough to restructure the signature around it.
+	//
+	// Read `reuse=` in CD_ROUTE_TIMING on the next drive. Zero means the cache never warmed and this
+	// is pure risk for nothing; anything above zero should show `search=` unchanged and
+	// `CD_HHLOAD loadMs=` unchanged, because those are what the cache does NOT touch. If any warm
+	// environment line reads "dropped" every calculation, turn this back off.
+	public static boolean USE_WARM_ROUTING_ENVIRONMENT = true;
 
 	/** Grep handle for the per-calculation timing line. */
 	private static final String TIMING_TAG = "CD_ROUTE_TIMING";
@@ -116,7 +130,25 @@ public class RouteProvider {
 	 * varies per calculation is reset on the contexts and re-applied on the configuration before use.
 	 */
 	static class WarmRoutingEnvironment {
+		/** Everything except the avoided-roads set - see {@link RouteProvider#buildWarmSignature}. */
 		final String signature;
+		/**
+		 * The avoided/nogo road ids, read back OUT OF THE BUILT ROUTER rather than out of the builder
+		 * they were meant to come from.
+		 * <p>
+		 * This is the whole reason the component is separate. {@code buildWarmSignature} necessarily runs
+		 * BEFORE {@code Builder.build}, and {@code build} re-reads {@code impassableRoadLocations} at
+		 * {@code RoutingConfiguration:219} to bake it into the router. The set is copy-on-write, so neither
+		 * read tears - but a road closure or a traffic detour landing between the two makes the entry's
+		 * label describe a router that does not exist. Cached under that label it would LATCH: every later
+		 * calculation matches the same wrong signature and reuses the same wrong router, potentially routing
+		 * into a road this fork had determined was closed, for the rest of the drive.
+		 * <p>
+		 * Deriving it from {@code cf.router.getImpassableRoadIds()} after the build makes a mislabel
+		 * impossible by construction. A change that lands inside the window simply produces an entry whose
+		 * label the next lookup will not match, so it is rebuilt - one cold calculation, self-healing.
+		 */
+		final String impassable;
 		final RoutePlannerFrontEnd router;
 		final RoutingConfiguration config;
 		final RoutingContext ctx;
@@ -132,10 +164,12 @@ public class RouteProvider {
 		final long mapGeneration;
 		int reuseCount;
 
-		WarmRoutingEnvironment(String signature, RoutePlannerFrontEnd router, RoutingConfiguration config,
+		WarmRoutingEnvironment(String signature, String impassable, RoutePlannerFrontEnd router,
+		                       RoutingConfiguration config,
 		                       RoutingContext ctx, RoutingContext complexCtx, double penaltyForReverseDirection,
 		                       long mapGeneration) {
 			this.signature = signature;
+			this.impassable = impassable;
 			this.router = router;
 			this.config = config;
 			this.ctx = ctx;
@@ -208,6 +242,17 @@ public class RouteProvider {
 			}
 			resourceListenerRegistered = true;
 		}
+		// Posted, not called here. ResourceManager.resourceListeners is a plain ArrayList with no
+		// synchronisation (ResourceManager:107), added to from fragments on the UI thread and ITERATED from
+		// the indexing threads. Adding to it from the routing thread - which is where this method is reached
+		// from, once per process - is a write racing those iterations, and its failure mode is a
+		// ConcurrentModificationException thrown inside map indexing, nowhere near here. Every other caller
+		// in the app is on the UI thread; joining them costs nothing, because the very first calculation
+		// simply runs without the listener and is covered by the signature anyway.
+		app.runInUIThread(() -> registerResourceListener(app));
+	}
+
+	private void registerResourceListener(@NonNull OsmandApplication app) {
 		app.getResourceManager().addResourceListener(new ResourceManager.ResourceListener() {
 			@Override
 			public void onMapsIndexed() {
@@ -271,7 +316,7 @@ public class RouteProvider {
 	 */
 	@NonNull
 	private WarmCheckout checkOutWarmEnvironment(@NonNull RouteCalculationParams params, @NonNull String signature,
-	                                             long generation) {
+	                                             @NonNull String impassable, long generation) {
 		ensureResourceListenerRegistered(params.ctx);
 		synchronized (warmLock) {
 			if (warmSessionOwner != null) {
@@ -287,6 +332,26 @@ public class RouteProvider {
 			}
 			if (cached != null && !cached.signature.equals(signature)) {
 				log.info(TIMING_TAG + " warm environment dropped: routing signature changed");
+				cached = null;
+				warmEnvironment = null;
+			}
+			// The avoided/nogo set, tested twice and for two different failures.
+			//
+			// Against the entry's own router: proves the label still describes the object. Nothing should
+			// mutate a built router in place today - Builder.build() hands each configuration its own copy
+			// via GeneralRouter.build(params) - but "should" is not a guarantee worth a wrong route, and the
+			// check is a handful of longs. This is the one invariant whose failure is silent and permanent.
+			//
+			// Against the live builder: proves the user has not added or cleared a closure since. Reading it
+			// here is exact rather than racy, because the entry's side of the comparison came out of the
+			// router itself - so the worst a late write can do is force a rebuild.
+			if (cached != null && !cached.impassable.equals(impassableSignature(cached.config))) {
+				log.info(TIMING_TAG + " warm environment dropped: avoided roads mutated under the cache");
+				cached = null;
+				warmEnvironment = null;
+			}
+			if (cached != null && !cached.impassable.equals(impassable)) {
+				log.info(TIMING_TAG + " warm environment dropped: avoided roads changed");
 				cached = null;
 				warmEnvironment = null;
 			}
@@ -334,11 +399,14 @@ public class RouteProvider {
 	 *         template GeneralRouter, so reloading routing.xml or switching to a custom routing file rebuilds;</li>
 	 *     <li><b>the set of loaded map files</b> - identity and order of the BinaryMapIndexReader array, which
 	 *         changes whenever a map is downloaded, deleted, re-indexed or updated by OsmAnd Live;</li>
-	 *     <li><b>avoided roads and direction points</b> - the impassable road ids baked into the router, and the
-	 *         selected avoid-roads files with their size and mtime, since their contents are parsed into the
-	 *         configuration's direction point tree;</li>
+	 *     <li><b>direction points</b> - the selected avoid-roads files with their size and mtime, since their
+	 *         contents are parsed into the configuration's direction point tree;</li>
 	 *     <li><b>the native library</b> - identity, so loading it after a cold start rebuilds.</li>
 	 * </ul>
+	 * The impassable/nogo road ids are NOT here. They are the one input this method cannot fingerprint
+	 * honestly - it runs before the router that carries them exists - so they are a separate component,
+	 * built from the router afterwards. See {@link WarmRoutingEnvironment#impassable}.
+	 * <p>
 	 * Deliberately not covered, because they are re-applied on every reuse instead: memory limits, initial
 	 * bearing, conditional-routing timestamp, minor-turns flag, left-hand driving and the transport-stop flags.
 	 */
@@ -360,18 +428,53 @@ public class RouteProvider {
 		sb.append(";safe=").append(settings.SAFE_MODE.get());
 		sb.append(";missing=").append(OsmandSettings.IGNORE_MISSING_MAPS).append(',').append(OsmandSettings.STOP_ON_MISSING_MAPS);
 		sb.append(";lib=").append(System.identityHashCode(lib));
-		// The impassable road ids are baked into the built GeneralRouter, so list them rather than hashing
-		// them - the set is a handful of entries and a hash collision here would mean silently routing over a
-		// road the user asked to avoid.
-		List<Long> impassable = new ArrayList<>(configBuilder.getImpassableRoadLocations());
-		Collections.sort(impassable);
-		sb.append(";impassable=").append(impassable);
 		sb.append(";avoidFiles=").append(avoidRoadsFilesSignature(params));
 		sb.append(";maps=").append(files.length);
 		for (BinaryMapIndexReader reader : files) {
 			sb.append(',').append(System.identityHashCode(reader));
 		}
 		return sb.toString();
+	}
+
+	/**
+	 * The avoided/nogo road ids the user currently has set, as a signature component.
+	 * <p>
+	 * The set is copy-on-write ({@code RoutingConfiguration.Builder:154}) precisely because a background
+	 * road-closure poller and the traffic detour write it while calculations read it, so taking the
+	 * reference once gives a stable snapshot and no lock is needed.
+	 */
+	@NonNull
+	private static String impassableSignature(@NonNull Builder configBuilder) {
+		Set<Long> live = configBuilder.getImpassableRoadLocations();
+		return impassableSignature(live == null ? null : new ArrayList<>(live));
+	}
+
+	/** The ids actually baked into a built configuration's router - the authoritative side. */
+	@NonNull
+	private static String impassableSignature(@Nullable RoutingConfiguration cf) {
+		if (cf == null || cf.router == null) {
+			return "none";
+		}
+		long[] ids = cf.router.getImpassableRoadIds();
+		List<Long> boxed = new ArrayList<>(ids.length);
+		for (long id : ids) {
+			boxed.add(id);
+		}
+		return impassableSignature(boxed);
+	}
+
+	/**
+	 * Listed rather than hashed: the set is a handful of entries, and a hash collision here would mean
+	 * silently routing over a road the user - or this fork's road-closure handling - asked to avoid.
+	 */
+	@NonNull
+	private static String impassableSignature(@Nullable List<Long> ids) {
+		if (ids == null || ids.isEmpty()) {
+			return "none";
+		}
+		List<Long> sorted = new ArrayList<>(ids);
+		Collections.sort(sorted);
+		return sorted.toString();
 	}
 
 	/**
@@ -667,8 +770,11 @@ public class RouteProvider {
 		String signature = warmAllowed
 				? buildWarmSignature(params, settings, config, generalRouter, routingParams, files, lib, method, approximationType)
 				: null;
+		// Read once, here, so the lookup and the "did it change under us" test below see the same snapshot.
+		String liveImpassable = warmAllowed ? impassableSignature(config) : "none";
 		WarmCheckout checkout = signature != null
-				? checkOutWarmEnvironment(params, signature, mapGenerationAtStart) : WarmCheckout.NONE;
+				? checkOutWarmEnvironment(params, signature, liveImpassable, mapGenerationAtStart)
+				: WarmCheckout.NONE;
 		WarmRoutingEnvironment warm = checkout.environment;
 
 		RoutePlannerFrontEnd router;
@@ -809,8 +915,23 @@ public class RouteProvider {
 		if (warm != null) {
 			env.setWarmEnvironment(warm);
 		} else if (warmAllowed && checkout.mayCache) {
-			env.setWarmEnvironment(new WarmRoutingEnvironment(signature, router, cf, ctx, cachedComplexCtx,
-					cf.penaltyForReverseDirection, mapGenerationAtStart));
+			// Read the avoided roads back OUT OF THE ROUTER that was just built, not out of the builder they
+			// came from. initOsmAndRoutingConfig -> Builder.build re-reads the live set at
+			// RoutingConfiguration:219, so a closure added since `liveImpassable` was taken is in the router
+			// but not in that string. Labelling the entry with the string would cache a router under a
+			// description of a different one, and because the label is what every later lookup compares
+			// against, the mislabel would never be noticed again - the wrong router would be reused for the
+			// rest of the drive.
+			String builtImpassable = impassableSignature(cf);
+			if (!builtImpassable.equals(liveImpassable)) {
+				// Not an error and not a reason to refuse the cache: the entry is correctly labelled either
+				// way. It simply will not match the next lookup, so the next calculation rebuilds. Logged
+				// because a repeating line here means something is churning the closure set every few
+				// seconds and the cache can never warm up.
+				log.info(TIMING_TAG + " avoided roads changed while building: labelling the entry from the router");
+			}
+			env.setWarmEnvironment(new WarmRoutingEnvironment(signature, builtImpassable, router, cf, ctx,
+					cachedComplexCtx, cf.penaltyForReverseDirection, mapGenerationAtStart));
 		}
 		return env;
 	}

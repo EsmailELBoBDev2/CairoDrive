@@ -269,6 +269,11 @@ public class RoutingContext {
 		calculationProgress = null;
 		calculationProgressFirstPhase = null;
 		leftSideNavigation = false;
+		// Per-calculation, so it belongs in a per-calculation reset. Its caller does set it on every path
+		// today, but the whole point of this method is that a reused context must not be able to carry a
+		// decision from the last route into the next one - and the direction this field fails in is
+		// permissive: left true, a first calculation would silently skip the private-access question.
+		skipPrivateAccessCheck = false;
 		previouslyCalculatedRoute = null;
 		precalculatedRouteDirection = null;
 
