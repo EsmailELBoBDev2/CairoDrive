@@ -104,6 +104,45 @@ when a map's `profileParams` does not cover the parameters in use.
 
 C++ HH search times are ~200-400 ms; the seconds are the load, not the search.
 
+### The offline search is no longer the reroute bottleneck — simulated, 2026-08-07
+
+`tools/sim/reroute_sim.py` is a 40k-trial Monte Carlo of the WHOLE wait, from the wrong turn to the
+new route being installed. Every constant in it is read out of the tree with a `file:line`, and the
+one unknown — the offline search time — is swept rather than assumed. Re-run it before proposing
+any reroute-latency work.
+
+**The result that changes the project's direction: the search time no longer moves the number.**
+
+| offline search | 8 s | 4 s | 2 s | 1 s |
+|---|---|---|---|---|
+| median wait | 14.7 s | 14.5 s | 14.5 s | 14.7 s |
+
+Not a modelling artefact — it holds at every separation rate from a slow drift to a motorway exit.
+The early start (`EARLY_START_FRACTION = 0.5`) begins the search at half the deviation threshold, so
+by the time the hysteresis confirms, the answer is already waiting. **A search that finishes before
+it is needed cannot be felt.**
+
+Two things follow, and both are the opposite of what was assumed all session:
+
+- **A Cairo-only `.obf` buys ~0 seconds of felt latency.** It is still worth measuring `CD_HHLOAD`
+  for battery, heat and the memory question, but not as a latency fix. Same for the warm routing
+  environment: it is worth what its `reuse=` says, which is not seconds.
+- **What is left is the safety rule, not the routing.** Median 14.6 s decomposes as ~11 s of
+  travelling far enough to cross `allowableDeviation` plus ~6 s of consecutive-fix confirmation.
+  Removing the hysteresis takes it to 10.2 s; halving the threshold again takes it to 9.2 s; both
+  together with an instant search hit a floor of **5.2 s**.
+
+That 5-second prize is real and so is its price: loosening exactly those two rules is what produced
+"reroute after reroute while trying to turn around" and took `CAIRODRIVE_OFFROUTE_HYSTERESIS` off by
+default once already. Do not trade it blind.
+
+The one targeted way to take part of it without loosening anything for anyone is
+`CAIRODRIVE_WRONG_ROAD_ACT` — road identity fires at 20 m instead of 50-120 m, but only on a healthy
+fix the matcher has settled. On the deviations where it works it saves ~5 s; it works on roughly a
+third of them (55% of fixes are degraded on this device), so the MEDIAN moves only ~0.6 s. Judge it
+on the mean and on `CD_WRONGROAD` firings, not on the median, and only after a drive shows zero
+firings on roads the driver was correctly following.
+
 ### The warm routing environment — ON, unverified, and read `reuse=` before defending it
 
 `USE_WARM_ROUTING_ENVIRONMENT` (`RouteProvider:109`) reuses one `RoutePlannerFrontEnd`,
