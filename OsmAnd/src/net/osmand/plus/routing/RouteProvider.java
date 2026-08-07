@@ -2291,8 +2291,13 @@ public class RouteProvider {
 		//   its distance and elapsed feed the REPAIR_DETOUR_RATIO and REPAIR_ABSOLUTE_CAP_M gates.
 		//   An online win makes those gates judge a foreign route's geometry and an HTTP latency.
 		//
-		// cairoDriveDispatchedAt is stamped only by recalculateRouteInBackground, i.e. only on the
-		// path a deviation actually takes, so it is an exact discriminator rather than a heuristic.
+		// cairoDriveDispatchedAt is stamped only by recalculateRouteInBackground, so it is an exact
+		// discriminator rather than a heuristic. Note what that does NOT exclude: the FIRST route of
+		// a session goes through the same method - previousToRecalculate being null is what makes
+		// CD_ROUTE_TIMING read reroute=0, not a separate path - so the initial calculation races too.
+		// The 2026-08-07 20:31 log confirms it: two calculations, both reroute=0, both raced, both
+		// won online in under a second. What this gate excludes is the traffic-detour poll and the
+		// repair probe, which is what it was written for.
 		// It also stops both callers spending a metered credit, which restores the "exactly one
 		// online request per reroute" claim the budget accounting is built on.
 		if (params.cairoDriveDispatchedAt <= 0) {

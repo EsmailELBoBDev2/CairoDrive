@@ -150,12 +150,15 @@ dispatched=2 finished=2 dropped=0. The offline leg ran on for another ~7 s and w
 felt reroute is now under a second and the 8.5 s / 7.9 s simulation figures are the OFFLINE-only
 floor, not what the driver experiences with a signal.
 
-Two consequences to keep:
+The gate `params.cairoDriveDispatchedAt > 0` reads as if it excluded the initial route. It does not:
+`recalculateRouteInBackground` stamps it for the FIRST calculation as well as for reroutes —
+`previousToRecalculate` being null is what makes `reroute=0`, not a different code path. Both
+calculations in this log are `reroute=0` and both raced. So the first route the driver waits for is
+also sub-second. What the gate actually excludes is the traffic-detour poll and the repair probe,
+which is what it was written for.
 
-- **The INITIAL route does not race.** The gate is `params.cairoDriveDispatchedAt > 0`, stamped only
-  by `recalculateRouteInBackground`, so planning a route from the search screen still costs the full
-  offline 7–8 s. That is the wait the driver sits through before setting off, and it is now the
-  larger of the two.
+One consequence to keep:
+
 - **`CD_WRONGROAD` reads `route has no segments - inert for this route` after every online win**, and
   that is structural: an online route is Locations plus directions with no `RouteSegmentResult`, so
   road identity cannot be read. The faster the online side wins, the more often
