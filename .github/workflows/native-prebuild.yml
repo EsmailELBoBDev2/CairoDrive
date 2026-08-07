@@ -289,11 +289,16 @@ jobs:
           git config user.email 'cairodrive-native[bot]@users.noreply.github.com'
           mkdir -p native
           printf '%s  %s\n' "${DIGEST}" "${TAG}" > "native/prebuilt-${ABI}.sha256"
-          if git diff --quiet -- "native/prebuilt-${ABI}.sha256"; then
+          # STAGE FIRST, then compare the INDEX. `git diff --quiet -- <path>` only looks at
+          # TRACKED files, so on the very first run - when the digest file does not exist in
+          # HEAD yet - it reported "no change" and this step exited 0 having committed
+          # nothing. Everything upstream had succeeded, the release was published, the job
+          # was green, and the one artifact that makes any of it work was never recorded.
+          git add "native/prebuilt-${ABI}.sha256"
+          if git diff --cached --quiet -- "native/prebuilt-${ABI}.sha256"; then
             echo "Digest unchanged; nothing to commit."
             exit 0
           fi
-          git add "native/prebuilt-${ABI}.sha256"
           {
             echo "Pin the ${ABI} native library to ${TAG}"
             echo
