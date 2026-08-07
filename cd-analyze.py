@@ -141,6 +141,89 @@ def layers(rows):
             name, sum(vals) / len(vals), sum(vals) / len(vals) / 1000.0, len(vals)))
 
 
+def reroute_speed(rows):
+    section("REROUTE SPEED - did today's work do anything")
+
+    # --- the online race -------------------------------------------------
+    race = [kv(l) for l in rows.get("CD_ROUTE_RACE", [])]
+    eng = rows.get("CD_ROUTE_ENGINE", [])
+    if not race:
+        print("  CD_ROUTE_RACE: no lines.")
+        if eng:
+            print("    engines were configured:")
+            for l in eng[:4]:
+                print("      " + l.strip()[:100])
+            print("    so the race never ran - no deviation, or no budget, or every")
+            print("    calculation was answered from cache before it started.")
+        else:
+            print("    and no CD_ROUTE_ENGINE lines either: no provider key reached this")
+            print("    build, so the race was inert. Check the SESSION header for routeRace=.")
+    else:
+        wins = defaultdict(int)
+        for d in race:
+            wins[d.get("won", "?")] += 1
+        print("  races: %d  winners: %s" % (len(race), dict(wins)))
+        onl = [num(d, "onlineMs") for d in race if d.get("onlineMs")]
+        off = [num(d, "offlineMs") for d in race if d.get("offlineMs")]
+        onl = [x for x in onl if x]
+        off = [x for x in off if x]
+        if onl:
+            print("  online: mean %.0f ms, best %.0f, worst %.0f" % (
+                sum(onl) / len(onl), min(onl), max(onl)))
+        if off:
+            print("  offline: mean %.0f ms, best %.0f, worst %.0f" % (
+                sum(off) / len(off), min(off), max(off)))
+        if onl and off:
+            share = 100.0 * sum(1 for d in race if d.get("won") == "online") / len(race)
+            print("  ==> the network answered first on %.0f%% of reroutes." % share)
+            if share < 30:
+                print("      Low. Either Cairo mobile latency is worse than the local search,")
+                print("      or the radio was asleep. Compare online mean against offline mean")
+                print("      above - if online is FASTER but rarely wins, it is wake-up latency.")
+
+    # --- the early start -------------------------------------------------
+    print("\n  --- EARLY START (began before the deviation was confirmed) ---")
+    early = rows.get("CD_EARLY_REROUTE", [])
+    if not early:
+        print("  no CD_EARLY_REROUTE lines - the feature never fired. Check earlyReroute=")
+        print("  in the SESSION header before concluding anything about it.")
+    else:
+        started = [l for l in early if "started" in l]
+        used = [l for l in early if "USED" in l]
+        disc = [l for l in early if "DISCARDED" in l]
+        print("  started=%d  USED=%d  DISCARDED=%d" % (len(started), len(used), len(disc)))
+        # started must equal used + discarded. A gap means the latch leaked and every
+        # later deviation would have been silently suppressed - the fault fixed today.
+        gap = len(started) - len(used) - len(disc)
+        if gap > 0:
+            print("  *** %d started with no outcome. The in-flight latch leaked, which" % gap)
+            print("      suppresses every LATER reroute with nothing running. This is the")
+            print("      exact fault fixed on 2026-08-06; if it is back, find the new exit path.")
+        if used:
+            print("  ==> %d reroutes began before the app was sure - that is the saving." % len(used))
+        if len(disc) > 2 * max(1, len(used)):
+            print("  ==> DISCARDED dominates. The feature is spending battery on deviations")
+            print("      that never confirm. Raise MIN_INTERVAL_MS or EARLY_START_FRACTION,")
+            print("      or take it out.")
+        for l in early[:6]:
+            print("      " + l.strip()[:110])
+
+    # --- road identity ---------------------------------------------------
+    print("\n  --- WRONG-ROAD DETECTOR (observe only) ---")
+    wr = rows.get("CD_WRONGROAD", [])
+    if not wr:
+        print("  no CD_WRONGROAD lines at all - not even a summary. Either the route had")
+        print("  unusable road ids, or the map matcher was off. Check wrongRoad= in SESSION.")
+    else:
+        for l in wr:
+            if "summary" in l or "FIRED" in l or "inert" in l:
+                print("      " + l.strip()[:120])
+        fired = [l for l in wr if "FIRED" in l]
+        print("  fired=%d. It is observe-only unless wrongRoadAct=true in SESSION." % len(fired))
+        print("  Before ever enabling it: every firing must be followed by a real deviation.")
+        print("  One firing on a road the driver was correctly following vetoes the feature.")
+
+
 def hhload(rows):
     section("HH INDEX LOAD - the fixed cost, and whether a smaller map would cut it")
     lines = rows.get("CD_HHLOAD", [])
@@ -157,6 +240,20 @@ def hhload(rows):
     print("  HH points in the loaded region: %d" % max(pts))
     print("  load time: mean %.0f ms, max %.0f ms" % (sum(loads) / len(loads), max(loads)))
     print("  retained if ever cached: ~%.0f MB at ~400 B/point" % (max(pts) * 400.0 / 1e6))
+
+    # Which native phase owned the calculation. This is the number that decides whether a
+    # smaller .obf is worth building, and it is the whole reason CairoDriveRoutePhases exists.
+    phases = [kv(l) for l in rows.get("CD_ROUTE_PHASE", [])]
+    if phases:
+        dom = defaultdict(int)
+        for d in phases:
+            dom[d.get("dominant", "?")] += 1
+        print("  dominant phase across %d calculations: %s" % (len(phases), dict(dom)))
+        for l in rows.get("CD_ROUTE_PHASE", [])[:4]:
+            print("      " + l.strip()[:110])
+    else:
+        print("  no CD_ROUTE_PHASE lines - the sampler did not run. Without it the phase")
+        print("  split is unknown and only the CD_HHLOAD totals below can be read.")
 
     searches = [num(kv(l), "search") for l in rows.get("CD_ROUTE_TIMING", []) if "search=" in l]
     searches = [x for x in searches if x]
@@ -487,6 +584,7 @@ def main():
     frames(rows)
     presentation(rows)
     layers(rows)
+    reroute_speed(rows)
     hhload(rows)
     routing(rows)
     reroute(rows)
