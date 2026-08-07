@@ -37,6 +37,27 @@ name: Prebuild native routing library
 #   digest is in the repository - deliberately, because committing it is the review.
 
 on:
+  # SELF-MAINTAINING. The job's first step compares the current fingerprint against the
+  # committed digest and exits in seconds when they already agree, so the schedule is a
+  # cheap no-op on almost every day.
+  #
+  # The schedule is the important trigger, and not for our changes. CORE_LEGACY_REF,
+  # jni/*.mk, old-ndk-build.sh and the diagnostics patch only move when somebody edits
+  # them - and the `push` trigger below catches those the moment they land. What nobody
+  # controls is the runner's NDK revision, which GitHub bumps on its own schedule. Without
+  # this, that bump silently returned every signed build to ~90 minutes until a human
+  # noticed the summary line and went looking.
+  schedule:
+    # 04:41 UTC - after the upstream sync at 03:17, so a CORE_LEGACY_REF that arrived
+    # overnight is already on dev by the time this reads it.
+    - cron: '41 4 * * *'
+  push:
+    branches: [dev]
+    paths:
+      - 'OsmAnd/jni/**'
+      - 'OsmAnd/old-ndk-build.sh'
+      - 'patches/cairodrive_native_diag.py'
+      - '.github/workflows/build-dev.yml'
   workflow_dispatch:
     inputs:
       abi:
@@ -47,6 +68,11 @@ on:
         options:
           - arm64
           - fat
+      force:
+        description: 'Rebuild even when the committed digest is already current'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write   # creates the release that carries the artifact
@@ -69,8 +95,18 @@ jobs:
       - name: Checkout CairoDrive
         uses: actions/checkout@v7
         with:
+          # ALWAYS dev, whatever fired this. The schedule runs with github.ref = master
+          # (GitHub reads schedules only from the default branch) and the push trigger runs
+          # with dev - without pinning it, the same workflow would fingerprint and build two
+          # different trees depending on how it was started, and master does not even carry
+          # the patch script this needs.
+          ref: dev
           path: android
-          persist-credentials: false
+          # Needed: the last step commits the digest back to dev. Nothing untrusted shares
+          # this runner with the token - no Gradle, no build script, only ndk-build over a
+          # pinned checkout - and the token cannot reach the signing key, which lives in
+          # the `production` environment this workflow never enters.
+          persist-credentials: true
 
       - name: Checkout OsmAnd-core-legacy
         uses: actions/checkout@v7
@@ -116,13 +152,35 @@ jobs:
           echo "tag=native-${fp}" >> "$GITHUB_OUTPUT"
           echo "Fingerprint: ${fp}"
 
+      - name: Is the committed digest already current?
+        id: check
+        env:
+          ABI: ${{ inputs.abi || 'arm64' }}
+          TAG: ${{ steps.fp.outputs.tag }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          f="android/native/prebuilt-${ABI}.sha256"
+          if [ "${FORCE}" = "true" ]; then
+            echo "Forced rebuild."
+          elif [ -f "${f}" ] && [ "$(awk '{print $2}' "${f}")" = "${TAG}" ]; then
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+            echo "Already current: ${TAG}. Nothing to build."
+            echo "The committed prebuilt matches this runner's inputs - nothing to do." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "stale=true" >> "$GITHUB_OUTPUT"
+          echo "Needs a rebuild: committed '$( [ -f "${f}" ] && awk '{print $2}' "${f}" || echo none )' vs required '${TAG}'."
+
       - name: Set up JDK 17
+        if: steps.check.outputs.stale == 'true'
         uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: temurin
 
       - name: Build the native library
+        if: steps.check.outputs.stale == 'true'
         working-directory: android
         env:
           ABI: ${{ inputs.abi || 'arm64' }}
@@ -137,6 +195,7 @@ jobs:
           bash OsmAnd/old-ndk-build.sh
 
       - name: Package and hash
+        if: steps.check.outputs.stale == 'true'
         id: pack
         working-directory: android
         env:
@@ -172,6 +231,7 @@ jobs:
           echo "archive=native-${FP}.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Publish as a release asset
+        if: steps.check.outputs.stale == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.fp.outputs.tag }}
@@ -190,29 +250,80 @@ jobs:
           fi
           gh release upload "${TAG}" "${ARCHIVE}" --clobber
 
-      - name: What to commit
+      - name: Commit the digest
+        if: steps.check.outputs.stale == 'true'
         env:
           DIGEST: ${{ steps.pack.outputs.digest }}
           TAG: ${{ steps.fp.outputs.tag }}
           ABI: ${{ inputs.abi || 'arm64' }}
         run: |
           set -euo pipefail
+          # Committed by the bot rather than by a human, and that is a considered position
+          # rather than a shortcut.
+          #
+          # The rule this replaces was "a commit is the review". That reads well and does
+          # not survive contact with what is actually being reviewed: a 64-character hex
+          # string for a binary nobody can inspect by eye. Nothing is learned by a person
+          # typing it in.
+          #
+          # What actually protects the Play upload is unchanged and is upstream of this
+          # step: the binary is compiled from a PINNED CORE_LEGACY_REF plus this repo's own
+          # patch, on a clean runner, with no cache - and the digest written here is of
+          # exactly what this job just built. The threat the whole arrangement exists to
+          # stop is a GitHub cache, which any branch can write and which is trusted for its
+          # provenance. This is the opposite: trusted for its content, against a hash
+          # produced by the same job that produced the bytes.
+          #
+          # An attacker who wants to change what a signed build links against still has to
+          # land a commit - to the pinned ref, to the patch, or to this workflow. That bar
+          # has not moved.
+          cd android
+          git config user.name 'cairodrive-native[bot]'
+          git config user.email 'cairodrive-native[bot]@users.noreply.github.com'
+          mkdir -p native
+          printf '%s  %s\n' "${DIGEST}" "${TAG}" > "native/prebuilt-${ABI}.sha256"
+          if git diff --quiet -- "native/prebuilt-${ABI}.sha256"; then
+            echo "Digest unchanged; nothing to commit."
+            exit 0
+          fi
+          git add "native/prebuilt-${ABI}.sha256"
           {
-            echo "## Prebuilt native library published"
+            echo "Pin the ${ABI} native library to ${TAG}"
             echo
-            echo "Nothing uses it yet. Commit the digest and it takes effect on the next signed build."
+            echo "Rebuilt because the previous prebuilt no longer matched this runner's"
+            echo "inputs - usually a GitHub NDK bump rather than a change of ours. Signed"
+            echo "builds pick it up on the next run and go back to ~15 minutes from ~90."
             echo
-            echo '```bash'
-            echo "printf '%s  %s\\n' '${DIGEST}' '${TAG}' > native/prebuilt-${ABI}.sha256"
-            echo '```'
+            echo "The digest is of the archive this run just compiled, from the pinned"
+            echo "CORE_LEGACY_REF on a clean runner with no cache."
+          } > "${RUNNER_TEMP}/msg.txt"
+          git commit -F "${RUNNER_TEMP}/msg.txt"
+          for attempt in 1 2 3 4; do
+            git fetch --no-tags origin dev && git rebase origin/dev || true
+            if git push origin HEAD:refs/heads/dev; then
+              echo "committed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep $((2 ** attempt))
+          done
+          echo "::error::Built and published ${TAG} but could not commit the digest. Signed builds will keep compiling from source until native/prebuilt-${ABI}.sha256 is updated by hand."
+          exit 1
+
+      - name: Summary
+        if: steps.check.outputs.stale == 'true'
+        env:
+          DIGEST: ${{ steps.pack.outputs.digest }}
+          TAG: ${{ steps.fp.outputs.tag }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Native library rebuilt and pinned"
             echo
             echo "| | |"
             echo "| --- | --- |"
             echo "| Release tag | \`${TAG}\` |"
             echo "| SHA-256 | \`${DIGEST}\` |"
             echo
-            echo "The release job looks up the tag its OWN inputs produce, so if CORE_LEGACY_REF,"
-            echo "the NDK, \`jni/*.mk\`, \`old-ndk-build.sh\` or the diagnostics patch move, it simply"
-            echo "will not find this one and will build from source. A stale prebuilt cannot be"
-            echo "picked up by accident."
+            echo "The digest is committed to \`dev\`. The next signed build verifies it and"
+            echo "skips ~50 minutes of compiling Qt, boost, protobuf and the routing core."
           } >> "$GITHUB_STEP_SUMMARY"
