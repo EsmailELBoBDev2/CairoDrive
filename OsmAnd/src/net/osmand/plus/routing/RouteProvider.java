@@ -433,6 +433,14 @@ public class RouteProvider {
 	 */
 	private void finishWarmSession(@Nullable RoutingEnvironment env, boolean keep) {
 		WarmRoutingEnvironment entry = env != null ? env.getWarmEnvironment() : null;
+		// NOTE, deliberately not "fixed": this releases on thread identity alone, so a nested
+		// warm-eligible calculation on the same thread would release the OUTER one's slot. There is
+		// no such path today (the only other warm-enabled caller, GpxRouteHelper, runs under
+		// calcGPXRoute, which sets warmAllowed false), and the obvious guard - requiring
+		// entry != null - is WRONG: checkOutWarmEnvironment claims the slot even when it hands back
+		// no environment, which happens whenever a map change lands mid-calculation and mayCache is
+		// false. That guard would leak the slot and silently disable the cache for the process.
+		// Closing this properly needs a checkout token, not a null test; it is not worth that today.
 		synchronized (warmLock) {
 			if (warmSessionOwner != Thread.currentThread()) {
 				return;
@@ -858,11 +866,37 @@ public class RouteProvider {
 		} else {
 			router = new RoutePlannerFrontEnd();
 			if (method.isFastRoutingPossible(params.mode)) {
-				// Ask the HH planner to hold on to its loaded network between calls. It only ever acts on
-				// this when the same RoutingContext comes back, which is exactly what the warm cache provides
-				// and what a throwaway front end never will - so passing warmAllowed here is a hint, not a
-				// correctness decision.
-				router.setDefaultHHRoutingConfig(warmAllowed);
+				// FALSE, deliberately - this used to pass warmAllowed, and the comment here called it
+				// "a hint, not a correctness decision". That was wrong, and it is the most important
+				// thing an audit of this cache found.
+				//
+				// It switches on a SECOND cache: HHRoutingConfig.cacheCtx, the loaded Highway
+				// Hierarchy network. That cache is not on the RoutingConfiguration or the
+				// RoutingContext, so none of the work this entry does - the signature, the field
+				// snapshots, resetForNewCalculation - reaches it. And HHRoutePlanner is written on
+				// the assumption that it is rebuilt every calculation. Three consequences, all
+				// silent, all producing a WRONG ROUTE rather than a slow one:
+				//
+				//   clearAll() -> clearRouting() sets rtExclude=false on every start/end
+				//   neighbourhood point on the success path of each calculation, and
+				//   filterPointsBasedOnConfiguration then short-circuits because the parameter map
+				//   is unchanged. So the avoid_narrow_streets exclusions ERODE, calculation by
+				//   calculation, on exactly the roads the driver has been near.
+				//
+				//   recalculateNetworkCluster rewrites shortcut costs in place and sets dist=-1 to
+				//   disable ones it could not reach - decisions made under that one calculation's
+				//   start point and impassable set, including the jam ids TrafficDetourHelper loads
+				//   temporarily. Nothing restores them.
+				//
+				//   FULL_DIJKSTRA_NETWORK_RECALC is a decrement-only budget of 10 that upstream
+				//   reset by rebuilding the config. Cached, it goes permanently negative and HH
+				//   starts giving up and falling through to the Java A*.
+				//
+				// The trade is not close. All three live on the Java HH path, and this device runs
+				// engine=hh-cpp, so on the POCO C85 the network cache buys nothing at all. What the
+				// warm environment was measured to be worth - 2-12% of the setup phase - comes from
+				// reusing the configuration and context, which is audited and kept.
+				router.setDefaultHHRoutingConfig(false);
 			} else {
 				router.setHHRoutingConfig(null);
 			}
