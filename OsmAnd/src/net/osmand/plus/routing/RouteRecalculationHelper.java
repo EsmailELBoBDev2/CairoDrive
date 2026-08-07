@@ -618,7 +618,24 @@ class RouteRecalculationHelper {
 	// route, because the point is to answer a repeat of the same question.
 	private static final int CACHE_MAX = 4;
 	private static final long CACHE_TTL_MS = 90_000;
-	/** ~150 m. Two starts inside one cell get the same answer, which is the whole idea. */
+	/**
+	 * 66 m at Cairo's latitude, not the ~150 m this comment used to claim.
+	 *
+	 * <p>40075017 / 2^31 * 2^12 * cos(30.05 deg) = 66 m. The old figure was out by 2.3x, and the
+	 * temptation on reading it is to "fix" the constant upward to match. Do not: 66 m is the
+	 * right number and 150 m would be actively harmful.
+	 *
+	 * <p>The cell decides how far apart two starts may be and still share one answer, so the
+	 * ceiling is the off-route threshold. Serve a driver a route computed for a point further
+	 * away than that and upstream measures the cached route as a deviation from itself and
+	 * reroutes immediately - a cache hit that costs a full search is worse than a miss.
+	 *
+	 * <p>That ceiling got LOWER today. CAIRODRIVE_TIGHTEN_NEAR_TURN halves the threshold within
+	 * 40 m of a manoeuvre, so near a junction it can be 25 m, against a 66 m cell whose diagonal
+	 * is 93 m. The margin is already thin there and raising the cell would remove it. If a drive
+	 * shows cache hits followed immediately by a fresh deviation, the fix is a SMALLER cell, not
+	 * a larger one.
+	 */
 	private static final int CACHE_CELL_SHIFT = 12;
 
 	private final LinkedHashMap<String, Object[]> rerouteCache =
