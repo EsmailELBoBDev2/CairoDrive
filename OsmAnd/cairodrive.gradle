@@ -210,10 +210,10 @@ def hwCanvas = hwCanvasEnv?.trim() ? hwCanvasEnv.trim() : "true"
 // alternative routes are not available offline, so this is a place a personal offline fork can
 // actually be ahead rather than catching up.
 //
-// OFF by default, deliberately. The cost is unmeasured and it lands on the search path - the
-// exact path the next drive exists to measure for B1, the repair probe and pre=. Adding an
-// unmeasured cost to the thing being measured is how a drive produces numbers nobody can read.
-// Flip it for the drive AFTER this one. CD_ROUTE_TIMING reports alt= either way.
+// STILL OFF, and this is now the only feature flag in the file that is. Not caution - it is the
+// blunt version. CAIRODRIVE_ALTERNATE_ALTERNATIVES below does the same thing while alternating
+// the arm per calculation, so one drive carries both arms on the same roads and alt= separates
+// them. Forcing alternatives on every calculation would throw that baseline away for nothing.
 def routeAlternativesEnv = System.getenv("CAIRODRIVE_ROUTE_ALTERNATIVES")
 def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim() : "false"
 
@@ -372,9 +372,10 @@ def routeAlternatives = routeAlternativesEnv?.trim() ? routeAlternativesEnv.trim
 // 2.1-2.5 m accuracy with satsUsed=0 - a Wi-Fi/cell position wearing a satellite fix's error bar.
 // DEGRADED_SIGMA_MULT=8 treats those as 32 m, which is the knee of the measured curve.
 //
-// OFF by default, and nothing consumes the match yet: the service computes and logs only, so
-// CD_MATCH disagree= answers "how often would this have moved the car, and was it right" BEFORE
-// anything depends on it. Same order CairoDriveStationary used.
+// ON, and the match IS consumed now - both halves of what this note used to say are stale.
+// CairoDriveWrongRoad reads the settled road id and, with CAIRODRIVE_WRONG_ROAD_ACT on, can
+// trigger a reroute from it. CD_MATCH disagree= is still the number that says whether trusting
+// it was right, and it is now a check on a live dependency rather than on a dry run.
 //
 // Cost containment is hard rather than hopeful: one fix in flight at a time and the next is
 // DROPPED rather than queued, a dedicated background thread, its own RoutingContext, and a
