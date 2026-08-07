@@ -236,6 +236,11 @@ jobs:
         if: steps.check.outputs.stale == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          # gh infers the repository from the git remote of the CURRENT directory, and this
+          # step runs in the workspace root - which is not a checkout: the sources are in
+          # android/ and core-legacy/. Without this it dies with "not a git repository"
+          # AFTER the hour-long build, having produced the library and thrown it away.
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ steps.fp.outputs.tag }}
           ARCHIVE: ${{ steps.pack.outputs.archive }}
           DIGEST: ${{ steps.pack.outputs.digest }}
