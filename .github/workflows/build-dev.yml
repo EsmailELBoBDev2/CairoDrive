@@ -42,6 +42,14 @@ on:
     branches: [dev]
     # A tag is the release trigger: `git tag -a v4.9.10-cd1 && git push origin --tags`.
     tags: ['v*']
+    paths-ignore:
+      # native-prebuild.yml commits native/prebuilt-<abi>.sha256 by itself, and that push
+      # would otherwise spend a full dev build on a one-line hash change. The file is read
+      # only by the RELEASE job, which runs on a tag or a dispatch and never on a push, so
+      # nothing an APK contains depends on it.
+      #
+      # paths-ignore filters PUSH only. A dispatch still builds whatever is on dev.
+      - 'native/**'
   workflow_dispatch:
     inputs:
       abi:
