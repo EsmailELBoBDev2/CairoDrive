@@ -1407,8 +1407,18 @@ public class RouteProvider {
 			RouteSegmentResult last = repairSegments.get(repairSegments.size() - 1);
 			boolean first = true;
 			for (RouteSegmentResult rr : tail) {
-				// Deep copy - see (1) above.
-				RouteSegmentResult copy = new RouteSegmentResult(rr.getObject(),
+				// Deep copy - see (1) above - INCLUDING the RouteDataObject.
+				//
+				// Copying only the RouteSegmentResult protects the live route from setTurnType,
+				// setDistance and setSegmentTime, which are per-segment. It does not protect it
+				// from prepareResult below: filterMinorStops calls
+				// seg.getObject().removePointType(...) and permanently strips stop-sign point types
+				// off the shared road object, and findOrCreateRouteType mutates the region. Those
+				// point types are what RouteCalculationResult.attachAlarmInfo reads to raise STOP
+				// alarms - so a repair would silently delete stop warnings from the route the
+				// driver is still following, and do it even on the REJECTED path, which is the one
+				// taken most often.
+				RouteSegmentResult copy = new RouteSegmentResult(new RouteDataObject(rr.getObject()),
 						rr.getStartPointIndex(), rr.getEndPointIndex());
 				if (first) {
 					first = false;
@@ -2149,7 +2159,24 @@ public class RouteProvider {
 			return CairoDriveRouteRace.race(
 					() -> findVectorMapsRoute(params, calcGPXRoute),
 					() -> findOnlineRouteWith(helper, engine, racePath, onlineParams),
-					r -> r != null && r.isCalculated());
+					r -> r != null && r.isCalculated(),
+					// The offline loser is marked cancelled the moment online wins. The native
+					// search polls this and stops, which is the only mechanism there is - by the
+					// time the race returns, afterExecute has already removed the task from
+					// tasksMap, so stopCalculation() can never reach it again.
+					//
+					// Three things it stops, and two of them are measurement rather than battery:
+					// the abandoned calculation was holding warmSessionOwner (so the NEXT reroute
+					// reported reuse=0 with nothing wrong with the cache), and it wrote a
+					// CD_ROUTE_TIMING line seconds AFTER CD_REROUTE finished, describing a search
+					// whose result was discarded and which cd-analyze.py cannot tell from a real
+					// one. On a drive where online wins often, that is most of the timing data.
+					() -> {
+						RouteCalculationProgress p = params.calculationProgress;
+						if (p != null) {
+							p.isCancelled = true;
+						}
+					});
 		} catch (Throwable t) {
 			// A broken race must never cost a route. Fall through to the offline path.
 			CairoDriveLogger.getInstance().log("ROUTE_RACE", "race setup failed, offline only", t);

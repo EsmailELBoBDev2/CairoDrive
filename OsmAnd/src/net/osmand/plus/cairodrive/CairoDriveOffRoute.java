@@ -133,8 +133,10 @@ public class CairoDriveOffRoute {
 		}
 		if (location.hasAccuracy() && location.getAccuracy() > MAX_TRUSTED_ACCURACY_M) {
 			// Unusable fix: no evidence. But the clock above is running now, so a long run of
-			// these can no longer hold a real deviation back indefinitely.
-			return System.currentTimeMillis() - firstOffRouteTime > MAX_SUPPRESSION_MS;
+			// these can no longer hold a real deviation back indefinitely. Same unambiguity
+			// requirement as the main backstop below, and for the same reason.
+			return System.currentTimeMillis() - firstOffRouteTime > MAX_SUPPRESSION_MS
+					&& (allowableM <= 0 || devM > allowableM);
 		}
 		consecutiveOffRouteFixes++;
 		// HARD TIMEOUT. However noisy the GPS, however the counter is behaving, a deviation that
@@ -142,7 +144,22 @@ public class CairoDriveOffRoute {
 		// that makes the whole mechanism safe to enable: the failure mode that took it off by
 		// default was a genuine wrong turn going unannounced for kilometres, and no combination
 		// of the rules above can now delay a reroute past this.
-		boolean timedOut = System.currentTimeMillis() - firstOffRouteTime > MAX_SUPPRESSION_MS;
+		//
+		// ...but it requires the deviation to be UNAMBIGUOUS, not merely past the tightened
+		// threshold. The timeout waives corroboration entirely, so on its own it is a one-fix
+		// reroute, and CAIRODRIVE_FAST_REROUTE moved the band it can fire in from 50-65 m down to
+		// 30-39 m. A driver correctly on a wide Cairo arterial, sitting at ~34 m of orthogonal
+		// offset because the route line is on the centreline and they are in an outer lane, has
+		// `offRoute` flip true/false as isGnssDegraded() oscillates - and the on-route counter needs
+		// TWO consecutive agreeing fixes to clear, which an alternating stream never gives. After
+		// 12 s of that the next off-route fix rebuilt the route on a road they never left.
+		//
+		// allowableM is the UNTIGHTENED threshold (RoutingHelper passes beforeFast), so this is the
+		// same "genuinely off route by the error model" test the backstop was written against. The
+		// tightening still buys its seconds through the ordinary corroborated path above; it just
+		// cannot reach the one path that has no corroboration at all.
+		boolean timedOut = System.currentTimeMillis() - firstOffRouteTime > MAX_SUPPRESSION_MS
+				&& (allowableM <= 0 || devM > allowableM);
 		if (!timedOut && consecutiveOffRouteFixes < requiredFixes(location, devM, allowableM)) {
 			return false;
 		}

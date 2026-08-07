@@ -118,6 +118,29 @@ public final class CairoDriveRouteRace {
 	public static <T> T race(@NonNull Callable<T> offline,
 	                         @NonNull Callable<T> online,
 	                         @NonNull Usable<T> usable) {
+		return race(offline, online, usable, null);
+	}
+
+	/**
+	 * @param abandonOffline run when the ONLINE side wins and the local calculation is still
+	 *                       going. Not a hard kill - the native search is not interruptible -
+	 *                       but the hook the caller needs to mark that work as unwanted.
+	 *                       <p>
+	 *                       Without it the abandoned calculation runs to completion and is
+	 *                       invisible to cancellation, because afterExecute has already removed
+	 *                       its task from tasksMap by then. It keeps holding the warm routing
+	 *                       slot (so the NEXT reroute reads reuse=0 through no fault of the
+	 *                       cache), it writes a CD_ROUTE_TIMING line AFTER CD_REROUTE finished
+	 *                       describing a search whose answer was thrown away, and it can still
+	 *                       set missingMapsCalculationResult on shared params long after the
+	 *                       route was installed. The first two corrupt exactly the numbers a
+	 *                       drive log is read for.
+	 */
+	@Nullable
+	public static <T> T race(@NonNull Callable<T> offline,
+	                         @NonNull Callable<T> online,
+	                         @NonNull Usable<T> usable,
+	                         @Nullable Runnable abandonOffline) {
 		ExecutorService pool = Executors.newFixedThreadPool(2, THREADS);
 		long started = System.currentTimeMillis();
 		try {
@@ -145,6 +168,13 @@ public final class CairoDriveRouteRace {
 						// not. Nothing is delayed by taking it, and the driver gets a route
 						// seconds earlier.
 						log("ONLINE won in " + onlineMs + " ms, offline still running");
+						if (abandonOffline != null) {
+							try {
+								abandonOffline.run();
+							} catch (Throwable ignored) {
+								// Telemetry hygiene must never cost the route we just won.
+							}
+						}
 						return onlineResult;
 					}
 				}
