@@ -316,6 +316,10 @@ public class RoutingHelper {
 		// nothing on its own - "degraded fixes dominated" and "the feature never ran" look
 		// identical in a log without it, and only one of those is a bug.
 		net.osmand.plus.cairodrive.CairoDriveWrongRoad.logSummary();
+		// Same reason: a drive that never tightened anything and a drive that disarmed in its
+		// first minute produce identical silence, and they mean opposite things.
+		net.osmand.plus.cairodrive.CairoDriveFastReroute.logSummary();
+		net.osmand.plus.cairodrive.CairoDriveFastReroute.navigationStopped();
 		net.osmand.plus.cairodrive.CairoDriveEarlyReroute.reset();
 		net.osmand.plus.cairodrive.CairoDriveWrongRoad.onRouteChanged(null);
 		net.osmand.plus.cairodrive.providers.SunGlareProvider.reset(app);
@@ -593,6 +597,13 @@ public class RoutingHelper {
 				if (nearManoeuvre && BuildConfig.CAIRODRIVE_TIGHTEN_NEAR_TURN) {
 					allowableDeviation *= NEAR_MANOEUVRE_TOLERANCE_MULT;
 				}
+				// The last of the wait, taken from the rule that owns it. The simulation says the
+				// SEARCH is no longer felt at all - only this threshold and the confirmation are -
+				// so this is where the remaining seconds actually are. It disarms itself if the
+				// drive shows it was too much; see CairoDriveFastReroute.
+				double beforeFast = allowableDeviation;
+				allowableDeviation = net.osmand.plus.cairodrive.CairoDriveFastReroute
+						.tolerance(allowableDeviation);
 				lastAllowableDeviation = (float) allowableDeviation;
 
 				// 2. Analyze if we need to recalculate route
@@ -633,10 +644,23 @@ public class RoutingHelper {
 							System.currentTimeMillis());
 					boolean actOnWrongRoad = wrongRoad
 							&& net.osmand.plus.cairodrive.CairoDriveWrongRoad.mayAct();
+					// Only when the tightening actually changed the verdict for this fix. Logging
+					// every fix would bury the log; logging none would leave "why did it reroute
+					// there" unanswerable, which is the first question a bad drive raises.
+					if (offRoute && distOrth <= beforeFast) {
+						net.osmand.plus.cairodrive.CairoDriveFastReroute.logDecision(
+								currentLocation, distOrth, beforeFast, allowableDeviation);
+					}
 					if (offRouteHysteresis.shouldRecalculate(currentLocation,
 							offRoute || actOnWrongRoad, distOrth, allowableDeviation)) {
 						log.info("Recalculate route, because correlation  : " + distOrth); //$NON-NLS-1$
 						calculateRoute = !settings.DISABLE_OFFROUTE_RECALC.get();
+						// The falsification test. Counted on the DISPATCH, because a deviation the
+						// hysteresis refused cost nothing and proves nothing.
+						if (calculateRoute) {
+							net.osmand.plus.cairodrive.CairoDriveFastReroute.rerouteHappened(
+									System.currentTimeMillis());
+						}
 						// If a calculation for this same deviation is already running, it IS the
 						// answer - dispatching a second would queue behind it on the single
 						// routing thread and arrive later than doing nothing at all.

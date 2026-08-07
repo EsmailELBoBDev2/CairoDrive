@@ -208,6 +208,41 @@ def reroute_speed(rows):
         for l in early[:6]:
             print("      " + l.strip()[:110])
 
+    # --- the aggressive package -------------------------------------------
+    print("\n  --- FAST REROUTE (tightened threshold + capped hysteresis) ---")
+    fr = rows.get("CD_FAST_REROUTE", [])
+    if not fr:
+        print("  no CD_FAST_REROUTE lines - not even a summary. Check fastReroute= in SESSION;")
+        print("  if it says true, the summary is written on navigation STOP, so a log that ends")
+        print("  mid-drive will not have one.")
+    else:
+        disarmed = [l for l in fr if "DISARMED" in l]
+        tightened = [l for l in fr if l.strip().startswith("tightened")]
+        summary = [l for l in fr if "summary" in l]
+        for l in summary:
+            print("      " + l.strip()[:130])
+        if disarmed:
+            print("  *** DISARMED. The tightened threshold produced four reroutes inside 90 s,")
+            print("      which is flapping, not driving. It took itself back out - the rest of")
+            print("      the drive ran on the conservative rules and is still valid data.")
+            for l in disarmed[:2]:
+                print("      " + l.strip()[:130])
+            print("      DECISION: lower CairoDriveFastReroute.TOLERANCE_MULT toward 1.0, or raise")
+            print("      MIN_ALLOWABLE_M, before shipping this again. Do not just retry it.")
+        elif tightened:
+            print("  survived the whole drive. %d fixes were judged off-route ONLY because of the"
+                  % len(tightened))
+            print("  tightening - i.e. %d deviations noticed sooner than they would have been."
+                  % len(tightened))
+            print("  Now do the check the count cannot do: read each one and confirm the driver")
+            print("  really had left the route. One firing on a road they were correctly")
+            print("  following vetoes this, however good the timing looks.")
+            for l in tightened[:8]:
+                print("      " + l.strip()[:130])
+        else:
+            print("  active but never changed a verdict: no deviation in this drive fell between")
+            print("  the old threshold and the new one. Neutral result, not a good one.")
+
     # --- the warm routing environment -------------------------------------
     print("\n  --- WARM ROUTING ENVIRONMENT (reused router/config/context) ---")
     timing = rows.get("CD_ROUTE_TIMING", [])

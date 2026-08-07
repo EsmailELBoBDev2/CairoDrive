@@ -134,7 +134,21 @@ Two things follow, and both are the opposite of what was assumed all session:
 
 That 5-second prize is real and so is its price: loosening exactly those two rules is what produced
 "reroute after reroute while trying to turn around" and took `CAIRODRIVE_OFFROUTE_HYSTERESIS` off by
-default once already. Do not trade it blind.
+default once already.
+
+**It has been taken, on 2026-08-07, at the owner's explicit and repeated instruction** —
+`CAIRODRIVE_FAST_REROUTE` (threshold × 0.6 with a hard 30 m floor, hysteresis capped at 3 fixes) and
+`CAIRODRIVE_WRONG_ROAD_ACT`, both ON. Simulated at **14.5 s → 8.8 s median, p90 30.1 → 16.2 s**.
+
+What makes that testable in the ONE drive per build he gets: `CairoDriveFastReroute` carries its own
+falsification test. Four reroutes inside 90 s is flapping rather than driving, so the package
+disarms itself for the rest of the session and writes `DISARMED` — the remainder of the drive then
+runs on the conservative rules and is still valid data. A wrong answer costs a log line, not a trip.
+
+**Read `CD_FAST_REROUTE` before anything else in the next log.** `DISARMED` present ⇒ raise
+`MIN_ALLOWABLE_M` or move `TOLERANCE_MULT` toward 1.0, do not simply retry. Survived ⇒ the count is
+not the test: read each `tightened` line and confirm the driver really had left the route. One
+firing on a road they were correctly following vetoes it however good the timing looks.
 
 The one targeted way to take part of it without loosening anything for anyone is
 `CAIRODRIVE_WRONG_ROAD_ACT` — road identity fires at 20 m instead of 50-120 m, but only on a healthy

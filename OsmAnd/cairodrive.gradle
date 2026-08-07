@@ -485,8 +485,37 @@ def tightenNearTurn = tightenNearTurnEnv?.trim() ? tightenNearTurnEnv.trim() : "
 
 def wrongRoadEnv = System.getenv("CAIRODRIVE_WRONG_ROAD")
 def wrongRoad = wrongRoadEnv?.trim() ? wrongRoadEnv.trim() : "true"
+// ON, at the owner's explicit and repeated instruction: he gets one drive per build and asked for
+// everything remaining to be in it rather than fed to him one flag at a time. The conditions the
+// note above sets out are still the ones to judge it by - they are now judged AFTER the drive
+// instead of before it, from CD_WRONGROAD summary, and the flag comes straight back out if the
+// firings do not hold up.
+//
+// What makes that acceptable rather than reckless: CairoDriveFastReroute's flap guard covers this
+// too. A matcher error that starts rerouting a correct route trips the same counter and disarms
+// the whole aggressive package within 90 seconds, so the worst case is a minute of bad behaviour
+// and a log line naming it - not a ruined drive.
 def wrongRoadActEnv = System.getenv("CAIRODRIVE_WRONG_ROAD_ACT")
-def wrongRoadAct = wrongRoadActEnv?.trim() ? wrongRoadActEnv.trim() : "false"
+def wrongRoadAct = wrongRoadActEnv?.trim() ? wrongRoadActEnv.trim() : "true"
+
+// Take the last of the reroute wait from the two SAFETY rules that own it, and let the drive
+// falsify it.
+//
+// tools/sim/reroute_sim.py, 40k trials with every constant read out of the tree, closed the
+// routing side of this outright: at 8 s of offline search the median wait is 14.7 s and at 1 s it
+// is 14.5 s. The search is no longer felt, because the early start overlaps it with the
+// confirmation window. There is nothing left to make faster - only something left to make looser.
+//
+// The same simulation prices what is left: 14.6 s today, 10.2 s without the hysteresis, 9.2 s with
+// the threshold halved again, 5.2 s with both and an instant search. Every second of it is caution,
+// and loosening exactly these two is what produced "reroute after reroute while trying to turn
+// around" once already.
+//
+// So it ships with its own falsification test. Four reroutes inside 90 seconds is flapping, not
+// driving; the package disarms itself for the rest of the session and says so in the log, and the
+// remainder of the drive is still valid data. A wrong answer here costs one line, not a trip.
+def fastRerouteEnv = System.getenv("CAIRODRIVE_FAST_REROUTE")
+def fastReroute = fastRerouteEnv?.trim() ? fastRerouteEnv.trim() : "true"
 
 def earlyRerouteEnv = System.getenv("CAIRODRIVE_EARLY_REROUTE")
 def earlyReroute = earlyRerouteEnv?.trim() ? earlyRerouteEnv.trim() : "true"
@@ -1030,6 +1059,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_EARLY_REROUTE", earlyReroute
 			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD", wrongRoad
 			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD_ACT", wrongRoadAct
+			buildConfigField "boolean", "CAIRODRIVE_FAST_REROUTE", fastReroute
 			buildConfigField "boolean", "CAIRODRIVE_TIGHTEN_NEAR_TURN", tightenNearTurn
 			buildConfigField "boolean", "CAIRODRIVE_ANNOUNCE_EARLY_OFFROUTE", announceEarlyOffRoute
 			buildConfigField "boolean", "CAIRODRIVE_DIM_ROUTE_OFF_ROUTE", dimOffRoute
@@ -1096,6 +1126,7 @@ android {
 			buildConfigField "boolean", "CAIRODRIVE_EARLY_REROUTE", earlyReroute
 			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD", wrongRoad
 			buildConfigField "boolean", "CAIRODRIVE_WRONG_ROAD_ACT", wrongRoadAct
+			buildConfigField "boolean", "CAIRODRIVE_FAST_REROUTE", fastReroute
 			buildConfigField "boolean", "CAIRODRIVE_TIGHTEN_NEAR_TURN", tightenNearTurn
 			buildConfigField "boolean", "CAIRODRIVE_ANNOUNCE_EARLY_OFFROUTE", announceEarlyOffRoute
 			buildConfigField "boolean", "CAIRODRIVE_DIM_ROUTE_OFF_ROUTE", dimOffRoute

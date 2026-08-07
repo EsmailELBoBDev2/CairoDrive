@@ -871,6 +871,7 @@ public class CairoDriveLogger {
 				+ " tightenNearTurn=" + BuildConfig.CAIRODRIVE_TIGHTEN_NEAR_TURN
 				+ " wrongRoad=" + BuildConfig.CAIRODRIVE_WRONG_ROAD
 				+ " wrongRoadAct=" + BuildConfig.CAIRODRIVE_WRONG_ROAD_ACT
+				+ " fastReroute=" + BuildConfig.CAIRODRIVE_FAST_REROUTE
 				+ " earlyOffRouteVoice=" + BuildConfig.CAIRODRIVE_ANNOUNCE_EARLY_OFFROUTE
 				+ " altAlternatives=" + BuildConfig.CAIRODRIVE_ALTERNATE_ALTERNATIVES
 				+ " routeAlternatives=" + BuildConfig.CAIRODRIVE_ROUTE_ALTERNATIVES

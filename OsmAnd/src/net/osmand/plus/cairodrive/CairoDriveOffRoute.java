@@ -204,7 +204,11 @@ public class CairoDriveOffRoute {
 		if (ratio >= STRONG_RATIO) {
 			return Math.min(base, 2);
 		}
-		return base;
+		// Caps a HIGH count, never raises a low one, and is inert when the flag is off or the
+		// flap guard has disarmed. The accuracy scaling reaches 20 fixes on this device's degraded
+		// majority, and at that point it is not buying corroboration - it is 20 seconds of driving
+		// past a deviation the app already believed in. See CairoDriveFastReroute.
+		return CairoDriveFastReroute.requiredFixes(base);
 	}
 
 	private boolean enoughTravelledSinceLastReroute(@NonNull Location location) {
