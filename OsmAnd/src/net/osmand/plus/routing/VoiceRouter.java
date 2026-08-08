@@ -1168,11 +1168,61 @@ public class VoiceRouter {
 		}
 	}
 
+	/**
+	 * Silences the current prompt. <b>Never blocks the caller's thread.</b>
+	 *
+	 * <p>It used to, and that is the ANR the owner photographed on 2026-08-08. MIUI's watchdog
+	 * caught the main thread held for <b>2501 ms</b> with this exact stack:
+	 *
+	 * <pre>
+	 * View.performClick                          &lt;- the GO button
+	 *   MapRouteInfoMenu.clickRouteGo
+	 *     MapActions.startNavigation
+	 *       RoutingHelper.setCurrentLocation
+	 *         VoiceRouter.interruptRouteCommands
+	 *           JsTtsCommandPlayer.stop
+	 *             TextToSpeech.stop            &lt;- blocks on the TTS service binder
+	 * </pre>
+	 *
+	 * <p>{@code TextToSpeech.stop()} is a synchronous round trip to another process. It is usually
+	 * a few milliseconds and occasionally seconds, and there is nothing an app can do about which -
+	 * so it does not belong on the thread that draws the map, let alone inside a click handler.
+	 * Android's own ANR dialog appeared over Android Auto ("CairoDrive isn't responding"), which is
+	 * the worst possible moment: it covers the map while the car is moving.
+	 *
+	 * <p>Posted to a single background thread rather than a new one per call, so a burst of
+	 * deviations cannot spawn a thread each, and ordering with respect to other interrupts is kept.
+	 * Nothing reads a result and nothing sequences after it, so being a few milliseconds late to go
+	 * quiet costs nothing measurable.
+	 */
 	public void interruptRouteCommands() {
-		if (player != null) {
-			player.stop();
+		CommandPlayer p = player;
+		if (p == null) {
+			return;
 		}
+		INTERRUPTS.execute(() -> {
+			try {
+				p.stop();
+			} catch (Throwable t) {
+				// Going quiet is best-effort. A TTS engine that throws on stop must not take this
+				// thread - or the app - down with it. Logged rather than swallowed, because a
+				// player that always throws here would otherwise be a permanently silent feature.
+				net.osmand.plus.cairodrive.CairoDriveLogger.getInstance()
+						.log("CD_VOICE", "interrupt failed", t);
+			}
+		});
 	}
+
+	/**
+	 * One daemon thread for every voice interrupt in the process. Daemon so it can never hold the
+	 * JVM open, single so a reroute storm queues rather than fans out.
+	 */
+	private static final java.util.concurrent.ExecutorService INTERRUPTS =
+			java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+				Thread t = new Thread(r, "cairodrive-voice-interrupt");
+				t.setDaemon(true);
+				return t;
+			});
 
 	protected void play(CommandBuilder p) {
 		if (p != null) {
