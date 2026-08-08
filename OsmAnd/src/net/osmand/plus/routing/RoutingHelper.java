@@ -1499,6 +1499,12 @@ public class RoutingHelper {
 		return provider.getRoutingEnvironment(ctx, mode, start, end);
 	}
 
+	/** See {@link RouteProvider#getRoutingEnvironment(OsmandApplication, ApplicationMode, LatLon, LatLon, boolean)}. */
+	public RoutingEnvironment getRoutingEnvironment(OsmandApplication ctx, ApplicationMode mode, LatLon start,
+	                                                LatLon end, boolean javaTilesOnly) throws IOException {
+		return provider.getRoutingEnvironment(ctx, mode, start, end, javaTilesOnly);
+	}
+
 	public List<GpxPoint> generateGpxPoints(RoutingEnvironment env, GpxRouteApproximation gctx, LocationsHolder locationsHolder) {
 		return provider.generateGpxPoints(env, gctx, locationsHolder);
 	}

@@ -1181,6 +1181,12 @@ class RouteRecalculationHelper {
 		}
 
 		public void stopCalculation() {
+			// BOTH, and the order matters only in that both must happen. isCancelled stops the
+			// search (the native side polls it); cairoDriveSuperseded is what tells run() the
+			// answer is no longer wanted. They used to be the same flag, which meant the race
+			// could not stop the offline leg it had already beaten without also discarding the
+			// route it had just won. See RouteCalculationParams.cairoDriveSuperseded.
+			params.cairoDriveSuperseded = true;
 			params.calculationProgress.isCancelled = true;
 		}
 
@@ -1203,7 +1209,11 @@ class RouteRecalculationHelper {
 			if (!repaired) {
 				res = provider.calculateRouteImpl(params);
 			}
-			if (params.calculationProgress.isCancelled) {
+			// cairoDriveSuperseded, NOT calculationProgress.isCancelled. A cancelled progress no
+			// longer implies a stale result: the online/offline race sets that same flag to stop
+			// the offline leg once it has already won, and reading it here discarded the winning
+			// route on every single online win.
+			if (params.cairoDriveSuperseded) {
 				// Release the latch on EVERY exit. inFlight is cleared only by mayInstall, and
 				// this return sits above it - so a cancelled early calculation would leave the
 				// flag raised forever, confirm() would keep answering true, and every later

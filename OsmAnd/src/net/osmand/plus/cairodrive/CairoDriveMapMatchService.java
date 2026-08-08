@@ -377,8 +377,12 @@ public class CairoDriveMapMatchService {
 		}
 		try {
 			LatLon here = new LatLon(fix.lat, fix.lon);
+			// javaTilesOnly=true. Not a preference - the matcher CANNOT read roads any other way.
+			// With the native library attached, loadTileData goes down the nativeLib branch and
+			// hands back an empty list, which is what CD_MATCH raw=0 accepted=0 recorded on 700+
+			// fixes across two drives while the car sat in the middle of mapped Cairo.
 			RoutingEnvironment env = app.getRoutingHelper()
-					.getRoutingEnvironment(app, ApplicationMode.CAR, here, here);
+					.getRoutingEnvironment(app, ApplicationMode.CAR, here, here, true);
 			if (env == null || env.getCtx() == null) {
 				CairoDriveMapMatching.disable("no-routing-environment");
 				return false;
@@ -457,6 +461,16 @@ public class CairoDriveMapMatchService {
 			}
 			lastRaw = raw.size();
 			lastAccepted = out.size();
+			if (out.isEmpty()) {
+				// Do NOT cache an empty answer. The cache exists to skip a repeated tile read
+				// while the car is within CACHE_REUSE_M of where it last loaded; caching a
+				// FAILURE turns one bad read into 80 m of guaranteed non-matching, and the
+				// 2026-08-08 log shows the shape of that - 669 of 717 noCandidate lines read
+				// cache=1, i.e. the overwhelming majority never retried at all.
+				hasCache = false;
+				cached = Collections.emptyList();
+				return cached;
+			}
 			cached = out;
 			cachedX31 = x31;
 			cachedY31 = y31;

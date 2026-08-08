@@ -143,6 +143,61 @@ status is the label on a failure, not its mechanism. The mechanism is at `HHRout
 ("No finalPnt found — points might be filtered by params") or `:261` (too many recalculations).
 This drive proves the point: `badParams=short_way` on both calculations and `fast=SUCCESS` anyway.
 
+### The crash, the black map, the freeze and the ANR were ONE bug — 2026-08-08
+
+`SIGSEGV fault addr 0x10` in `cairodrive-route-race`, twice. Around it: **147 online wins and 0
+offline wins** across two logs, so essentially every reroute left a native HH search running that
+nothing could stop, and Cairo reroutes come seconds apart. Measured in one session: **45 distinct
+threads inside native routing**, 89 offline legs completing against 52 races, single searches
+stretched to **63 s** by their own contention, and `CD_FRAME avgMs=711–1370 ms, maxMs=22759,
+slow=200/200` — roughly **1 fps**, with `avgOver` only 27–203 ms, so it was CPU starvation and not
+the layers.
+
+The cause was a note in this file's own history: the abandon callback was removed on 2026-08-07
+because setting `isCancelled` discarded the winning route, and the replacement comment claimed
+letting the search run was "the cheaper failure by a very wide margin". **It is not, and that
+sentence cost a drive.**
+
+The fix is that cancellation and supersession are now separate signals:
+
+| flag | meaning | set by |
+|---|---|---|
+| `calculationProgress.isCancelled` | stop working — polled by the native search | `stopCalculation()` **and** the race, when online wins |
+| `RouteCalculationParams.cairoDriveSuperseded` | your answer is unwanted | `stopCalculation()` only |
+
+`RouteRecalculationTask.run` reads **`cairoDriveSuperseded`**. Anything that wants a result thrown
+away must set that; setting `isCancelled` alone stops the search and keeps whatever the race won.
+
+### The map matcher could never see a road, and the reason is the native library
+
+`CD_MATCH raw=0 accepted=0` on 700+ fixes, `matched=0` for two entire drives, parked in mapped
+Cairo. `RoutingContext.loadTileData` → `loadSubregionTile` takes the `nativeLib.loadRouteRegion`
+branch when a native library is attached, and `setLoadedNative` leaves `routes` null whenever that
+call returns a handle rather than materialised objects — after which `loadAllObjects` adds nothing.
+The matcher's context is built by `getRoutingEnvironment`, which took the native library like every
+other caller. It now passes `javaTilesOnly=true` (`RouteCalculationParams.cairoDriveJavaTilesOnly`).
+**Only the matcher may set that** — the router wants the native path, that is the hh-cpp engine.
+
+Second, smaller fault beside it: `ObfRoadSource` cached the EMPTY result and reused it for 80 m,
+so 669 of 717 `noCandidate` lines read `cache=1` and never retried. Failures are no longer cached.
+
+### The online route is winning every race, and it is a worse route
+
+**147–0.** The design says offline wins whenever it is ready because it carries this fork's Cairo
+tuning; in practice online answers in 150–400 ms and offline in seconds, so online always wins. An
+online route has no `RouteSegmentResult`, and three of the owner's 2026-08-08 complaints are that
+one fact: the drawn line follows ORS geometry rather than the OSM roads ("الخط في شارعين"), the
+prompts lose the street name, and `CD_WRONGROAD` is inert. **This is a product trade-off, not a
+bug: fast generic route vs slower correct route.** Do not silently change the balance — ask.
+
+### `turnLead=SKIP reason=missed_window` is why the street name goes missing
+
+20 occurrences across the two logs. Arabic TTS measured at **~97 ms/char**, so a full prompt of
+80–104 characters takes **6.7–8.4 seconds** to speak. When the window between "turn in" and "turn
+now" is shorter than that, the full prompt is skipped and only the short cue is spoken — which is
+the owner's "بتقول على و خلاص". The fix is not more lead time on its own; it is a SHORTER Arabic
+prompt when `estFullMs` will not fit.
+
 ### The reroute is answered: 279–947 ms, measured
 
 `CD_ROUTE_RACE ONLINE won in 279 ms` / `947 ms`, `CD_REROUTE finished ... calculated=true`,

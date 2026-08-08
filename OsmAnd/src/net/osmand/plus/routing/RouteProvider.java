@@ -779,11 +779,23 @@ public class RouteProvider {
 	}
 
 	public RoutingEnvironment getRoutingEnvironment(OsmandApplication ctx, ApplicationMode mode, LatLon start, LatLon end) throws IOException {
+		return getRoutingEnvironment(ctx, mode, start, end, false);
+	}
+
+	/**
+	 * @param javaTilesOnly build the context without the native library, so that
+	 * {@code RoutingContext.loadTileData} returns roads on the Java side. Only the map matcher wants
+	 * this - see {@link RouteCalculationParams#cairoDriveJavaTilesOnly}. Everything that actually
+	 * ROUTES must leave it false, or it gives up the hh-cpp engine.
+	 */
+	public RoutingEnvironment getRoutingEnvironment(OsmandApplication ctx, ApplicationMode mode, LatLon start,
+	                                                LatLon end, boolean javaTilesOnly) throws IOException {
 		RouteCalculationParams params = new RouteCalculationParams();
 		params.ctx = ctx;
 		params.mode = mode;
 		params.start = new Location("", start.getLatitude(), start.getLongitude());
 		params.end = end;
+		params.cairoDriveJavaTilesOnly = javaTilesOnly;
 		return calculateRoutingEnvironment(params, false, true);
 	}
 
@@ -828,7 +840,12 @@ public class RouteProvider {
 		Map<String, String> routingParams = collectRoutingParameters(params, settings, generalRouter);
 
 		// BUILD context
-		NativeOsmandLibrary lib = settings.SAFE_MODE.get() ? null : NativeOsmandLibrary.getLoadedLibrary();
+		//
+		// cairoDriveJavaTilesOnly is set by exactly one caller - the map matcher - and only so that
+		// RoutingContext.loadTileData fills roads on the JAVA side. See that field for the branch in
+		// setLoadedNative that otherwise leaves the road set empty.
+		NativeOsmandLibrary lib = (settings.SAFE_MODE.get() || params.cairoDriveJavaTilesOnly)
+				? null : NativeOsmandLibrary.getLoadedLibrary();
 
 		// A GPX-guided route carries a PrecalculatedRouteDirection derived from the track, and a public
 		// transport calculation drives the context differently again; neither is a plain navigation reroute,
@@ -2388,24 +2405,33 @@ public class RouteProvider {
 			return CairoDriveRouteRace.race(
 					() -> findVectorMapsRoute(params, calcGPXRoute),
 					() -> findOnlineRouteWith(helper, engine, racePath, onlineParams),
-					// NO abandon callback, and this is the one line in the file that must not be
-					// "improved" without reading the next paragraph.
+					r -> r != null && r.isCalculated(),
+					// STOP the beaten offline search. Read the whole of this before removing it
+					// again - it has now been wrong in both directions and the second way was far
+					// more expensive than the first.
 					//
-					// It used to set params.calculationProgress.isCancelled when the online side
-					// won, to stop the abandoned offline search wasting CPU and writing a phantom
-					// CD_ROUTE_TIMING line. That progress object is SHARED: RouteRecalculationTask
-					// checks the very same flag immediately after calculateRouteImpl returns
-					// (RouteRecalculationHelper:1206) and discards the result when it is set.
+					// It was removed on 2026-08-07 because setting isCancelled here discarded the
+					// winning online route: RouteRecalculationTask read the same flag right after
+					// calculateRouteImpl returned and treated it as "superseded". That was real -
+					// dispatched=10, finished=0, no route drawn at all.
 					//
-					// So every online win cancelled itself. The 2026-08-07 drive logged
-					// "ONLINE won in 583 ms" ten times over, dispatched=10, finished=0, and no
-					// route was ever drawn - the app could not navigate at all.
+					// The note left in its place said letting the abandoned search run was "the
+					// cheaper failure by a very wide margin". The 2026-08-08 drive priced it and it
+					// is not. Online wins essentially every race (147 wins, 0 offline wins across
+					// two logs), so essentially every reroute leaves a native HH search running,
+					// and reroutes in Cairo traffic come seconds apart. Measured on one session:
+					// 45 distinct threads inside native routing, 89 offline legs completing against
+					// 52 races, single searches stretched to 63 s by their own contention, frames
+					// at 711-1370 ms with a 22.7 s worst case, and two SIGSEGVs at fault addr 0x10
+					// on cairodrive-route-race. The black map, the freeze, the ANR and the crash
+					// were all one bug.
 					//
-					// Cancelling the loser needs the offline leg to own a progress object the task
-					// does not read. Until that exists, the abandoned search runs to completion:
-					// battery and a confusing timing line, which is the cheaper failure by a very
-					// wide margin.
-					r -> r != null && r.isCalculated());
+					// What makes it safe now: cancellation and supersession are separate signals.
+					// isCancelled means "stop working" and is what the native search polls;
+					// RouteCalculationParams.cairoDriveSuperseded means "your answer is unwanted"
+					// and is set ONLY by stopCalculation(). The task reads the latter, so stopping
+					// the loser can no longer throw away the winner.
+					() -> params.calculationProgress.isCancelled = true);
 		} catch (Throwable t) {
 			// A broken race must never cost a route. Fall through to the offline path.
 			CairoDriveLogger.getInstance().log("ROUTE_RACE", "race setup failed, offline only", t);
