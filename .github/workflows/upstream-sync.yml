@@ -12,11 +12,19 @@ name: Sync with upstream OsmAnd
 #   master -> PUSHED DIRECTLY. No sync branch, no pull request, nothing to click.
 #   dev    -> the review gate lives here, because dev is what actually builds:
 #
-#              Touches nothing CI executes  -> merged automatically.
-#              Touches a build script, the  -> left open for review. Gradle runs arbitrary
-#              Gradle wrapper or a workflow    code out of every *.gradle file it loads, and
-#                                              merging is what puts that code on a runner
-#                                              holding this fork's keys.
+#              Touches nothing CI executes  -> PUSHED DIRECTLY too. No branch, no PR.
+#              Touches a build script, the  -> parked on sync/upstream-dev and reported on a
+#              Gradle wrapper or a workflow    tracking ISSUE naming the executable files.
+#                                              Gradle runs arbitrary code out of every
+#                                              *.gradle file it loads, and merging is what
+#                                              puts that code on a runner holding the keys.
+#
+# NOTHING HERE OPENS A PULL REQUEST, and that is not a style preference. Six consecutive
+# scheduled runs failed at `gh pr create` - every run between 2026-08-04 and 2026-08-09 -
+# so the daily sync had never once worked and upstream reached this fork only when the
+# owner merged it by hand in the web UI. The cause is a repository setting invisible from
+# inside a workflow ("Allow GitHub Actions to create and approve pull requests"), which no
+# `permissions:` block overrides. Issues are not subject to it, so the review path uses one.
 #
 # That split is the point: the overwhelming majority of upstream commits are Java, Kotlin
 # and translations, which can only break the app - and the build catches that. The handful
@@ -393,6 +401,16 @@ jobs:
             else
               echo "automerge=true" >> "$GITHUB_OUTPUT"
             fi
+            # Exported because the review notification names these files, and that list is
+            # the whole reason a human is being asked: a pull request would have buried it
+            # under several hundred translation diffs. Random delimiter for the same reason
+            # as the conflict list below - a filename cannot be trusted not to contain EOF.
+            {
+              delimiter="EOF_$(openssl rand -hex 16)"
+              echo "executable<<${delimiter}"
+              printf '%s\n' "${executable}"
+              echo "${delimiter}"
+            } >> "$GITHUB_OUTPUT"
             {
               echo "Merges the \`${UPSTREAM_REPOSITORY}@${UPSTREAM_BRANCH}\` import (\`${UPSTREAM_SHA}\`) into \`${DEV_BRANCH}\`."
               echo
@@ -443,25 +461,68 @@ jobs:
           fi
           exit 0
 
-      - name: Push the ${{ env.DEV_BRANCH }} sync branch
+      # The dev side, and why it no longer opens a pull request.
+      #
+      # SIX consecutive scheduled runs failed, every one at `gh pr create`, so the daily sync
+      # had not worked once and upstream reached this fork only when the owner merged it by
+      # hand in the web UI. The cause is a repository setting no workflow can see from the
+      # inside - "Allow GitHub Actions to create and approve pull requests" - which no amount
+      # of `permissions:` in this file overrides.
+      #
+      # The review gate is NOT what is being removed; the ceremony around the case that never
+      # needed reviewing is:
+      #
+      #   cannot execute (java/kt/xml/png/...) -> merged and pushed to dev DIRECTLY. No sync
+      #                                           branch, no pull request, nothing to click.
+      #   can execute (anything else)          -> parked on sync/upstream-dev and reported on
+      #                                           a tracking ISSUE naming the files. Issue
+      #                                           creation is not subject to that setting.
+      #
+      # Gradle runs arbitrary code out of every *.gradle file it loads and dev is the branch
+      # that builds with this fork's keys, so the second case still waits for a human. It is
+      # the small minority of imports.
+      - name: Merge upstream into ${{ env.DEV_BRANCH }}
         id: push_dev
         if: steps.merge_dev.outputs.changed == 'true'
+        env:
+          AUTOMERGE: ${{ steps.merge_dev.outputs.automerge }}
         run: |
           set -uo pipefail
-          # Same manual-commit guard as on the master sync branch; see the comment there.
+          if [ "${AUTOMERGE}" = "true" ]; then
+            # HEAD is the merge commit built on origin/dev by the previous step, so this is a
+            # fast-forward of dev onto the tree that was just classified - not a second merge.
+            for attempt in 1 2 3 4; do
+              if git push origin "HEAD:refs/heads/${DEV_BRANCH}"; then
+                echo "pushed_dev=true" >> "$GITHUB_OUTPUT"
+                echo "Pushed straight to ${DEV_BRANCH}: the import touches nothing CI executes."
+                exit 0
+              fi
+              sleep $((2 ** attempt))
+            done
+            # Almost always means dev moved while this ran. Re-merging on top would produce a
+            # DIFFERENT merge from the one classified above, and pushing that unreviewed is
+            # exactly what the classification exists to prevent - so stop and let tomorrow's
+            # run start from the new tip. A warning, not a failure: nothing is broken.
+            echo "::warning::Could not fast-forward ${DEV_BRANCH} - it most likely moved during this run. Nothing pushed; the next run re-merges from the new tip."
+            echo "moved=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Needs a human. Park it, and never force-push over a branch whose tip is somebody's
+          # conflict resolution rather than this bot's own commit.
           git fetch --no-tags --quiet origin \
             "+refs/heads/${DEV_SYNC_BRANCH}:refs/remotes/origin/${DEV_SYNC_BRANCH}" 2>/dev/null || true
           if git rev-parse --verify -q "origin/${DEV_SYNC_BRANCH}" >/dev/null; then
             tip_author="$(git log -1 --format='%ae' "origin/${DEV_SYNC_BRANCH}")"
             if [ "${tip_author}" != "${BOT_EMAIL}" ]; then
-              echo "::warning::${DEV_SYNC_BRANCH} ends in a commit by ${tip_author}, not this bot. Leaving it alone - merge or close the open pull request first."
+              echo "::warning::${DEV_SYNC_BRANCH} ends in a commit by ${tip_author}, not this bot. Leaving it alone - merge it into ${DEV_BRANCH} first."
               echo "blocked=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
           fi
           for attempt in 1 2 3 4; do
-            if git push --force origin "${DEV_SYNC_BRANCH}:refs/heads/${DEV_SYNC_BRANCH}"; then
-              echo "pushed=true" >> "$GITHUB_OUTPUT"
+            if git push --force origin "HEAD:refs/heads/${DEV_SYNC_BRANCH}"; then
+              echo "pushed_branch=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             sleep $((2 ** attempt))
@@ -469,49 +530,61 @@ jobs:
           echo "::error::Could not push ${DEV_SYNC_BRANCH}"
           exit 1
 
-      - name: Open or refresh the ${{ env.DEV_BRANCH }} pull request
-        id: pr_dev
-        if: steps.push_dev.outputs.pushed == 'true'
+      # Only for the review case. An ISSUE rather than a pull request: issue creation is not
+      # gated by the setting that made every previous run fail, and what a reviewer actually
+      # needs here is the list of executable files, which a pull request buries under several
+      # hundred translation diffs.
+      - name: Report an import that needs review
+        id: review_dev
+        if: steps.push_dev.outputs.pushed_branch == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           NEW_COMMITS: ${{ steps.merge_dev.outputs.new_commits }}
+          EXECUTABLE: ${{ steps.merge_dev.outputs.executable }}
+          UPSTREAM_SHA: ${{ steps.fetch.outputs.upstream_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          gh label create upstream-sync \
-            --description "Automated import of upstream OsmAnd commits" \
-            --color 1D76DB 2>/dev/null || true
+          {
+            echo "An upstream import is parked on \`${DEV_SYNC_BRANCH}\` because it changes files"
+            echo "that CI executes. Everything else now syncs to \`${DEV_BRANCH}\` automatically,"
+            echo "with no branch and no pull request."
+            echo
+            echo "- **${NEW_COMMITS}** commits from \`${UPSTREAM_REPOSITORY}#${UPSTREAM_BRANCH}\` at \`${UPSTREAM_SHA}\`"
+            echo "- Run: ${RUN_URL}"
+            echo
+            echo "**Files that can execute during a build - these are what to read:**"
+            echo '```'
+            echo "${EXECUTABLE}"
+            echo '```'
+            echo
+            echo "Gradle runs arbitrary code out of every \`*.gradle\` file it loads, and"
+            echo "\`${DEV_BRANCH}\` is the branch that builds with this fork's Places key."
+            echo "Merging is what puts that code on a runner."
+            echo
+            echo "To accept it:"
+            echo '```'
+            echo "git fetch origin"
+            echo "git checkout ${DEV_BRANCH} && git merge --ff-only origin/${DEV_SYNC_BRANCH}"
+            echo "git push origin ${DEV_BRANCH}"
+            echo '```'
+          } > "${RUNNER_TEMP}/review-body.md"
 
-          title="Sync ${UPSTREAM_REPOSITORY}@${UPSTREAM_BRANCH} into ${DEV_BRANCH} (${NEW_COMMITS} commits)"
-          number="$(gh pr list --head "${DEV_SYNC_BRANCH}" --base "${DEV_BRANCH}" \
-            --state open --json number --jq '.[0].number // empty')"
-          if [ -n "${number}" ]; then
-            gh pr edit "${number}" --title "${title}" \
-              --body-file "${RUNNER_TEMP}/pr-body-dev.md" >/dev/null
+          gh label create upstream-sync-review \
+            --description "Upstream import changes files CI executes - needs a human" \
+            --color FBCA04 2>/dev/null || true
+          existing="$(gh issue list --label upstream-sync-review --state open \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body-file "${RUNNER_TEMP}/review-body.md"
+            echo "number=${existing}" >> "$GITHUB_OUTPUT"
           else
-            gh pr create --base "${DEV_BRANCH}" --head "${DEV_SYNC_BRANCH}" \
-              --title "${title}" --body-file "${RUNNER_TEMP}/pr-body-dev.md" \
-              --label upstream-sync >/dev/null
-            number="$(gh pr list --head "${DEV_SYNC_BRANCH}" --base "${DEV_BRANCH}" \
-              --state open --json number --jq '.[0].number // empty')"
+            gh issue create \
+              --title "Upstream import needs review (${NEW_COMMITS} commits)" \
+              --label upstream-sync-review \
+              --body-file "${RUNNER_TEMP}/review-body.md"
+            echo "number=$(gh issue list --label upstream-sync-review --state open --json number --jq '.[0].number // empty')" >> "$GITHUB_OUTPUT"
           fi
-          echo "number=${number}" >> "$GITHUB_OUTPUT"
-          echo "url=$(gh pr view "${number}" --json url --jq .url)" >> "$GITHUB_OUTPUT"
-
-      - name: Merge the ${{ env.DEV_BRANCH }} pull request
-        id: automerge_dev
-        if: steps.pr_dev.outputs.number != '' && steps.merge_dev.outputs.automerge == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          NUMBER: ${{ steps.pr_dev.outputs.number }}
-        run: |
-          set -uo pipefail
-          if gh pr merge "${NUMBER}" --merge; then
-            echo "merged=true" >> "$GITHUB_OUTPUT"
-            echo "Merged pull request #${NUMBER} - the import touches nothing CI executes."
-          else
-            echo "::warning::Could not merge pull request #${NUMBER} automatically; it is open for review."
-          fi
-          exit 0
 
       - name: Report conflicts
         if: steps.merge_main.outputs.conflict == 'true' || steps.merge_dev.outputs.conflict == 'true'
@@ -555,9 +628,9 @@ jobs:
               echo '```'
               echo
             fi
-            echo "Resolve locally on the sync branch, push it, and the pull request opens"
-            echo "(or updates) by itself. The sync will not force-push over a branch whose"
-            echo "last commit is not the bot's, so your resolution is safe there."
+            echo "Resolve it locally and push. The sync will not force-push over a branch"
+            echo "whose last commit is not the bot's, so a resolution parked on the sync"
+            echo "branch is safe there until you merge it."
             echo '```'
             echo "git fetch origin"
             if [ "${MAIN_CONFLICT}" = "true" ]; then
@@ -571,8 +644,8 @@ jobs:
               echo "git checkout -B ${DEV_SYNC_BRANCH} origin/${DEV_BRANCH}"
               echo "git merge --no-ff origin/${MAIN_BRANCH}"
               echo "# resolve, commit, then:"
-              echo "git push -u origin ${DEV_SYNC_BRANCH}"
-              echo "gh pr create --base ${DEV_BRANCH} --head ${DEV_SYNC_BRANCH} --fill"
+              echo "git checkout ${DEV_BRANCH} && git merge --ff-only ${DEV_SYNC_BRANCH}"
+              echo "git push origin ${DEV_BRANCH}"
             fi
             echo '```'
           } > "${RUNNER_TEMP}/conflict-body.md"
@@ -592,16 +665,16 @@ jobs:
           fi
           exit 1
 
-      # No build is dispatched from here, deliberately. The sync's output is a pull request
-      # of unreviewed third-party code; the build workflow is where the Places key lives and,
-      # for tagged builds, the release keystore. Whoever merges the pull request is what
-      # starts a build, and that is the point of the whole arrangement.
+      # No build is dispatched from here, deliberately, and that matters MORE now that the
+      # safe case pushes dev directly. An import classified as non-executable lands on dev
+      # without a human, but it still does not start anything: the next build is one somebody
+      # asks for. The build workflow is where the Places key lives and, for tags, the release
+      # keystore, and nothing in this file may reach either on its own.
 
       - name: Summary
         if: always()
         env:
           UPSTREAM_SHA: ${{ steps.fetch.outputs.upstream_sha }}
-          DEV_PR_URL: ${{ steps.pr_dev.outputs.url }}
           MAIN_CONFLICT: ${{ steps.merge_main.outputs.conflict }}
           MAIN_CHANGED: ${{ steps.merge_main.outputs.changed }}
           MAIN_BLOCKED: ${{ steps.push_main.outputs.blocked }}
@@ -609,21 +682,25 @@ jobs:
           DEV_CONFLICT: ${{ steps.merge_dev.outputs.conflict }}
           DEV_CHANGED: ${{ steps.merge_dev.outputs.changed }}
           DEV_BLOCKED: ${{ steps.push_dev.outputs.blocked }}
-          DEV_MERGED: ${{ steps.automerge_dev.outputs.merged }}
+          DEV_PUSHED: ${{ steps.push_dev.outputs.pushed_dev }}
+          DEV_MOVED: ${{ steps.push_dev.outputs.moved }}
+          DEV_REVIEW: ${{ steps.review_dev.outputs.number }}
           DEV_MISSING: ${{ steps.merge_dev.outputs.missing }}
           NEW_COMMITS: ${{ steps.merge_main.outputs.new_commits }}
         run: |
           set -uo pipefail
           describe() {
-            # $1 conflict, $2 changed, $3 blocked, $4 pr url, $5 merged
+            # $1 conflict, $2 changed, $3 blocked, $4 pushed to dev, $5 review issue, $6 moved
             if [ "${1:-}" = "true" ]; then
-              echo "conflicted - reported on the tracking issue, no pull request"
+              echo "conflicted - reported on the tracking issue, nothing pushed"
             elif [ "${3:-}" = "true" ]; then
               echo "not refreshed - the sync branch carries a manual commit"
-            elif [ "${5:-}" = "true" ]; then
-              echo "merged automatically - ${4:-}"
-            elif [ "${2:-}" = "true" ] && [ -n "${4:-}" ]; then
-              echo "open for review (changes files CI executes) - ${4}"
+            elif [ "${4:-}" = "true" ]; then
+              echo "pushed directly - no branch, no pull request"
+            elif [ -n "${5:-}" ]; then
+              echo "parked on \`${DEV_SYNC_BRANCH}\` (changes files CI executes) - see issue #${5}"
+            elif [ "${6:-}" = "true" ]; then
+              echo "not pushed - ${DEV_BRANCH} moved mid-run; the next run re-merges"
             elif [ "${2:-}" = "false" ]; then
               echo "already up to date"
             else
@@ -656,6 +733,6 @@ jobs:
             if [ "${DEV_MISSING:-}" = "true" ]; then
               echo "| \`${DEV_BRANCH}\` | branch does not exist - create it from \`${MAIN_BRANCH}\` |"
             else
-              echo "| \`${DEV_BRANCH}\` | $(describe "${DEV_CONFLICT}" "${DEV_CHANGED}" "${DEV_BLOCKED}" "${DEV_PR_URL}" "${DEV_MERGED}") |"
+              echo "| \`${DEV_BRANCH}\` | $(describe "${DEV_CONFLICT}" "${DEV_CHANGED}" "${DEV_BLOCKED}" "${DEV_PUSHED}" "${DEV_REVIEW}" "${DEV_MOVED}") |"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
