@@ -348,6 +348,34 @@ def hhload(rows):
     print("  load time: mean %.0f ms, max %.0f ms" % (sum(loads) / len(loads), max(loads)))
     print("  retained if ever cached: ~%.0f MB at ~400 B/point" % (max(pts) * 400.0 / 1e6))
 
+    # CD_HHREUSE is the ONLY honest evidence that the reuse patch worked. A CD_HHLOAD line
+    # that did not appear is indistinguishable from a search that failed before reaching the
+    # load, so counting absences would report success for a broken router.
+    reuse = [kv(l) for l in rows.get("CD_HHREUSE", [])]
+    if not reuse:
+        print("  no CD_HHREUSE lines - this build predates patches/cairodrive_hh_reuse.py, so")
+        print("  the index is re-read on EVERY calculation. That is the 2026-08-08 baseline:")
+        print("  283 loads, every one pts=42580, median 739 ms, worst 9492 ms, 407 s per drive.")
+    else:
+        used = sum(1 for d in reuse if d.get("reused") == "1")
+        held = sum(1 for d in reuse if d.get("held") == "1")
+        n = len(reuse)
+        print("  HH context reuse: %d/%d calculations reused the loaded index (%.0f%%)"
+              % (used, n, 100.0 * used / n))
+        print("  %d/%d held the cross-calculation lock; the rest ran concurrently with another"
+              % (held, n))
+        print("  search and correctly fell back to building their own context.")
+        if len(loads) > used and used:
+            # The saving is only real if the calculations that reused ALSO stopped loading.
+            print("  cross-check: %d loads against %d calculations - each reuse should remove"
+                  % (len(loads), n))
+            print("  one load, so expect loads to track the NOT-reused count (%d)." % (n - used))
+        if used == 0:
+            print("  REUSE NEVER FIRED. Do not read this as the patch being inert - check held=:")
+            print("  all-zero means every calculation raced another (expected while the offline/")
+            print("  online race runs), whereas held=1 with reused=0 means the region match or")
+            print("  the open-files check rejected it, which is a different question entirely.")
+
     # Which native phase owned the calculation. This is the number that decides whether a
     # smaller .obf is worth building, and it is the whole reason CairoDriveRoutePhases exists.
     phases = [kv(l) for l in rows.get("CD_ROUTE_PHASE", [])]

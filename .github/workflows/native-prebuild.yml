@@ -27,6 +27,7 @@ name: Prebuild native routing library
 #   when they agree, so almost every scheduled run is a no-op. It rebuilds when:
 #     - CORE_LEGACY_REF in build-dev.yml
 #     - patches/cairodrive_native_diag.py
+#     - patches/cairodrive_hh_reuse.py
 #     - OsmAnd/jni/*.mk or OsmAnd/old-ndk-build.sh
 #     - the runner's NDK revision (outside our control - the fingerprint below records it,
 #       so a mismatch is visible rather than silent)
@@ -59,6 +60,7 @@ on:
       - 'OsmAnd/jni/**'
       - 'OsmAnd/old-ndk-build.sh'
       - 'patches/cairodrive_native_diag.py'
+      - 'patches/cairodrive_hh_reuse.py'
       - '.github/workflows/build-dev.yml'
   workflow_dispatch:
     inputs:
@@ -121,6 +123,16 @@ jobs:
       - name: Patch OsmAnd-core-legacy diagnostics
         run: python3 android/patches/cairodrive_native_diag.py core-legacy
 
+      # Stops the Highway-Hierarchy point index being re-read on every calculation. The
+      # 2026-08-08 drives measured 283 loads, every one of them the SAME pts=42580 index,
+      # at a median of 739 ms and up to 9492 ms - 407 s of one drive. It adds no cache:
+      # upstream already has one (initHCtx's `if (hctx->initialized)`) and already decides
+      # when reuse is legal (selectBestRoutingFiles' region match), and both were dead
+      # because the planner is a stack object rebuilt per query. Refuses to apply against a
+      # drifted upstream, exactly like the diagnostics patch above.
+      - name: Patch OsmAnd-core-legacy HH context reuse
+        run: python3 android/patches/cairodrive_hh_reuse.py core-legacy
+
       - name: Read NDK revision
         id: ndk
         run: |
@@ -148,6 +160,7 @@ jobs:
           inputs_hash="$(cat android/OsmAnd/jni/*.mk \
                              android/OsmAnd/old-ndk-build.sh \
                              android/patches/cairodrive_native_diag.py \
+                             android/patches/cairodrive_hh_reuse.py \
                          | sha256sum | cut -c1-16)"
           fp="${ABI}-${CORE_LEGACY_REF:0:12}-ndk${NDK_REV}-${inputs_hash}"
           echo "fp=${fp}" >> "$GITHUB_OUTPUT"

@@ -274,6 +274,16 @@ jobs:
       - name: Patch OsmAnd-core-legacy diagnostics
         run: python3 android/patches/cairodrive_native_diag.py core-legacy
 
+      # Stops the Highway-Hierarchy point index being re-read on every calculation. The
+      # 2026-08-08 drives measured 283 loads, every one of them the SAME pts=42580 index,
+      # at a median of 739 ms and up to 9492 ms - 407 s of one drive. It adds no cache:
+      # upstream already has one (initHCtx's `if (hctx->initialized)`) and already decides
+      # when reuse is legal (selectBestRoutingFiles' region match), and both were dead
+      # because the planner is a stack object rebuilt per query. Refuses to apply against a
+      # drifted upstream, exactly like the diagnostics patch above.
+      - name: Patch OsmAnd-core-legacy HH context reuse
+        run: python3 android/patches/cairodrive_hh_reuse.py core-legacy
+
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
@@ -382,7 +392,7 @@ jobs:
           #   jni/*.mk        - the flags and the module list
           #   old-ndk-build.sh- the invocation, including the -j level
           # No restore-keys, on purpose. See the block comment above.
-          key: nativeso-v2-${{ runner.os }}-${{ env.ABI }}-${{ env.CORE_LEGACY_REF }}-${{ steps.ndk.outputs.rev }}-${{ hashFiles('android/OsmAnd/jni/*.mk', 'android/OsmAnd/old-ndk-build.sh', 'android/patches/cairodrive_native_diag.py') }}
+          key: nativeso-v2-${{ runner.os }}-${{ env.ABI }}-${{ env.CORE_LEGACY_REF }}-${{ steps.ndk.outputs.rev }}-${{ hashFiles('android/OsmAnd/jni/*.mk', 'android/OsmAnd/old-ndk-build.sh', 'android/patches/cairodrive_native_diag.py', 'android/patches/cairodrive_hh_reuse.py') }}
 
       # A restored .so is treated as untrusted input until it has been checked, because the
       # cost of a bad one is silent and only shows up on a drive. Two things are verified:
@@ -989,8 +999,19 @@ jobs:
               echo "::error::drive log. Check the 'Patch OsmAnd-core-legacy diagnostics' step."
               exit 1
             fi
+            # Same reasoning for the reuse patch, and it matters more: a missing diagnostics
+            # patch costs a measurement, but a missing reuse patch leaves the router silently
+            # reloading 42580 points per calculation while the log line that would have said
+            # so is itself the thing that did not ship.
+            if ! strings -a "${so}" | grep -q 'CD_HHREUSE'; then
+              echo "::error::${so} was built WITHOUT cairodrive_hh_reuse.py - the patch did not"
+              echo "::error::reach the compiled library. The HH point index will be re-read on"
+              echo "::error::every calculation. Check the 'Patch OsmAnd-core-legacy HH context"
+              echo "::error::reuse' step."
+              exit 1
+            fi
           done
-          echo "libosmand.so carries the native diagnostics patch (CD_HHLOAD present)."
+          echo "libosmand.so carries both native patches (CD_HHLOAD and CD_HHREUSE present)."
 
       - name: Stage artifacts
         id: stage
@@ -1463,6 +1484,16 @@ jobs:
       - name: Patch OsmAnd-core-legacy diagnostics
         run: python3 android/patches/cairodrive_native_diag.py core-legacy
 
+      # Stops the Highway-Hierarchy point index being re-read on every calculation. The
+      # 2026-08-08 drives measured 283 loads, every one of them the SAME pts=42580 index,
+      # at a median of 739 ms and up to 9492 ms - 407 s of one drive. It adds no cache:
+      # upstream already has one (initHCtx's `if (hctx->initialized)`) and already decides
+      # when reuse is legal (selectBestRoutingFiles' region match), and both were dead
+      # because the planner is a stack object rebuilt per query. Refuses to apply against a
+      # drifted upstream, exactly like the diagnostics patch above.
+      - name: Patch OsmAnd-core-legacy HH context reuse
+        run: python3 android/patches/cairodrive_hh_reuse.py core-legacy
+
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
@@ -1678,6 +1709,7 @@ jobs:
           inputs_hash="$(cat android/OsmAnd/jni/*.mk \
                              android/OsmAnd/old-ndk-build.sh \
                              android/patches/cairodrive_native_diag.py \
+                             android/patches/cairodrive_hh_reuse.py \
                          | sha256sum | cut -c1-16)"
           want="native-${ABI}-${CORE_LEGACY_REF:0:12}-ndk${rev}-${inputs_hash}"
           if [ "${tag}" != "${want}" ]; then

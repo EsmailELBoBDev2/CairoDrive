@@ -89,6 +89,55 @@ region merge, `markSegmentsNotLoaded`, `groupByClusters` x2 with sorts, spatial-
 Nothing caches it between calls. `CD_HHLOAD pts= segs= loadMs=` prices it, and `loadMs` is a LOWER
 BOUND - the `acceptLine` pass is billed after the line is printed.
 
+### The HH index reload is PRICED and FIXED — 2026-08-09
+
+`cairodrive_native_diag.py` existed to answer two questions before caching could be justified —
+"how much of the 4-8 s search is this load" and "how large would the cache be". **Both are now
+answered**, from the 2026-08-08 logs:
+
+```
+283 loads across two drives, EVERY ONE pts=42580 - the same index, never a different one
+median 739 ms, commonly 4042 ms, worst 9492 ms, 407.7 SECONDS in one drive
+179 of them served 213 calculations -> ~one full reload per calculation, not storm duplication
+42580 points x ~400 B = ~17 MB, against a measured nativeHeapMb=381
+```
+
+**"Caching it was designed and REJECTED, four ways it produces a silently wrong route" — that
+rejection was of a BESPOKE cache and it still stands. What shipped is not one.** OsmAnd already
+has two caches and they were both structurally unreachable:
+
+| upstream mechanism | what it does | why it never fired |
+|---|---|---|
+| `initHCtx:257` `if (hctx->initialized) return hctx;` | skips the load, placed AFTER `stats`/`config`/`startX`/`clearVisited()` are reset | context was always brand new |
+| `filterPointsBasedOnConfiguration:1448` | compares live params to `hctx->filterRoutingParameters`, skips the O(N) `acceptLine` sweep | same |
+| `selectBestRoutingFiles:114-129` | decides reuse is legal by matching every region on `file`/`fileRegion`/`routingProfile` | compared against an EMPTY region list |
+
+All three died on one line: both call sites (`routePlannerFrontEnd.cpp:366` and `:615`) build
+`HHRoutePlanner routePlanner(ctx)` as a **stack object per calculation**, and its constructor does
+`currentCtx = make_shared<HHRoutingContext>()`. `patches/cairodrive_hh_reuse.py` makes the context
+outlive the planner and **adds no new notion of when reuse is safe** — upstream's own guards answer
+that. That is why it is small.
+
+The three genuinely new risks, each closed rather than argued away:
+
+- **Dead `RoutingContext` pointer.** `hctx->rctx` is raw and per-query; `selectBestRoutingFiles`
+  dereferences it on its first line. Re-pointed in the constructor, before anything can read it.
+- **Two searches at once** (this fork races offline/online on every route). A **non-blocking
+  `try_lock`** held for the planner's lifetime: the loser builds its own context exactly as before
+  and never touches the cache. Contention degrades to today's behaviour, never to a wrong route.
+- **An `.obf` closed and reopened at the same address.** Region files are compared by POINTER,
+  sound within a query but not across a map reload. The open-files snapshot is recorded and
+  compared on adopt.
+
+**Read `CD_HHREUSE reused= held=` and nothing else to judge it.** A `CD_HHLOAD` line that did not
+appear is indistinguishable from a search that failed before reaching the load, so counting
+absences would report success for a broken router. `reused=0` with `held=0` everywhere means every
+calculation raced another — expected, not a failure. `reused=0` with `held=1` means the region or
+open-files check rejected it, which is a different question. `cd-analyze.py` separates them.
+
+Both CI jobs verify the compiled `.so` contains `CD_HHREUSE` and fail if not, for the same reason
+the `CD_HHLOAD` guard exists: a silently unpatched library ships an APK whose log cannot say so.
+
 ### `engine=` LIES about a missing HH index - read `fast=`
 
 The old note here said `engine=java` means `libosmand.so` did not load (**6.8 s average, 39 s
