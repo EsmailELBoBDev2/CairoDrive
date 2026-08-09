@@ -881,10 +881,17 @@ public class CairoDriveLogger {
 				+ " tightenNearTurn=" + BuildConfig.CAIRODRIVE_TIGHTEN_NEAR_TURN
 				+ " wrongRoad=" + BuildConfig.CAIRODRIVE_WRONG_ROAD
 				+ " wrongRoadAct=" + BuildConfig.CAIRODRIVE_WRONG_ROAD_ACT
-				// A live preference, not a BuildConfig constant - so this is its value at session
-				// start only. If it was toggled mid-drive the CD_ROUTE_RACE lines say so, and they
-				// are what a race is judged on.
-				+ " offlinePriorityAtStart=" + app.getSettings().OFFLINE_ROUTE_PRIORITY.get()
+				// NOTHING on this line may read a runtime preference. logSessionHeader() runs from
+				// init(), which OsmandApplication.onCreate calls ~34 lines BEFORE
+				// `settings = appCustomization.getOsmandSettings()`. getSettings() returns null
+				// there, and on 2026-08-09 an OFFLINE_ROUTE_PRIORITY read here threw a
+				// NullPointerException out of onCreate and the app could not start at all - it
+				// crash-looped on launch and never reached a map. Live preferences are logged by
+				// logRuntimePreferences(), which onCreate calls after settings exist.
+				//
+				// This is the SECOND time this exact lifecycle has broken this fork; the first was
+				// CairoDriveProviders.install, and its fix is one line below where settings are
+				// created. BuildConfig constants only, here.
 				+ " fastReroute=" + BuildConfig.CAIRODRIVE_FAST_REROUTE
 				+ " fastRerouteTier=" + BuildConfig.CAIRODRIVE_FAST_REROUTE_TIER
 				+ " earlyOffRouteVoice=" + BuildConfig.CAIRODRIVE_ANNOUNCE_EARLY_OFFROUTE
@@ -957,6 +964,52 @@ public class CairoDriveLogger {
 	 *       a log that ends abruptly cannot state why it ended.</li>
 	 * </ul>
 	 */
+	/**
+	 * Logs the runtime PREFERENCES, as opposed to the compile-time flags in the session header.
+	 *
+	 * <h3>Why this is a separate method instead of two more fields on the header</h3>
+	 *
+	 * {@link #init} is called from {@code OsmandApplication.onCreate} roughly 34 lines before
+	 * {@code settings = appCustomization.getOsmandSettings()}, so {@code getSettings()} returns
+	 * null throughout the header. On 2026-08-09 a single preference read on that line threw a
+	 * NullPointerException straight out of {@code onCreate}: the process died during application
+	 * creation, Android restarted it, it died again, and the phone showed "CairoDrive keeps
+	 * stopping". Not a degraded feature - the app could not start at all.
+	 *
+	 * <p>The identical lifecycle had already broken {@code CairoDriveProviders.install}, whose fix
+	 * is the call one line after settings are created. This is the same fix for the same reason,
+	 * and the header now carries a standing rule that nothing on it may read a preference.
+	 *
+	 * <p>Called by {@code OsmandApplication.onCreate} once settings exist. Defensive against a
+	 * null anyway: a logger that crashes the app it exists to diagnose is the worst possible
+	 * failure mode, and this class runs before almost everything else.
+	 */
+	public void logRuntimePreferences(
+			@Nullable net.osmand.plus.settings.backend.OsmandSettings settings) {
+		if (!isEnabled()) {
+			return;
+		}
+		if (settings == null) {
+			log("SESSION", "prefs unavailable - settings not created yet."
+					+ " This is a BUG in the call site, not a state to handle: the point of this"
+					+ " method is that it runs after OsmandApplication.onCreate builds them.");
+			return;
+		}
+		try {
+			log("SESSION", "prefs"
+					// The one the 2026-08-08 race decision turns on. A live preference, so this is
+					// its value at session start only - if it is toggled mid-drive the
+					// CD_ROUTE_RACE lines say so, and those are what a race is judged on.
+					+ " offlinePriorityAtStart=" + settings.OFFLINE_ROUTE_PRIORITY.get()
+					+ " tomtomTraffic=" + settings.TOMTOM_TRAFFIC_ON.get()
+					+ " weatherHazard=" + settings.WEATHER_HAZARD_ON.get()
+					+ " sunGlare=" + settings.SUN_GLARE_ON.get()
+					+ " osmNarrowFeedback=" + settings.OSM_NARROW_FEEDBACK.get());
+		} catch (Throwable t) {
+			log("SESSION", "prefs read failed", t);
+		}
+	}
+
 	private void logDeviceHeader() {
 		StringBuilder builder = new StringBuilder(256).append("sessionStart ");
 		appendBatteryState(builder);

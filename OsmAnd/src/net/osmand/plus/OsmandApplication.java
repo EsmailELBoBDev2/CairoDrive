@@ -289,6 +289,14 @@ public class OsmandApplication extends MultiDexApplication {
 		appCustomization.setup(this);
 		settings = appCustomization.getOsmandSettings();
 
+		// The runtime PREFERENCES, logged here and not in the session header, because the header
+		// is written by CairoDriveLogger.init() ~34 lines above this - before the line above ran.
+		// A preference read up there returns null and, on 2026-08-09, threw straight out of
+		// onCreate: the process died during application creation, Android restarted it, it died
+		// again, and the phone showed "CairoDrive keeps stopping" with no map ever drawn. Same
+		// lifecycle trap as CairoDriveProviders.install below, which is why both calls are here.
+		CairoDriveLogger.getInstance().logRuntimePreferences(settings);
+
 		// The provider stack. Registration is side-effect free; install() arbitrates one provider
 		// per capability and writes the CD_PROVIDERS line saying which won - which is what lets a
 		// drive log answer "who actually served this".

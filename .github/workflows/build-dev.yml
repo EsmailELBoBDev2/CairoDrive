@@ -271,6 +271,13 @@ jobs:
       # "net.osmand", and it makes the HH point-load statistics unconditional - they sit
       # behind a compile-time-zero constant upstream, so the point count for an .obf has
       # never been knowable. Refuses to apply against a drifted upstream.
+      # Runs BEFORE the compile so the answer costs seconds, not a native build. It cannot
+      # be a review rule: the exact mistake it catches was made with a comment forbidding
+      # it already in the file, and the second time it cost a signed build and the drive
+      # it was built for.
+      - name: Verify nothing reads a preference before OsmandSettings exists
+        run: python3 .github/check_early_init.py .
+
       - name: Patch OsmAnd-core-legacy diagnostics
         run: python3 android/patches/cairodrive_native_diag.py core-legacy
 
@@ -1481,6 +1488,13 @@ jobs:
       # "net.osmand", and it makes the HH point-load statistics unconditional - they sit
       # behind a compile-time-zero constant upstream, so the point count for an .obf has
       # never been knowable. Refuses to apply against a drifted upstream.
+      # Runs BEFORE the compile so the answer costs seconds, not a native build. It cannot
+      # be a review rule: the exact mistake it catches was made with a comment forbidding
+      # it already in the file, and the second time it cost a signed build and the drive
+      # it was built for.
+      - name: Verify nothing reads a preference before OsmandSettings exists
+        run: python3 .github/check_early_init.py .
+
       - name: Patch OsmAnd-core-legacy diagnostics
         run: python3 android/patches/cairodrive_native_diag.py core-legacy
 
