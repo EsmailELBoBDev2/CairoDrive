@@ -2,8 +2,14 @@ name: Sync with upstream OsmAnd
 
 # Imports new commits from the repository this fork is based on.
 #
-# master is a MIRROR. The fork's own work lives on dev; master carries upstream plus this one
-# workflow file, and nothing else. Critically, build-dev.yml - the workflow that holds the
+# master is a MIRROR. The fork's own work lives on dev; master carries upstream plus the
+# workflow files that need a `schedule:` trigger - this one and native-prebuild.yml - and
+# nothing else. Both are there for the same reason given under WHERE THIS FILE HAS TO LIVE,
+# and both must be kept BYTE-IDENTICAL to dev's copies. On 2026-08-09 they were not, and the
+# result was an add/add conflict on native-prebuild.yml that blocked the whole sync: master
+# had an older copy, dev had one naming a new patch script, and every future run would have
+# conflicted on it until someone noticed. When you change a scheduled workflow on dev, carry
+# it to master in the same breath. Critically, build-dev.yml - the workflow that holds the
 # Places key and, for tags, the release keystore - is not on master and does not trigger on it
 # (`push: branches: [dev], tags: v*`). So upstream code landing on master cannot reach a runner
 # holding this fork's secrets, and there is nothing on master for a human to review that they
@@ -13,18 +19,29 @@ name: Sync with upstream OsmAnd
 #   dev    -> the review gate lives here, because dev is what actually builds:
 #
 #              Touches nothing CI executes  -> PUSHED DIRECTLY too. No branch, no PR.
-#              Touches a build script, the  -> parked on sync/upstream-dev and reported on a
-#              Gradle wrapper or a workflow    tracking ISSUE naming the executable files.
-#                                              Gradle runs arbitrary code out of every
-#                                              *.gradle file it loads, and merging is what
-#                                              puts that code on a runner holding the keys.
+#              Touches a build script, the  -> parked on sync/upstream-dev and reported by
+#              Gradle wrapper or a workflow    FAILING THE RUN, with the executable files
+#                                              named in the step summary. Gradle runs
+#                                              arbitrary code out of every *.gradle file it
+#                                              loads, and merging is what puts that code on
+#                                              a runner holding the keys.
 #
-# NOTHING HERE OPENS A PULL REQUEST, and that is not a style preference. Six consecutive
-# scheduled runs failed at `gh pr create` - every run between 2026-08-04 and 2026-08-09 -
-# so the daily sync had never once worked and upstream reached this fork only when the
-# owner merged it by hand in the web UI. The cause is a repository setting invisible from
-# inside a workflow ("Allow GitHub Actions to create and approve pull requests"), which no
-# `permissions:` block overrides. Issues are not subject to it, so the review path uses one.
+# NOTHING HERE CREATES A PULL REQUEST OR AN ISSUE, and neither is a style preference. This
+# repository cannot do either from a workflow, and both were found by running it:
+#
+#   Pull requests - six consecutive scheduled runs, every one between 2026-08-04 and
+#                   2026-08-09, failed at `gh pr create`. "Allow GitHub Actions to create
+#                   and approve pull requests" is disabled and no `permissions:` block
+#                   overrides it. The daily sync had therefore never once worked, and
+#                   upstream reached this fork only when the owner merged it by hand.
+#   Issues        - `has_issues: false`. The conflict report below called `gh issue create`
+#                   and had been failing for as long as it had existed, silently, because a
+#                   conflict is rare enough that nobody had watched one happen.
+#
+# What is left is what GitHub does for every repository whatever its settings: a failed run
+# shows in the Actions tab and emails the owner, and `$GITHUB_STEP_SUMMARY` needs no
+# permission at all. So both attention-needed paths write the summary and exit non-zero.
+# A GREEN RUN MEANS NOTHING NEEDS YOU. That is the only signal to read.
 #
 # That split is the point: the overwhelming majority of upstream commits are Java, Kotlin
 # and translations, which can only break the app - and the build catches that. The handful
@@ -40,9 +57,10 @@ name: Sync with upstream OsmAnd
 #
 #   upstream/master --merge--> master        (direct push, always)
 #                                  |
-#                                  +--merge--> sync/upstream-dev --PR--> dev
+#                                  +--merge--> dev                      (direct, if inert)
+#                                  +--merge--> sync/upstream-dev + failed run (if executable)
 #
-# Why dev still goes through a pull request (2026-07 supply-chain review):
+# Why dev still has a gate at all (2026-07 supply-chain review):
 #
 #   Gradle executes arbitrary code out of every *.gradle file it loads. An older version of
 #   this workflow pushed unreviewed upstream commits straight to master AND dev and then
@@ -51,20 +69,19 @@ name: Sync with upstream OsmAnd
 #   would therefore have run against this fork's production signing material within 24 hours
 #   of being committed, with nobody having looked at it.
 #
-#   A pull request puts a human in that gap. This workflow no longer dispatches any build
-#   either, so upstream code cannot reach a runner holding secrets until someone merges
-#   the dev PR - and the signing keys have moved out of ordinary dev builds entirely, into a
-#   tag-triggered job behind the `production` environment. See .github/CICD.md.
+#   Parking the import and refusing to merge it puts a human in that gap. This workflow no
+#   longer dispatches any build either, so upstream code cannot reach a runner holding
+#   secrets until someone merges the sync branch by hand - and the signing keys have moved
+#   out of ordinary dev builds entirely, into a tag-triggered job behind the `production`
+#   environment. See .github/CICD.md.
 #
 #   The master side needs none of that, and giving it a pull request anyway was ceremony: the
 #   clean case self-merged, and it left a branch and a closed PR behind every single day for a
 #   branch that is a mirror and is never built with a key.
 #
 # If either merge conflicts the workflow aborts that merge, leaves the branch alone, and
-# reports the conflicting paths on a tracking issue instead of offering a half-resolved
-# tree for review. A master conflict should be close to impossible now - the only fork
-# content there is this file - and if one ever happens it is worth reading rather than
-# resolving on autopilot.
+# names the conflicting paths in the run summary instead of offering a half-resolved tree
+# for review.
 
 on:
   schedule:
@@ -97,10 +114,11 @@ permissions:
   # NOTE if master is branch-protected: this job needs to be allowed to push it, or the daily
   # mirror stops and says so in the run summary rather than failing loudly.
   contents: write
-  # Open and refresh the sync pull requests.
-  pull-requests: write
-  # File the conflict tracking issue.
-  issues: write
+  # `pull-requests: write` and `issues: write` were here and are deliberately gone. Neither
+  # was doing anything: pull-request creation is disabled for Actions in this repository and
+  # Issues are disabled outright, so both grants were permissions to perform calls that
+  # always failed. Nothing in this workflow calls `gh` any more.
+  #
   # `actions: write` was dropped together with the build dispatch: this workflow must not
   # be able to start a build of the code it just imported.
 
@@ -530,30 +548,36 @@ jobs:
           echo "::error::Could not push ${DEV_SYNC_BRANCH}"
           exit 1
 
-      # Only for the review case. An ISSUE rather than a pull request: issue creation is not
-      # gated by the setting that made every previous run fail, and what a reviewer actually
-      # needs here is the list of executable files, which a pull request buries under several
-      # hundred translation diffs.
+      # Only for the review case, and it reports by FAILING THE RUN.
+      #
+      # This repository has no notification channel a workflow can create. Pull requests are
+      # off ("Allow GitHub Actions to create and approve pull requests" is disabled) and
+      # Issues are off entirely (`has_issues: false`) - which is also why the conflict report
+      # below has never worked either, for as long as it has existed. Both were discovered
+      # the same way: by running this workflow and watching it fail on the call.
+      #
+      # What is left is what GitHub does for every repository regardless of settings: a
+      # failed run appears in the Actions tab and emails the owner. So a parked import fails
+      # the run on purpose, and everything a human needs is written to the step summary,
+      # which needs no permission at all. A green run means nothing needs attention.
       - name: Report an import that needs review
         id: review_dev
         if: steps.push_dev.outputs.pushed_branch == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
           NEW_COMMITS: ${{ steps.merge_dev.outputs.new_commits }}
           EXECUTABLE: ${{ steps.merge_dev.outputs.executable }}
           UPSTREAM_SHA: ${{ steps.fetch.outputs.upstream_sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           {
-            echo "An upstream import is parked on \`${DEV_SYNC_BRANCH}\` because it changes files"
-            echo "that CI executes. Everything else now syncs to \`${DEV_BRANCH}\` automatically,"
-            echo "with no branch and no pull request."
+            echo "## Upstream import needs review"
             echo
-            echo "- **${NEW_COMMITS}** commits from \`${UPSTREAM_REPOSITORY}#${UPSTREAM_BRANCH}\` at \`${UPSTREAM_SHA}\`"
-            echo "- Run: ${RUN_URL}"
+            echo "**${NEW_COMMITS}** commits from \`${UPSTREAM_REPOSITORY}#${UPSTREAM_BRANCH}\`"
+            echo "at \`${UPSTREAM_SHA}\` are parked on \`${DEV_SYNC_BRANCH}\` because they change"
+            echo "files that CI executes. Everything else syncs to \`${DEV_BRANCH}\` by itself,"
+            echo "with no branch and nothing to click."
             echo
-            echo "**Files that can execute during a build - these are what to read:**"
+            echo "### Files that can run during a build - these are what to read"
             echo '```'
             echo "${EXECUTABLE}"
             echo '```'
@@ -562,53 +586,42 @@ jobs:
             echo "\`${DEV_BRANCH}\` is the branch that builds with this fork's Places key."
             echo "Merging is what puts that code on a runner."
             echo
-            echo "To accept it:"
+            echo "### To accept it"
             echo '```'
             echo "git fetch origin"
             echo "git checkout ${DEV_BRANCH} && git merge --ff-only origin/${DEV_SYNC_BRANCH}"
             echo "git push origin ${DEV_BRANCH}"
             echo '```'
-          } > "${RUNNER_TEMP}/review-body.md"
-
-          gh label create upstream-sync-review \
-            --description "Upstream import changes files CI executes - needs a human" \
-            --color FBCA04 2>/dev/null || true
-          existing="$(gh issue list --label upstream-sync-review --state open \
-            --json number --jq '.[0].number // empty')"
-          if [ -n "${existing}" ]; then
-            gh issue comment "${existing}" --body-file "${RUNNER_TEMP}/review-body.md"
-            echo "number=${existing}" >> "$GITHUB_OUTPUT"
-          else
-            gh issue create \
-              --title "Upstream import needs review (${NEW_COMMITS} commits)" \
-              --label upstream-sync-review \
-              --body-file "${RUNNER_TEMP}/review-body.md"
-            echo "number=$(gh issue list --label upstream-sync-review --state open --json number --jq '.[0].number // empty')" >> "$GITHUB_OUTPUT"
-          fi
+            echo
+            echo "_This run is marked failed deliberately: it is the only notification this"
+            echo "repository can produce with Issues and pull-request creation both disabled._"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "reported=true" >> "$GITHUB_OUTPUT"
+          echo "::error::Upstream import parked on ${DEV_SYNC_BRANCH} - it changes files CI executes. See the run summary."
+          exit 1
 
       - name: Report conflicts
         if: steps.merge_main.outputs.conflict == 'true' || steps.merge_dev.outputs.conflict == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
           MAIN_CONFLICT: ${{ steps.merge_main.outputs.conflict }}
           MAIN_CONFLICTS: ${{ steps.merge_main.outputs.conflicts }}
           DEV_CONFLICTS: ${{ steps.merge_dev.outputs.conflicts }}
           UPSTREAM_SHA: ${{ steps.fetch.outputs.upstream_sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           {
-            echo "The automatic upstream sync stopped because a merge conflicted."
+            echo "## Upstream sync blocked by a merge conflict"
             echo
             if [ "${MAIN_CONFLICT}" = "true" ]; then
-              echo "\`${MAIN_BRANCH}\` is a mirror whose only fork content is the sync workflow itself,"
+              echo "\`${MAIN_BRANCH}\` is a mirror whose only fork content is workflow files,"
               echo "so a conflict here means upstream changed that file or something genuinely odd"
               echo "happened. Read it rather than resolving it on autopilot."
               echo
               echo "Nothing was pushed - \`${MAIN_BRANCH}\` and \`${DEV_BRANCH}\` are untouched."
             else
               echo "The \`${MAIN_BRANCH}\` mirror updated cleanly and was pushed directly, as it always is."
-              echo "Only the \`${DEV_BRANCH}\` side conflicted; no pull request was opened for it."
+              echo "Only the \`${DEV_BRANCH}\` side conflicted, and nothing was pushed to it."
             fi
             echo
             echo "- Upstream: \`${UPSTREAM_REPOSITORY}#${UPSTREAM_BRANCH}\` at \`${UPSTREAM_SHA}\`"
@@ -648,21 +661,10 @@ jobs:
               echo "git push origin ${DEV_BRANCH}"
             fi
             echo '```'
-          } > "${RUNNER_TEMP}/conflict-body.md"
-
-          existing="$(gh issue list --label upstream-sync-conflict --state open \
-            --json number --jq '.[0].number // empty')"
-          if [ -n "${existing}" ]; then
-            gh issue comment "${existing}" --body-file "${RUNNER_TEMP}/conflict-body.md"
-          else
-            gh label create upstream-sync-conflict \
-              --description "Automatic upstream sync needs manual conflict resolution" \
-              --color B60205 2>/dev/null || true
-            gh issue create \
-              --title "Upstream sync blocked by merge conflicts" \
-              --label upstream-sync-conflict \
-              --body-file "${RUNNER_TEMP}/conflict-body.md"
-          fi
+            echo
+            echo "_This run is marked failed deliberately - see the note on the review step._"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::Upstream sync stopped on a merge conflict. See the run summary."
           exit 1
 
       # No build is dispatched from here, deliberately, and that matters MORE now that the
