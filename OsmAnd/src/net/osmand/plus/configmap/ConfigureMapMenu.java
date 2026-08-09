@@ -190,6 +190,13 @@ public class ConfigureMapMenu {
 		addProviderToggle(adapter, activity, app, settings.SUN_GLARE_ON,
 				R.string.cairo_sun_glare, R.drawable.ic_action_sun, true);
 
+		// Offline-route priority. Here rather than in a settings screen for the same reason as the
+		// provider switches: it is a preference whose only honest test is a drive, and the driver
+		// must be able to reverse it without one. Always offerable - the offline router is the
+		// app's own and needs no key.
+		addProviderToggle(adapter, activity, app, settings.OFFLINE_ROUTE_PRIORITY,
+				R.string.cairo_offline_route_priority, R.drawable.ic_action_offline, true);
+
 		// OSM write-back. Off by default and it stays a toggle rather than a button: turning it
 		// on only starts COLLECTING candidates in memory. The upload is a second, explicit act -
 		// see below - because a note carries a coordinate the owner drove to a public database.

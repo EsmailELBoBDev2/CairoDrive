@@ -881,6 +881,10 @@ public class CairoDriveLogger {
 				+ " tightenNearTurn=" + BuildConfig.CAIRODRIVE_TIGHTEN_NEAR_TURN
 				+ " wrongRoad=" + BuildConfig.CAIRODRIVE_WRONG_ROAD
 				+ " wrongRoadAct=" + BuildConfig.CAIRODRIVE_WRONG_ROAD_ACT
+				// A live preference, not a BuildConfig constant - so this is its value at session
+				// start only. If it was toggled mid-drive the CD_ROUTE_RACE lines say so, and they
+				// are what a race is judged on.
+				+ " offlinePriorityAtStart=" + app.getSettings().OFFLINE_ROUTE_PRIORITY.get()
 				+ " fastReroute=" + BuildConfig.CAIRODRIVE_FAST_REROUTE
 				+ " fastRerouteTier=" + BuildConfig.CAIRODRIVE_FAST_REROUTE_TIER
 				+ " earlyOffRouteVoice=" + BuildConfig.CAIRODRIVE_ANNOUNCE_EARLY_OFFROUTE

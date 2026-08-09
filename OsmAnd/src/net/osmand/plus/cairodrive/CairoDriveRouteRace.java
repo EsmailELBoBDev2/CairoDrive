@@ -95,6 +95,50 @@ public final class CairoDriveRouteRace {
 	 */
 	private static final long ONLINE_GIVE_UP_MS = 9_000;
 
+	/**
+	 * How long an online answer is HELD while the offline calculation is still working.
+	 *
+	 * <h3>Why this exists</h3>
+	 *
+	 * The race preferred offline "whenever it is ready" and still finished <b>147-0</b> to online
+	 * across the 2026-08-08 drives, because ready is a race against 300 ms of network. The
+	 * preference was real and never once reachable.
+	 *
+	 * <p>That mattered because the two routes are not interchangeable. An online route is a list
+	 * of {@code Location}s with no {@link net.osmand.router.RouteSegmentResult}, so it carries no
+	 * road identity: the drawn line follows the server's geometry rather than OSM's roads, turn
+	 * prompts lose the street name, and {@code CD_WRONGROAD} is inert for the whole route. It also
+	 * knows nothing of this fork's Cairo tuning - the narrow-street rules, the priority rules, the
+	 * {@code .obf}'s Highway-Hierarchy shortcuts.
+	 *
+	 * <h3>Why holding it is close to free</h3>
+	 *
+	 * {@code tools/sim/reroute_sim.py}, 40k trials, measures the WHOLE wait from the wrong turn to
+	 * the new route being installed. The online side does not move it:
+	 *
+	 * <pre>
+	 * network wins 30% of reroutes -> median 14.6 s
+	 * network wins 50% of reroutes -> median 14.6 s
+	 * network wins 70% of reroutes -> median 14.7 s
+	 * </pre>
+	 *
+	 * <p>The reason is {@code CairoDriveEarlyReroute.EARLY_START_FRACTION = 0.5}: the search starts
+	 * at half the deviation threshold, so it runs INSIDE the ~11 s of travelling far enough to be
+	 * noticed plus the ~6 s of confirmation, not after them. Sweeping the offline search from 8 s
+	 * to 0.5 s moves the median by 0.3 s. A search that finishes before it is needed cannot be
+	 * felt, and neither can one that finishes slightly later.
+	 *
+	 * <p>The exception is in the simulation's section E: on a fast, hard separation - a missed
+	 * motorway exit - search time IS felt (9.4 s at 8 s of search against 6.5 s at 1 s). That is
+	 * what the grace is bounded for. It is a ceiling on the rare case, not a target for the
+	 * ordinary one.
+	 *
+	 * <p>Set beyond the measured offline worst case ({@code CD_ROUTE_TIMING} 4-8 s, of which
+	 * {@code CD_HHLOAD loadMs} is ~3 s) so that the ordinary calculation always lands inside it,
+	 * and a genuinely stuck one still yields to the network rather than stranding the driver.
+	 */
+	private static final long OFFLINE_GRACE_MS = 12_000;
+
 	private static final ThreadFactory THREADS = r -> {
 		Thread t = new Thread(r, "cairodrive-route-race");
 		t.setDaemon(true);
@@ -118,7 +162,7 @@ public final class CairoDriveRouteRace {
 	public static <T> T race(@NonNull Callable<T> offline,
 	                         @NonNull Callable<T> online,
 	                         @NonNull Usable<T> usable) {
-		return race(offline, online, usable, null);
+		return race(offline, online, usable, null, false);
 	}
 
 	/**
@@ -135,12 +179,18 @@ public final class CairoDriveRouteRace {
 	 *                       set missingMapsCalculationResult on shared params long after the
 	 *                       route was installed. The first two corrupt exactly the numbers a
 	 *                       drive log is read for.
+	 * @param offlinePriority hold a usable online answer for up to {@link #OFFLINE_GRACE_MS} while
+	 *                       the local calculation is still working, instead of returning it at
+	 *                       once. False restores the previous behaviour exactly - the grace
+	 *                       becomes zero and the first usable answer wins - so the toggle is a
+	 *                       true A/B and not two code paths.
 	 */
 	@Nullable
 	public static <T> T race(@NonNull Callable<T> offline,
 	                         @NonNull Callable<T> online,
 	                         @NonNull Usable<T> usable,
-	                         @Nullable Runnable abandonOffline) {
+	                         @Nullable Runnable abandonOffline,
+	                         boolean offlinePriority) {
 		ExecutorService pool = Executors.newFixedThreadPool(2, THREADS);
 		long started = System.currentTimeMillis();
 		try {
@@ -156,6 +206,7 @@ public final class CairoDriveRouteRace {
 			T onlineResult = null;
 			long offlineMs = -1;
 			long onlineMs = -1;
+			boolean held = false;
 
 			while (true) {
 				long elapsed = System.currentTimeMillis() - started;
@@ -163,11 +214,25 @@ public final class CairoDriveRouteRace {
 				if (onlineMs < 0 && onlineTask.isDone()) {
 					onlineMs = elapsed;
 					onlineResult = get(onlineTask, "online");
-					if (usable.isUsable(onlineResult) && !offlineTask.isDone()) {
-						// The only way online wins: it is back and the local calculation is
-						// not. Nothing is delayed by taking it, and the driver gets a route
-						// seconds earlier.
-						log("ONLINE won in " + onlineMs + " ms, offline still running");
+				}
+				// Re-tested on every poll, not only on the tick the online future completed.
+				// When the answer is HELD below, that tick has already passed - reading it once
+				// would hold the route until ONLINE_GIVE_UP_MS and then hand back nothing.
+				if (onlineMs >= 0 && usable.isUsable(onlineResult) && !offlineTask.isDone()) {
+					long grace = offlinePriority ? OFFLINE_GRACE_MS : 0;
+					if (elapsed < grace) {
+						if (!held) {
+							held = true;
+							log("online answered in " + onlineMs + " ms - HELD, giving offline"
+									+ " up to " + grace + " ms to answer with road identity");
+						}
+					} else {
+						// Online wins: it is back, the local calculation is not, and the grace
+						// is spent. Nothing further is delayed by taking it.
+						log("ONLINE won in " + onlineMs + " ms, offline still running"
+								+ (held ? " (held " + grace + " ms first)" : "")
+								+ " - route has no segments, expect no street names and an"
+								+ " inert CD_WRONGROAD");
 						if (abandonOffline != null) {
 							try {
 								abandonOffline.run();
@@ -191,7 +256,12 @@ public final class CairoDriveRouteRace {
 						log("offline won in " + offlineMs + " ms"
 								+ (onlineMs >= 0
 								   ? " (online answered at " + onlineMs + " ms, unusable or later)"
-								   : " (online still out)"));
+								   : " (online still out)")
+								// The number the offline-priority decision is judged on: how much
+								// later the driver got a route WITH road identity than the
+								// geometry-only one already in hand. Read it against the
+								// simulation's claim that the felt median does not move.
+								+ (held ? " HELD_COST=" + (offlineMs - onlineMs) + "ms" : ""));
 						return offlineResult;
 					}
 				}

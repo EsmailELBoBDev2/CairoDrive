@@ -3497,6 +3497,22 @@ public class OsmandSettings {
 	public final OsmandPreference<Boolean> WEATHER_HAZARD_ON = new BooleanPreference(this, "cairodrive_weather_hazard_on", true).makeGlobal().makeShared().cache();
 	public final OsmandPreference<Boolean> SUN_GLARE_ON = new BooleanPreference(this, "cairodrive_sun_glare_on", true).makeGlobal().makeShared().cache();
 
+	/**
+	 * Prefer the OFFLINE (OSM) route over the online one, holding a network answer for up to
+	 * CairoDriveRouteRace.OFFLINE_GRACE_MS while the local calculation finishes.
+	 *
+	 * <p>ON at the owner's explicit choice on 2026-08-09, after the 2026-08-08 drives came back
+	 * 147-0 to online. The two routes are not interchangeable: an online route has no
+	 * RouteSegmentResult, so it draws the server's geometry instead of OSM's roads, its prompts
+	 * have no street name, and CD_WRONGROAD is inert for its whole duration.
+	 *
+	 * <p>It is a live preference and not only a build flag because the cost of being wrong is a
+	 * whole drive. tools/sim/reroute_sim.py says the felt median does not move (14.6 s whether the
+	 * network wins 30% or 70% of reroutes) - but that is a simulation, and if a drive disagrees the
+	 * owner can put it back mid-drive rather than after the next build.
+	 */
+	public final OsmandPreference<Boolean> OFFLINE_ROUTE_PRIORITY = new BooleanPreference(this, "cairodrive_offline_route_priority", true).makeGlobal().makeShared().cache();
+
 	// Live traffic on the active route, from Google's Routes API. ON by default at the owner's
 	// instruction. Still gated a second time on a compiled-in key, so a build without the key
 	// makes zero network calls no matter what this says, and the daily request caps in

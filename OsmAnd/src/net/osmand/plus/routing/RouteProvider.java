@@ -2431,7 +2431,10 @@ public class RouteProvider {
 					// RouteCalculationParams.cairoDriveSuperseded means "your answer is unwanted"
 					// and is set ONLY by stopCalculation(). The task reads the latter, so stopping
 					// the loser can no longer throw away the winner.
-					() -> params.calculationProgress.isCancelled = true);
+					() -> params.calculationProgress.isCancelled = true,
+					// Read per calculation, not cached: this is the toggle the driver is meant to
+					// be able to flip at a red light and have the next reroute honour.
+					params.ctx.getSettings().OFFLINE_ROUTE_PRIORITY.get());
 		} catch (Throwable t) {
 			// A broken race must never cost a route. Fall through to the offline path.
 			CairoDriveLogger.getInstance().log("ROUTE_RACE", "race setup failed, offline only", t);
