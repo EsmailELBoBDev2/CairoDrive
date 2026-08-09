@@ -271,13 +271,6 @@ jobs:
       # "net.osmand", and it makes the HH point-load statistics unconditional - they sit
       # behind a compile-time-zero constant upstream, so the point count for an .obf has
       # never been knowable. Refuses to apply against a drifted upstream.
-      # Runs BEFORE the compile so the answer costs seconds, not a native build. It cannot
-      # be a review rule: the exact mistake it catches was made with a comment forbidding
-      # it already in the file, and the second time it cost a signed build and the drive
-      # it was built for.
-      - name: Verify nothing reads a preference before OsmandSettings exists
-        run: python3 .github/check_early_init.py .
-
       - name: Patch OsmAnd-core-legacy diagnostics
         run: python3 android/patches/cairodrive_native_diag.py core-legacy
 
@@ -290,6 +283,14 @@ jobs:
       # drifted upstream, exactly like the diagnostics patch above.
       - name: Patch OsmAnd-core-legacy HH context reuse
         run: python3 android/patches/cairodrive_hh_reuse.py core-legacy
+
+      # Runs BEFORE the compile so the answer costs seconds rather than a native build. It
+      # cannot be left as a review rule: the exact mistake it catches was made with a
+      # comment forbidding it already three lines away in the same file, and it cost a
+      # signed build and the drive that build was made for.
+      - name: Verify nothing reads a preference before OsmandSettings exists
+        working-directory: android
+        run: python3 .github/check_early_init.py .
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
@@ -1488,13 +1489,6 @@ jobs:
       # "net.osmand", and it makes the HH point-load statistics unconditional - they sit
       # behind a compile-time-zero constant upstream, so the point count for an .obf has
       # never been knowable. Refuses to apply against a drifted upstream.
-      # Runs BEFORE the compile so the answer costs seconds, not a native build. It cannot
-      # be a review rule: the exact mistake it catches was made with a comment forbidding
-      # it already in the file, and the second time it cost a signed build and the drive
-      # it was built for.
-      - name: Verify nothing reads a preference before OsmandSettings exists
-        run: python3 .github/check_early_init.py .
-
       - name: Patch OsmAnd-core-legacy diagnostics
         run: python3 android/patches/cairodrive_native_diag.py core-legacy
 
@@ -1507,6 +1501,14 @@ jobs:
       # drifted upstream, exactly like the diagnostics patch above.
       - name: Patch OsmAnd-core-legacy HH context reuse
         run: python3 android/patches/cairodrive_hh_reuse.py core-legacy
+
+      # Runs BEFORE the compile so the answer costs seconds rather than a native build. It
+      # cannot be left as a review rule: the exact mistake it catches was made with a
+      # comment forbidding it already three lines away in the same file, and it cost a
+      # signed build and the drive that build was made for.
+      - name: Verify nothing reads a preference before OsmandSettings exists
+        working-directory: android
+        run: python3 .github/check_early_init.py .
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
