@@ -263,6 +263,13 @@ public class CairoDriveCarPresentation {
 	public void invalidateOverlays() {
 		OsmAndMapLayersView view = layersView;
 		if (view != null) {
+			if (view instanceof TimedLayersView) {
+				// Marks this as an EXTERNAL request - something really changed - which is what
+				// keeps the view's own between-fixes redraw loop alive. See TimedLayersView
+				// .scheduleNext: without that loop the overlay redrew once per GPS fix and the
+				// position marker jumped a second at a time under a smoothly sliding GL map.
+				((TimedLayersView) view).notePoke();
+			}
 			// postInvalidateOnAnimation, not invalidate: this is reached from the map's own render
 			// and location threads, and View.invalidate() is main-thread only. It also coalesces,
 			// so several calls inside one frame cost one redraw rather than several.
@@ -372,6 +379,14 @@ public class CairoDriveCarPresentation {
 		private long drawMaxMs;
 		private int slowFrames;
 		private long lastDrawStartMs;
+		/**
+		 * When the last EXTERNAL redraw request arrived - a location update, a map change, a
+		 * setting. Not counting the self-scheduled ones below, or the loop would keep itself
+		 * alive forever on a parked car.
+		 */
+		private volatile long lastExternalPokeMs;
+		/** Whether a self-scheduled redraw is already queued, so one is not stacked per draw. */
+		private boolean selfScheduled;
 
 		TimedLayersView(@NonNull Context context, int width, int height, int dpi, int maxFps) {
 			super(context);
@@ -381,8 +396,21 @@ public class CairoDriveCarPresentation {
 			this.maxFps = maxFps;
 		}
 
+		/**
+		 * How long after the last external redraw request the self-scheduled loop keeps running.
+		 * Location updates arrive at 1 Hz, so this only has to outlast one gap; three seconds
+		 * survives a GPS stall without spinning on a car that has been parked for a minute.
+		 */
+		private static final long KEEP_ALIVE_MS = 3_000;
+
+		/** Called from {@link #invalidateOverlays()} - i.e. by something that actually changed. */
+		void notePoke() {
+			lastExternalPokeMs = System.currentTimeMillis();
+		}
+
 		@Override
 		protected void onDraw(android.graphics.Canvas canvas) {
+			selfScheduled = false;
 			long startMs = System.currentTimeMillis();
 			long startNanos = System.nanoTime();
 			try {
@@ -390,7 +418,53 @@ public class CairoDriveCarPresentation {
 			} finally {
 				long drawMs = (System.nanoTime() - startNanos) / 1_000_000L;
 				record(startMs, drawMs, canvas.isHardwareAccelerated());
+				scheduleNext(startMs);
 			}
+		}
+
+		/**
+		 * Keeps the overlay redrawing between location updates.
+		 *
+		 * <h3>The bug this fixes</h3>
+		 *
+		 * On the presentation path {@code SurfaceRenderer.renderFrame} does nothing but call
+		 * {@code invalidateOverlays()}, and renderFrame is driven by the map's refresh path -
+		 * which in practice means one GPS fix. Measured across the 2026-08-11 drives:
+		 *
+		 * <pre>
+		 * GPS fixes            1.00 Hz  (one every 1000 ms)
+		 * overlay redraws      one every 781 ms (median), max 11860 ms
+		 * cost of a redraw     42-78 ms
+		 * </pre>
+		 *
+		 * The GL map runs off the core's own frame loop and slides smoothly, but the position
+		 * marker is a Java overlay layer, so it moved in one-second steps underneath a moving
+		 * map. At 100 km/h that is a 28 m jump per redraw - the owner's "السهم بيعلق وانت
+		 * بتجري بسرعه", the arrow sticking while driving fast, and the same cause as the arrow
+		 * appearing to drift: it was showing where he was up to a second ago.
+		 *
+		 * <h3>Why it self-schedules instead of using a timer</h3>
+		 *
+		 * The next frame is requested at the END of the current draw, so the loop runs at
+		 * exactly the rate the device can sustain and can never queue work faster than it
+		 * finishes. At the measured 42-78 ms per draw that is 13-24 fps, against 1.3 before -
+		 * and if a redraw ever gets expensive the loop slows down instead of piling up.
+		 *
+		 * <p>A fixed 30 fps timer would do the opposite: 33 ms of budget against a 78 ms draw
+		 * is a queue that grows for as long as the car is moving.
+		 */
+		private void scheduleNext(long nowMs) {
+			if (selfScheduled) {
+				return;
+			}
+			// Only while something is actually changing. Without this the loop would run at full
+			// tilt on a car parked with Android Auto still connected, which is a real state this
+			// app spends time in - the 2026-08-09 log is 20 minutes of it.
+			if (nowMs - lastExternalPokeMs > KEEP_ALIVE_MS) {
+				return;
+			}
+			selfScheduled = true;
+			postInvalidateOnAnimation();
 		}
 
 		private void record(long startMs, long drawMs, boolean hardware) {
@@ -414,9 +488,16 @@ public class CairoDriveCarPresentation {
 				slowFrames++;
 			}
 			if (frames >= FRAMES_PER_SUMMARY) {
+				// NAMED avgGapMs, not avgMs, and the rename is the point. On this path the
+				// number is the INTERVAL BETWEEN redraws, not the cost of one - `avgOver` is the
+				// cost. Read as a frame time it says "849 ms per frame, catastrophic"; read
+				// correctly it says "the overlay is only asked to redraw every 849 ms", which is
+				// a different bug with a different fix, and the misreading hid the arrow
+				// stuttering for an entire build. `slow` counts gaps over one frame's budget,
+				// so it is a redraw-rate figure too, not a dropped-frame count.
 				CairoDriveLogger.getInstance().log("CD_FRAME", "summary frames=" + frames
-						+ " avgMs=" + (intervalSumMs / frames)
-						+ " maxMs=" + intervalMaxMs + " slow=" + slowFrames
+						+ " avgGapMs=" + (intervalSumMs / frames)
+						+ " maxGapMs=" + intervalMaxMs + " gapsOverBudget=" + slowFrames
 						+ " renderMode=presentation noBlit=1"
 						// Reported so a claim that the overlays moved onto the GPU is checked
 						// rather than assumed. A View on a hardware-accelerated window should say

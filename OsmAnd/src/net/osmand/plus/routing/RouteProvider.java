@@ -2434,7 +2434,12 @@ public class RouteProvider {
 					() -> params.calculationProgress.isCancelled = true,
 					// Read per calculation, not cached: this is the toggle the driver is meant to
 					// be able to flip at a red light and have the next reroute honour.
-					params.ctx.getSettings().OFFLINE_ROUTE_PRIORITY.get());
+					params.ctx.getSettings().OFFLINE_ROUTE_PRIORITY.get(),
+					// Stops the hold the instant a newer reroute makes this answer unwanted.
+					// cairoDriveSuperseded is the right flag and isCancelled is not: the race
+					// itself sets isCancelled when online wins, so reading that would make the
+					// hold cancel on its own decision. See RouteRecalculationHelper:1189.
+					() -> params.cairoDriveSuperseded);
 		} catch (Throwable t) {
 			// A broken race must never cost a route. Fall through to the offline path.
 			CairoDriveLogger.getInstance().log("ROUTE_RACE", "race setup failed, offline only", t);

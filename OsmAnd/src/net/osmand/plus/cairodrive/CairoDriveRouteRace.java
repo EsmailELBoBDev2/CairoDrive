@@ -133,11 +133,28 @@ public final class CairoDriveRouteRace {
 	 * what the grace is bounded for. It is a ceiling on the rare case, not a target for the
 	 * ordinary one.
 	 *
-	 * <p>Set beyond the measured offline worst case ({@code CD_ROUTE_TIMING} 4-8 s, of which
-	 * {@code CD_HHLOAD loadMs} is ~3 s) so that the ordinary calculation always lands inside it,
-	 * and a genuinely stuck one still yields to the network rather than stranding the driver.
+	 * <h3>Why 12 s was wrong, measured 2026-08-11</h3>
+	 *
+	 * It was set beyond the offline worst case so an ordinary calculation would always land
+	 * inside it. That reasoning ignored what a long hold does to the NEXT reroute, and the drives
+	 * priced it:
+	 *
+	 * <pre>
+	 * cancelled calculations   29% before  ->  51% after
+	 * "offline produced no usable route"   61 of ~275 races
+	 * races that held the full window and took the online route anyway   34
+	 * </pre>
+	 *
+	 * Holding keeps each race alive for up to twelve seconds, and in Cairo the next reroute
+	 * arrives well inside that, cancelling the offline search still running underneath. So the
+	 * hold did not buy an offline route - it destroyed one, then handed back the online answer
+	 * twelve seconds later than it would have. Worse than either policy on its own.
+	 *
+	 * <p>Five seconds is the median offline win ({@code HELD_COST} median 4228 ms), so it keeps
+	 * the routes that were actually being won while cutting the dead wait by more than half. The
+	 * supersession check below is what stops the rest.
 	 */
-	private static final long OFFLINE_GRACE_MS = 12_000;
+	private static final long OFFLINE_GRACE_MS = 5_000;
 
 	private static final ThreadFactory THREADS = r -> {
 		Thread t = new Thread(r, "cairodrive-route-race");
@@ -162,7 +179,7 @@ public final class CairoDriveRouteRace {
 	public static <T> T race(@NonNull Callable<T> offline,
 	                         @NonNull Callable<T> online,
 	                         @NonNull Usable<T> usable) {
-		return race(offline, online, usable, null, false);
+		return race(offline, online, usable, null, false, null);
 	}
 
 	/**
@@ -190,7 +207,8 @@ public final class CairoDriveRouteRace {
 	                         @NonNull Callable<T> online,
 	                         @NonNull Usable<T> usable,
 	                         @Nullable Runnable abandonOffline,
-	                         boolean offlinePriority) {
+	                         boolean offlinePriority,
+	                         @Nullable java.util.function.BooleanSupplier superseded) {
 		ExecutorService pool = Executors.newFixedThreadPool(2, THREADS);
 		long started = System.currentTimeMillis();
 		try {
@@ -220,6 +238,17 @@ public final class CairoDriveRouteRace {
 				// would hold the route until ONLINE_GIVE_UP_MS and then hand back nothing.
 				if (onlineMs >= 0 && usable.isUsable(onlineResult) && !offlineTask.isDone()) {
 					long grace = offlinePriority ? OFFLINE_GRACE_MS : 0;
+					// Stop holding the moment this whole calculation stops being wanted. A newer
+					// reroute has been dispatched, its answer is the one that will be installed,
+					// and every further millisecond spent here is a millisecond the superseded
+					// offline search keeps a core and the routing slot. Waiting out the grace for
+					// a result nobody will use is how a 12 s hold turned into a 51% cancellation
+					// rate - see OFFLINE_GRACE_MS.
+					if (superseded != null && superseded.getAsBoolean()) {
+						log("superseded while holding at " + elapsed + " ms - taking the online"
+								+ " route now rather than waiting out the grace");
+						return onlineResult;
+					}
 					if (elapsed < grace) {
 						if (!held) {
 							held = true;

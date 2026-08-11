@@ -102,10 +102,25 @@ def frames(rows):
             n = sum(num(d, k, 0) * num(d, "frames", 0) for d in ds)
             return n / total if total else 0
         print("\n  renderMode=%s   (%d windows, %d frames)" % (mode, len(ds), total))
-        print("    avgMs   %6.1f   (was %.1f)   maxMs %s" % (
-            wavg("avgMs"), base["avg"], max(num(d, "maxMs", 0) for d in ds)))
-        print("    avgOver %6.1f   (was %.1f)  <- the layers, this is the big one" % (
-            wavg("avgOver"), base["over"]))
+        if mode == "presentation":
+            # avgGapMs is NOT a frame time. Older logs call the same field avgMs, which is how
+            # a 1.3 fps overlay was read as "the frame takes 849 ms" for a whole build - the
+            # draw itself was 42-78 ms all along. Print it as what it is: the redraw RATE.
+            gap = wavg("avgGapMs") or wavg("avgMs")
+            fps = 1000.0 / gap if gap else 0
+            print("    redraw gap %6.1f ms  ->  %.1f fps   (max gap %s ms)" % (
+                gap, fps, max(num(d, "maxGapMs", 0) or num(d, "maxMs", 0) for d in ds)))
+            print("    avgOver    %6.1f ms  <- what a redraw actually COSTS" % wavg("avgOver"))
+            if fps and fps < 8:
+                print("    ^^ UNDER 8 fps. The GL map slides smoothly but the position marker is a")
+                print("       Java overlay, so at this rate it steps instead of moving - which is")
+                print("       'the arrow sticks while driving fast'. Compare against the GPS rate:")
+                print("       matching 1 Hz means nothing drives a redraw between fixes.")
+        else:
+            print("    avgMs   %6.1f   (was %.1f)   maxMs %s" % (
+                wavg("avgMs"), base["avg"], max(num(d, "maxMs", 0) for d in ds)))
+            print("    avgOver %6.1f   (was %.1f)  <- the layers, this is the big one" % (
+                wavg("avgOver"), base["over"]))
         if mode == "presentation":
             hw = {d.get("hwAccel") for d in ds}
             print("    hwAccel %s" % ", ".join(sorted(str(h) for h in hw)))
