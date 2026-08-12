@@ -170,6 +170,12 @@ public class RoutingHelper {
 		// so its id set was permanently null and evaluate() returned false on every fix. The
 		// feature shipped inert and its own summary counters could never have said so.
 		net.osmand.plus.cairodrive.CairoDriveWrongRoad.onRouteChanged(route);
+		// Writes the route the driver is about to be given: source, turn list, street names and
+		// road ids. Until 2026-08-12 the log held his position once a second and a COUNT of the
+		// route's roads, so "it routed me down a street I never entered" and "it said keep right
+		// where I had to take the bridge" were both unanswerable. With this, CD_NAV's positions
+		// can be laid against the plan they were being judged against.
+		net.osmand.plus.cairodrive.CairoDriveRoutePlan.onRouteInstalled(route);
 		// An early calculation belongs to the deviation from the OLD route. Once a new route is
 		// installed the question it was answering no longer exists, and leaving the latch raised
 		// would make confirm() suppress the next genuine dispatch.
