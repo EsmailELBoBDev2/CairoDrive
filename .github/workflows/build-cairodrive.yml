@@ -64,6 +64,11 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
+          # See build-aab.yml for the full reasoning: Flutter's AGP/Gradle/KGP
+          # floors come from the installed SDK via includeBuild(), and this
+          # project's pins sit just above the 3.47.0 floors, so the version
+          # must not float.
+          flutter-version: "3.47.0"
           channel: stable
           cache: true
 

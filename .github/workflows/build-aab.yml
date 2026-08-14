@@ -60,6 +60,14 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
+          # Pinned deliberately. app/android/settings.gradle.kts does
+          # includeBuild() on the installed SDK's Gradle tooling, so Flutter's
+          # AGP/Gradle/KGP floors are compiled from whatever version CI happens
+          # to install. Those floors moved (Gradle 8.3.0 -> 8.7.0 -> 8.14.0)
+          # across recent stables, and the AGP 8.13.2 / Gradle 8.14.3 pins this
+          # project needs sit only just above the 3.47.0 floors. Leaving this on
+          # a floating `stable` is precisely what would silently re-break it.
+          flutter-version: "3.47.0"
           channel: stable
           cache: true
 
@@ -127,8 +135,30 @@ jobs:
         run: |
           set -euo pipefail
           AAB=$(find app/build/app/outputs/bundle -name '*.aab' | head -1)
-          echo "AAB: $AAB"
-          echo "AAB built successfully with size: $(numfmt --to=iec $(stat -c%s "$AAB"))"
+          if [ -z "$AAB" ]; then
+            echo "::error::No .aab was produced"
+            exit 1
+          fi
+          echo "AAB: $AAB ($(numfmt --to=iec "$(stat -c%s "$AAB")"))"
+
+          # An AAB is JAR-signed, not signed with the APK Signature Scheme, so
+          # apksigner cannot read it — jarsigner is the correct verifier.
+          jarsigner -verify -verbose:summary -certs "$AAB" | tee /tmp/aab-sig.txt
+          if ! grep -q 'jar verified' /tmp/aab-sig.txt; then
+            echo "::error::AAB signature did not verify"
+            exit 1
+          fi
+
+          # app/build.gradle.kts falls back to the DEBUG signing config when no
+          # release keystore is present. That fallback is deliberate (a keyless
+          # run still yields an artifact), but it must never pass silently as a
+          # release build, so assert the signer is not the debug certificate
+          # whenever a release keystore was supplied.
+          if [ "$HAS_KEYSTORE" = "true" ] && grep -q 'CN=Android Debug' /tmp/aab-sig.txt; then
+            echo "::error::AAB is debug-signed even though a release keystore is configured"
+            exit 1
+          fi
+          echo "Signature verified."
 
       - name: Confirm no secrets leaked into the artifact
         run: |
@@ -144,7 +174,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cairodrive-aab
-          path: app/build/app/outputs/bundle/release/app-release.aab
+          # Globbed, not hardcoded to release/: a debug run writes
+          # bundle/debug/app-debug.aab, which a release-only path would miss and
+          # then fail on if-no-files-found: error.
+          path: app/build/app/outputs/bundle/*/*.aab
           if-no-files-found: error
           retention-days: 30
 
@@ -152,8 +185,12 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          AAB=$(find app/build/app/outputs/bundle -name '*.aab' 2>/dev/null || echo "Not found")
-          if [ "$AAB" != "Not found" ]; then
+          # `find` exits 0 when it matches nothing, so the previous
+          # `|| echo "Not found"` fallback never fired and left AAB empty —
+          # which then passed a `!= "Not found"` guard and blew up in stat.
+          # Test the variable itself instead.
+          AAB=$(find app/build/app/outputs/bundle -name '*.aab' 2>/dev/null | head -1 || true)
+          if [ -n "$AAB" ] && [ -f "$AAB" ]; then
             echo "## ✅ AAB Build Successful" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
