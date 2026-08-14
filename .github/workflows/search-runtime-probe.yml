@@ -1,0 +1,37 @@
+name: Search runtime probe (live Google Places)
+
+# Runs the EXACT Google Places (New) requests the search hook issues, against the
+# LIVE API, in the one environment that holds the real key. This proves the
+# "search text -> Google request -> HTTP -> prediction -> Place Details ->
+# lat/lng" half on a real runtime. It does NOT run inside Magic Earth — that
+# needs an Android runtime the analysis sandbox lacks (see RUNTIME-SEARCH-TEST.md).
+
+on:
+  push:
+    branches: [MagicEearth]
+    paths:
+      - patch/live-probe/**
+      - .github/workflows/search-runtime-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: search-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-google-probe:
+    name: Live Google Places query (Cairo Festival City)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run live Google Places probe
+        env:
+          # The value is masked by Actions and is never printed by the script.
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+        run: node patch/live-probe/google_places_live.mjs

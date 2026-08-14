@@ -1,0 +1,8 @@
+Fri Aug 14 18:58:40 UTC 2026 — Android runtime probe (this sandbox)
+/dev/kvm: absent ; cpu virt flags: 0
+/dev/binder*, /dev/ashmem: absent ; binder/ashmem kernel modules: none
+container: docker (unprivileged, nested) ; cannot load kernel modules
+reachability: dl.google.com=000  ota.waydro.id=000  sourceforge.net=403
+              places.googleapis.com=404(host-reachable)  github.com=400(reachable)
+tooling present: docker ; absent: adb emulator avdmanager sdkmanager waydroid qemu-system-*
+conclusion: no emulator (no KVM + no SDK source), no device, no waydroid/redroid (no binder).
