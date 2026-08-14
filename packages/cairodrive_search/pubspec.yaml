@@ -1,0 +1,17 @@
+name: cairodrive_search
+description: >-
+  Provider-agnostic search layer for CairoDrive. Google Places API (New) as the
+  primary provider, the Magic Lane map engine as offline-capable fallback, behind
+  a single SearchResult model and a SearchCoordinator.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.9.0
+
+dependencies:
+  http: ^1.2.0
+
+dev_dependencies:
+  test: ^1.25.0
+  lints: ^5.0.0
