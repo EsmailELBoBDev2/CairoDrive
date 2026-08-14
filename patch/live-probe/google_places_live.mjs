@@ -13,6 +13,19 @@
 // Usage:  GOOGLE_PLACES_API_KEY=... node patch/live-probe/google_places_live.mjs
 
 const KEY = (process.env.GOOGLE_PLACES_API_KEY || '').trim();
+// An Android-app-restricted key requires the caller to assert the app identity
+// it is registered to. The Google Maps Android SDK adds these automatically;
+// a raw HTTP caller (this probe, and the Frida hook) must add them explicitly.
+// Supply the identity the key is registered to via env; defaults to the
+// original Magic Earth app identity (public, derived from the APK cert).
+const ANDROID_PACKAGE = (process.env.ANDROID_PACKAGE || '').trim();
+const ANDROID_CERT_SHA1 = (process.env.ANDROID_CERT_SHA1 || '').trim();
+function androidHeaders() {
+  const h = {};
+  if (ANDROID_PACKAGE) h['X-Android-Package'] = ANDROID_PACKAGE;
+  if (ANDROID_CERT_SHA1) h['X-Android-Cert'] = ANDROID_CERT_SHA1.replace(/:/g, '').toUpperCase();
+  return h;
+}
 const AUTOCOMPLETE = 'https://places.googleapis.com/v1/places:autocomplete';
 const DETAILS = 'https://places.googleapis.com/v1/places/';
 const AC_MASK =
@@ -41,7 +54,7 @@ async function autocomplete(query, token) {
   };
   const r = await fetch(AUTOCOMPLETE, {
     method: 'POST',
-    headers: { 'X-Goog-Api-Key': KEY, 'X-Goog-FieldMask': AC_MASK, 'Content-Type': 'application/json' },
+    headers: { 'X-Goog-Api-Key': KEY, 'X-Goog-FieldMask': AC_MASK, 'Content-Type': 'application/json', ...androidHeaders() },
     body: JSON.stringify(body),
   });
   const text = await r.text();
@@ -58,7 +71,7 @@ async function autocomplete(query, token) {
 
 async function details(placeId, token) {
   const url = `${DETAILS}${encodeURIComponent(placeId)}?sessionToken=${encodeURIComponent(token)}`;
-  const r = await fetch(url, { headers: { 'X-Goog-Api-Key': KEY, 'X-Goog-FieldMask': DETAILS_MASK } });
+  const r = await fetch(url, { headers: { 'X-Goog-Api-Key': KEY, 'X-Goog-FieldMask': DETAILS_MASK, ...androidHeaders() } });
   const text = await r.text();
   if (!r.ok) throw { status: r.status, body: text.slice(0, 300) };
   const j = JSON.parse(text);
@@ -94,6 +107,7 @@ async function runCase(label, query, { expectEmpty = false } = {}) {
 async function main() {
   console.log(`GOOGLE_PLACES_API_KEY: ${KEY ? 'present' : 'ABSENT'} (value never printed)`);
   console.log(`endpoint: ${AUTOCOMPLETE}`);
+  console.log(`android identity: ${ANDROID_PACKAGE || '(none)'} / cert ${ANDROID_CERT_SHA1 ? ANDROID_CERT_SHA1.slice(0,8)+'…' : '(none)'}`);
   if (!KEY) { console.log('No key in env — cannot issue a live request. See RUNTIME-SEARCH-TEST.md.'); process.exit(2); }
 
   const results = [];

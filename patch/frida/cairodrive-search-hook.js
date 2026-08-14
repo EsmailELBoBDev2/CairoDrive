@@ -111,6 +111,21 @@ function inferLang(q) {
     if ((c>=0x0600&&c<=0x06ff)||(c>=0x0750&&c<=0x077f)||(c>=0xfb50&&c<=0xfdff)||(c>=0xfe70&&c<=0xfeff)) return 'ar'; }
   return 'en';
 }
+// An Android-app-restricted GOOGLE_PLACES_API_KEY requires the raw HTTP request
+// to assert the app identity the key is registered to (the Google Maps Android
+// SDK adds these automatically; a raw fetch must add them). Live CI testing
+// showed this key is Android-restricted (API_KEY_ANDROID_APP_BLOCKED). When the
+// hook runs INSIDE com.generalmagic.magicearth, use that package + the running
+// app's signing-cert SHA-1.
+const ANDROID_PACKAGE = 'com.generalmagic.magicearth';
+const ANDROID_CERT_SHA1 = '3705BA93D86F9566CDB440977E65C8DF660514AE'; // original app cert
+function googleHeaders(extra) {
+  return Object.assign({
+    'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY,
+    'X-Android-Package': ANDROID_PACKAGE,
+    'X-Android-Cert': ANDROID_CERT_SHA1,
+  }, extra || {});
+}
 let sessionToken = null, requestSeq = 0;
 function newSessionToken() {
   const b = []; for (let i=0;i<16;i++) b.push(Math.floor(Math.random()*256));
