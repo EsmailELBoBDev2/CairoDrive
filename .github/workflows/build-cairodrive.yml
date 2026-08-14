@@ -75,6 +75,10 @@ jobs:
         working-directory: app
         run: flutter analyze
 
+      - name: Widget tests
+        working-directory: app
+        run: flutter test
+
       # The keystore only ever exists on disk inside this job, and is removed
       # by the always() cleanup step below.
       - name: Reconstruct signing keystore
@@ -87,9 +91,19 @@ jobs:
         run: |
           set -euo pipefail
           # No `set -x` anywhere in this job: it would echo secret values.
-          printf '%s' "$KEYSTORE_B64" | base64 -d > "${RUNNER_TEMP}/cairodrive.jks"
+          # Strip any whitespace/newlines the secret may carry before decoding.
+          printf '%s' "$KEYSTORE_B64" | tr -d '[:space:]' | base64 -d \
+            > "${RUNNER_TEMP}/cairodrive.jks"
           if [ ! -s "${RUNNER_TEMP}/cairodrive.jks" ]; then
             echo "::error::Decoded keystore is empty — check CAIRODRIVE_KEYSTORE_BASE64"
+            exit 1
+          fi
+          # Fail early with a clear message if the alias/password do not match,
+          # rather than deep inside the Gradle signing task. keytool prints the
+          # store contents, never the password.
+          if ! keytool -list -keystore "${RUNNER_TEMP}/cairodrive.jks" \
+                 -alias "$KEY_ALIAS" -storepass "$STORE_PASSWORD" > /dev/null 2>&1; then
+            echo "::error::Keystore opened but alias '$KEY_ALIAS' or the store password did not match"
             exit 1
           fi
           # key.properties is written outside the workspace-tracked paths and

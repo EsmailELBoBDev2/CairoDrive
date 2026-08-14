@@ -27,7 +27,9 @@ google-services.json
 .flutter-plugins
 .flutter-plugins-dependencies
 build/
-pubspec.lock
+# pubspec.lock is deliberately NOT ignored: this repo ships an application, and
+# committing the lockfile is what makes CI resolve the same dependency versions
+# the tests were run against.
 
 # Gradle / Android
 .gradle/

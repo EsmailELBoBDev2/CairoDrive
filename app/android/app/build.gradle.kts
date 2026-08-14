@@ -3,13 +3,13 @@ import java.io.FileInputStream
 
 plugins {
     id("com.android.application")
-    id("kotlin-android")
+    // The Flutter Gradle Plugin must be applied after the Android plugin.
     id("dev.flutter.flutter-gradle-plugin")
 }
 
 /**
  * Local, untracked overrides. `local.properties` is git-ignored, so a developer
- * can put keys there without any risk of committing them.
+ * can keep keys there with no risk of committing them.
  */
 val localProperties = Properties().apply {
     val file = rootProject.file("local.properties")
@@ -39,7 +39,8 @@ logger.lifecycle(
 
 /**
  * Signing config, populated only when the keystore is actually present.
- * CI materialises it from CAIRODRIVE_KEYSTORE_BASE64 before invoking Gradle.
+ * CI materialises key.properties from CAIRODRIVE_KEYSTORE_BASE64 and the three
+ * password/alias secrets before invoking Gradle, and deletes it afterwards.
  */
 val keystoreProperties = Properties().apply {
     val file = rootProject.file("key.properties")
@@ -49,22 +50,22 @@ val hasReleaseKeystore = keystoreProperties.getProperty("storeFile") != null
 
 android {
     namespace = "com.cairodrive.app"
-    compileSdk = 35
+    // Pinned to 36: magiclane_maps_flutter 3.1.11 declares compileSdk = 36, and
+    // AGP requires the app to compile against at least its libraries' level.
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_17.toString()
-    }
 
     defaultConfig {
         applicationId = "com.cairodrive.app"
-        // Magic Lane SDK requires API 23+; 24 keeps us clear of legacy quirks.
+        // The Magic Lane plugin declares minSdk 21; 24 keeps us clear of
+        // legacy-multidex and Java-8-desugaring quirks.
         minSdk = 24
-        targetSdk = 35
+        targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
@@ -81,20 +82,19 @@ android {
     }
 
     buildTypes {
-        getByName("debug") {
-            // Distinct from release so both can be installed side by side, and
-            // so neither ever collides with any other navigation app.
+        debug {
+            // Distinct id so debug and release can coexist on one device, and
+            // so neither can ever collide with another navigation app.
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
-            isMinifyEnabled = false
         }
-        getByName("release") {
+        release {
             signingConfig = if (hasReleaseKeystore) {
                 signingConfigs.getByName("release")
             } else {
-                // Falls back to the debug key so a keyless CI run still builds;
-                // the workflow verifies the signer, so a mis-signed artifact
-                // cannot pass unnoticed.
+                // Lets a keyless run still produce an APK; the workflow prints
+                // the signer certificate, so a debug-signed artifact is visible
+                // rather than silently mistaken for a release-signed one.
                 signingConfigs.getByName("debug")
             }
             isMinifyEnabled = true
@@ -105,10 +105,11 @@ android {
             )
         }
     }
+}
 
-    packaging {
-        // The engine ships large prebuilt native libraries.
-        jniLibs.useLegacyPackaging = false
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
     }
 }
 
@@ -117,6 +118,7 @@ flutter {
 }
 
 dependencies {
+    // Android Auto, via the public AndroidX Car App Library.
     implementation("androidx.car.app:app:1.4.0")
     implementation("androidx.car.app:app-projected:1.4.0")
 }

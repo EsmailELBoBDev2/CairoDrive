@@ -1,5 +1,6 @@
 import 'package:cairodrive_search/cairodrive_search.dart';
 import 'package:flutter/material.dart';
+import 'package:magiclane_maps_flutter/magiclane_maps_flutter.dart' as gem;
 
 import 'src/config/app_config.dart';
 import 'src/engine/engine_ports.dart';
@@ -152,7 +153,9 @@ class HomeScreen extends StatelessWidget {
       return Container(
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
         alignment: Alignment.center,
-        child: Padding(
+        // Scrollable so a long message cannot overflow on a short viewport —
+        // e.g. with the keyboard up or on a small screen.
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             const Icon(Icons.map_outlined, size: 48),
@@ -196,18 +199,25 @@ class HomeScreen extends StatelessWidget {
   }
 }
 
-/// Placeholder host for the engine's map widget.
+/// Host for the engine's map widget.
 ///
-/// Kept as its own widget so swapping the map engine touches one file.
+/// This is the second and last place the SDK is referenced from app code (the
+/// other being the adapters file) because a rendered map is necessarily a
+/// platform view supplied by the engine. It is isolated in its own widget so
+/// swapping engines touches this file and the adapters, nothing else.
 class MapSurface extends StatelessWidget {
   const MapSurface({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      color: Theme.of(context).colorScheme.surfaceContainerHighest,
-      alignment: Alignment.center,
-      child: const Text('Map'),
+    // GemKit.initialize has already run in _initialiseEngine, so the token is
+    // not repeated here — the SDK ignores appAuthorization once initialised.
+    return gem.GemMap(
+      coordinates: gem.Coordinates(
+        latitude: EgyptRegion.cairoCenter.latitude,
+        longitude: EgyptRegion.cairoCenter.longitude,
+      ),
+      zoomLevel: 12,
     );
   }
 }
