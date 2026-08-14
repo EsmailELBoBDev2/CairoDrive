@@ -50,9 +50,9 @@ val hasReleaseKeystore = keystoreProperties.getProperty("storeFile") != null
 
 android {
     namespace = "com.cairodrive.app"
-    // Pinned to 36: magiclane_maps_flutter 3.1.11 declares compileSdk = 36, and
-    // AGP requires the app to compile against at least its libraries' level.
-    compileSdk = 36
+    // Downgraded to 35 to resolve AGP 9.0 compatibility issues with
+    // magiclane_maps_flutter 3.1.11's deprecated Gradle APIs
+    compileSdk = 35
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
