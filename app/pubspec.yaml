@@ -17,7 +17,7 @@ dependencies:
 
   # Map rendering, routing and navigation engine — the same engine identified
   # in reports/DEEP-RECON-REPORT.md, used here through its published SDK.
-  magiclane_maps_flutter: ^3.2.0
+  magiclane_maps_flutter: ^3.1.11
 
   geolocator: ^13.0.0
 
