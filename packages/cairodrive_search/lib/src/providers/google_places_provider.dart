@@ -78,6 +78,22 @@ class GooglePlacesSearchProvider implements SearchProvider {
   final Duration timeout;
   final int maxSuggestions;
 
+  /// This app's true package name / signing-cert SHA-1, set once
+  /// [AppIdentity.resolve] (app/lib/src/config/app_identity.dart) completes.
+  ///
+  /// Mutable and set post-construction rather than required in the
+  /// constructor: identity resolution is an async platform call, and the
+  /// provider must exist synchronously during app wire-up so the UI has
+  /// something to bind to immediately. Until this is set, requests go out
+  /// with no X-Android-* headers — same behaviour as before this existed.
+  ///
+  /// An Android-app-restricted API key checks these on every request; the
+  /// Places SDK attaches them automatically, but this provider issues raw
+  /// HTTP, so it must attach them itself or the key rejects every call as
+  /// unidentified regardless of what is allow-listed in Cloud Console.
+  String? androidPackage;
+  String? androidCertSha1;
+
   String? _sessionToken;
   int _requestSeq = 0;
 
@@ -249,7 +265,16 @@ class GooglePlacesSearchProvider implements SearchProvider {
   Map<String, String> _headers(String fieldMask) => {
         'X-Goog-Api-Key': _apiKey,
         'X-Goog-FieldMask': fieldMask,
+        if (androidPackage != null) 'X-Android-Package': androidPackage!,
+        if (androidCertSha1 != null) 'X-Android-Cert': androidCertSha1!,
       };
+
+  /// True identity of the running app this request is sent with, for
+  /// diagnostics only — never affects the request itself.
+  String get _identityDebugDescription =>
+      (androidPackage != null && androidCertSha1 != null)
+          ? '$androidPackage / $androidCertSha1'
+          : 'NO X-Android-* headers (identity not resolved yet)';
 
   Future<Map<String, dynamic>> _send(
       Future<http.Response> Function() request) async {
@@ -271,12 +296,19 @@ class GooglePlacesSearchProvider implements SearchProvider {
           'Places quota exceeded', statusCode: status);
     }
     if (status == 401 || status == 403) {
+      final detail = _describeGoogleError(response.body);
+      // ignore: avoid_print
+      print('[CairoDrive] Places auth rejected (HTTP $status): $detail. '
+          'Request sent as: $_identityDebugDescription.');
       throw SearchFailure(SearchFailureKind.auth,
-          'Places rejected the API key', statusCode: status);
+          'Places rejected the API key: $detail', statusCode: status);
     }
     if (status < 200 || status >= 300) {
+      final detail = _describeGoogleError(response.body);
+      // ignore: avoid_print
+      print('[CairoDrive] Places returned HTTP $status: $detail');
       throw SearchFailure(SearchFailureKind.http,
-          'Places returned HTTP $status', statusCode: status);
+          'Places returned HTTP $status: $detail', statusCode: status);
     }
 
     try {
@@ -290,6 +322,43 @@ class GooglePlacesSearchProvider implements SearchProvider {
       throw SearchFailure(
           SearchFailureKind.malformed, 'Invalid JSON: ${e.message}');
     }
+  }
+
+  /// Extracts the actual reason from Google's error body, e.g.
+  /// `PERMISSION_DENIED — API_KEY_ANDROID_APP_BLOCKED — <human message>`,
+  /// instead of the generic "rejected the API key" every 401/403 used to
+  /// collapse to. Google's shape:
+  ///   {"error": {"code":403, "message":"...", "status":"PERMISSION_DENIED",
+  ///              "details":[{"reason":"API_KEY_ANDROID_APP_BLOCKED", ...}]}}
+  /// Falls back to a short body excerpt if the shape doesn't match, since an
+  /// unparsed body is still more useful for debugging than nothing.
+  static String _describeGoogleError(String body) {
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map && decoded['error'] is Map) {
+        final err = decoded['error'] as Map;
+        String? reason;
+        final details = err['details'];
+        if (details is List) {
+          for (final d in details) {
+            if (d is Map && d['reason'] is String) {
+              reason = d['reason'] as String;
+              break;
+            }
+          }
+        }
+        final parts = <String>[
+          if (err['status'] is String) err['status'] as String,
+          if (reason != null) reason,
+          if (err['message'] is String) err['message'] as String,
+        ];
+        if (parts.isNotEmpty) return parts.join(' — ');
+      }
+    } catch (_) {
+      // fall through to the raw-body fallback below
+    }
+    final excerpt = body.length > 200 ? '${body.substring(0, 200)}…' : body;
+    return excerpt.isEmpty ? '(empty response body)' : excerpt;
   }
 
   /// Reads `{"field": {"text": "..."}}` or a bare `{"field": "..."}`.
