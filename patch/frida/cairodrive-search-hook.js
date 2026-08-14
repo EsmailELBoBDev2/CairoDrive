@@ -111,14 +111,20 @@ function inferLang(q) {
     if ((c>=0x0600&&c<=0x06ff)||(c>=0x0750&&c<=0x077f)||(c>=0xfb50&&c<=0xfdff)||(c>=0xfe70&&c<=0xfeff)) return 'ar'; }
   return 'en';
 }
-// An Android-app-restricted GOOGLE_PLACES_API_KEY requires the raw HTTP request
-// to assert the app identity the key is registered to (the Google Maps Android
-// SDK adds these automatically; a raw fetch must add them). Live CI testing
-// showed this key is Android-restricted (API_KEY_ANDROID_APP_BLOCKED). When the
-// hook runs INSIDE com.generalmagic.magicearth, use that package + the running
-// app's signing-cert SHA-1.
+// An Android-app-restricted GOOGLE_PLACES_API_KEY requires the request to assert
+// the app identity the key is registered for. The Google Maps Android SDK adds
+// X-Android-Package/X-Android-Cert automatically from the running app; because
+// this hook issues a RAW HTTP request, it must add them itself. These are the
+// TRUE identity of the app the hook runs inside — NOT a spoof: on-device, this
+// process really is com.generalmagic.magicearth signed with the cert below.
+//
+// The default cert is the MODIFIED dev build's signing cert (what you install in
+// Mode 2). If you instead attach to the ORIGINAL unmodified app on a rooted
+// device (Mode 1), set ANDROID_CERT_SHA1 to the original cert
+// 3705BA93D86F9566CDB440977E65C8DF660514AE. Either way, the GOOGLE_PLACES_API_KEY
+// must be configured in Google Cloud to allow the matching (package, SHA-1).
 const ANDROID_PACKAGE = 'com.generalmagic.magicearth';
-const ANDROID_CERT_SHA1 = '3705BA93D86F9566CDB440977E65C8DF660514AE'; // original app cert
+const ANDROID_CERT_SHA1 = '5D08264B44E0E53FBCCC70B4F016474CC6C5AB5C'; // modified dev build cert
 function googleHeaders(extra) {
   return Object.assign({
     'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY,

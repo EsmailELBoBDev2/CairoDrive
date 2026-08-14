@@ -34,11 +34,11 @@ jobs:
         env:
           # The value is masked by Actions and is never printed by the script.
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
-          # An Android-app-restricted key needs the caller to assert the app
-          # identity it is registered to. These are the ORIGINAL Magic Earth
-          # identity (public, derived from the APK cert) — supplied so the probe
-          # can satisfy a key restricted to the original app. If the key is
-          # registered to a different app, override these two values.
-          ANDROID_PACKAGE: com.generalmagic.magicearth
-          ANDROID_CERT_SHA1: 3705BA93D86F9566CDB440977E65C8DF660514AE
+          # NO X-Android-* identity is asserted here. CI is not the Android app,
+          # so asserting the app's identity from CI would be spoofing — which is
+          # explicitly out of scope. This job is therefore a REACHABILITY /
+          # request-shape check only: it confirms the key is present and the
+          # Places (New) endpoint accepts our request format. It CANNOT return
+          # live coordinates for an Android-restricted key, and is not a
+          # substitute for the on-device test (see RUNTIME-DEVICE-RUNBOOK.md).
         run: node patch/live-probe/google_places_live.mjs
