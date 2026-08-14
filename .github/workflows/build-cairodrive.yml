@@ -2,10 +2,10 @@ name: Build CairoDrive
 
 on:
   push:
-    branches: [MagicEearth, "claude/**"]
+    branches: ["claude/**"]
     paths-ignore: ["**/*.md", "reports/**"]
   pull_request:
-    branches: [MagicEearth]
+    branches: ["claude/**"]
   workflow_dispatch:
     inputs:
       build_type:
