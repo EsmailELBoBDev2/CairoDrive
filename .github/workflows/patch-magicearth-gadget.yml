@@ -97,7 +97,10 @@ jobs:
       - name: Merge splits into one installable APK
         run: |
           set -euo pipefail
-          java -jar APKEditor.jar m -d splits -o merged.apk
+          echo "=== Checking APKEditor help ==="
+          java -jar APKEditor.jar m --help 2>&1 || java -jar APKEditor.jar m -h 2>&1 || java -jar APKEditor.jar 2>&1 | head -50
+          echo "=== Attempting merge ==="
+          java -jar APKEditor.jar m --input splits --output merged.apk
           ls -la merged.apk
 
       - name: Embed Frida gadget (search hook, autoload script mode)
