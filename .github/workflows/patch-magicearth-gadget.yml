@@ -1,0 +1,134 @@
+name: Patch Magic Earth with search hook (Frida gadget)
+
+# Manual trigger ONLY — never on push/PR. This build produces a repackaged,
+# re-signed copy of a real third-party commercial app (Magic Earth). Even a
+# private repo should not do this automatically on every push; it should only
+# ever happen when someone deliberately clicks "Run workflow".
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  # First, and only, check that actually matters: this must never produce a
+  # public download of a repackaged copy of someone else's app. "We'll make
+  # the repo private later" does not close that window — if this job runs
+  # while the repo is still public, the output artifact is public the moment
+  # the run finishes, regardless of what happens afterward. So this checks
+  # the repo's REAL visibility via the API, not a promise about future state.
+  guard-private:
+    name: Refuse to run on a public repository
+    runs-on: ubuntu-latest
+    outputs:
+      is_private: ${{ steps.check.outputs.is_private }}
+    steps:
+      - name: Check repository visibility
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          IS_PRIVATE=$(gh api "repos/${{ github.repository }}" --jq '.private')
+          echo "is_private=${IS_PRIVATE}" >> "$GITHUB_OUTPUT"
+          if [ "$IS_PRIVATE" != "true" ]; then
+            echo "::error::This repository is PUBLIC. Refusing to build a repackaged" \
+                 "copy of Magic Earth here — the output artifact would be" \
+                 "downloadable by anyone on GitHub the moment this run finishes." \
+                 "Make the repository private first (Settings > General > Danger" \
+                 "Zone > Change visibility), THEN re-run this workflow."
+            exit 1
+          fi
+          echo "Repository is private — proceeding."
+
+  build:
+    name: Merge splits, embed gadget, patch
+    needs: guard-private
+    if: needs.guard-private.outputs.is_private == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install objection
+        run: pip install objection
+
+      - name: Fetch APKEditor
+        run: |
+          set -euo pipefail
+          curl -sSL --retry 3 -o APKEditor.jar \
+            "$(gh api repos/REAndroid/APKEditor/releases/latest --jq '.assets[] | select(.name | endswith(".jar")) | .browser_download_url' | head -1)"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # The original artifact set (a .7z-split APKMirror .apkm bundle of the
+      # real Magic Earth app) already lives in this repo's root — see
+      # reports/original-archive-checksums.txt for its recorded hashes.
+      - name: Reassemble the original Magic Earth .apkm
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq p7zip-full
+          mkdir -p original
+          # 7-Zip's -o output-dir switch MUST be glued to the path (no space).
+          # "7z x -o original" -> "Command line error: Too short switch: -o"
+          # (exit 7). This was the real cause of the earlier failed runs — it
+          # died here, never reaching APKEditor.
+          7z x -y -ooriginal CairoDrive.7z.001
+          APKM=$(find original -iname '*.apkm' | head -1)
+          echo "APKM: $APKM"
+          echo "APKM=$APKM" >> "$GITHUB_ENV"
+
+      - name: Merge splits into one installable APK
+        run: |
+          set -euo pipefail
+          # APKEditor's 'm' takes the .apkm bundle DIRECTLY (auto-detected);
+          # -i input, -o output, -f force. Single-dash flags only (no GNU --).
+          java -jar APKEditor.jar m -i "$APKM" -o merged.apk -f
+          ls -la merged.apk
+
+      - name: Install apktool (objection shells out to it)
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y -qq apktool
+
+      - name: Embed Frida gadget (search hook, autoload script mode)
+        run: |
+          set -euo pipefail
+          # --skip-resources: Magic Earth is a ~150MB commercial Flutter app;
+          # apktool's full resource recompile routinely fails on apps this size.
+          # Manifest is still patched (INTERNET perm, extractNativeLibs,
+          # loadLibrary), so the gadget still loads. objection re-signs (v2+).
+          objection patchapk \
+            --source merged.apk \
+            --architecture arm64-v8a \
+            --gadget-config patch/gadget-config.json \
+            -l patch/frida/cairodrive-search-hook.js \
+            --skip-resources
+          ls -la merged.objection.apk
+
+      - name: Sanity check — confirm this is Magic Earth, re-signed, not a fresh app
+        run: |
+          set -euo pipefail
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$BUILD_TOOLS" ]; then
+            "$BUILD_TOOLS/aapt2" dump packagename merged.objection.apk
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: magicearth-search-hook-patched
+          path: merged.objection.apk
+          if-no-files-found: error
+          # Short retention on purpose: this is a personal-use build artifact,
+          # not something meant to sit around indefinitely even on a private repo.
+          retention-days: 7

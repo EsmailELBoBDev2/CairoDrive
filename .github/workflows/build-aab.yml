@@ -2,10 +2,10 @@ name: Build Android App Bundle (AAB)
 
 on:
   push:
-    branches: ["claude/**"]
+    branches: [MagicEearth]
     paths-ignore: ["**/*.md", "reports/**"]
   pull_request:
-    branches: ["claude/**"]
+    branches: [MagicEearth]
   workflow_dispatch:
     inputs:
       build_type:
@@ -22,8 +22,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Fast, hermetic gate. Runs on every push and needs no secrets at all, so the
-  # search layer is verified even on forks.
   search-layer-tests:
     name: Search layer (unit tests)
     runs-on: ubuntu-latest
@@ -50,8 +48,6 @@ jobs:
     name: Build signed AAB
     runs-on: ubuntu-latest
     needs: search-layer-tests
-    # Job-level env can read `secrets`; a step's own `env:` block is not
-    # visible to that step's `if:`, so the presence flag is computed here.
     env:
       HAS_KEYSTORE: ${{ secrets.CAIRODRIVE_KEYSTORE_BASE64 != '' && 'true' || 'false' }}
     steps:
@@ -64,6 +60,14 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
+          # Pinned deliberately. app/android/settings.gradle.kts does
+          # includeBuild() on the installed SDK's Gradle tooling, so Flutter's
+          # AGP/Gradle/KGP floors are compiled from whatever version CI happens
+          # to install. Those floors moved (Gradle 8.3.0 -> 8.7.0 -> 8.14.0)
+          # across recent stables, and the AGP 8.13.2 / Gradle 8.14.3 pins this
+          # project needs sit only just above the 3.47.0 floors. Leaving this on
+          # a floating `stable` is precisely what would silently re-break it.
+          flutter-version: "3.47.0"
           channel: stable
           cache: true
 
@@ -79,8 +83,6 @@ jobs:
         working-directory: app
         run: flutter test
 
-      # The keystore only ever exists on disk inside this job, and is removed
-      # by the always() cleanup step below.
       - name: Reconstruct signing keystore
         if: env.HAS_KEYSTORE == 'true'
         env:
@@ -90,24 +92,17 @@ jobs:
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          # No `set -x` anywhere in this job: it would echo secret values.
-          # Strip any whitespace/newlines the secret may carry before decoding.
           printf '%s' "$KEYSTORE_B64" | tr -d '[:space:]' | base64 -d \
             > "${RUNNER_TEMP}/cairodrive.jks"
           if [ ! -s "${RUNNER_TEMP}/cairodrive.jks" ]; then
             echo "::error::Decoded keystore is empty — check CAIRODRIVE_KEYSTORE_BASE64"
             exit 1
           fi
-          # Fail early with a clear message if the alias/password do not match,
-          # rather than deep inside the Gradle signing task. keytool prints the
-          # store contents, never the password.
           if ! keytool -list -keystore "${RUNNER_TEMP}/cairodrive.jks" \
                  -alias "$KEY_ALIAS" -storepass "$STORE_PASSWORD" > /dev/null 2>&1; then
             echo "::error::Keystore opened but alias '$KEY_ALIAS' or the store password did not match"
             exit 1
           fi
-          # key.properties is written outside the workspace-tracked paths and
-          # is git-ignored regardless.
           {
             echo "storeFile=${RUNNER_TEMP}/cairodrive.jks"
             echo "storePassword=${STORE_PASSWORD}"
@@ -140,22 +135,35 @@ jobs:
         run: |
           set -euo pipefail
           AAB=$(find app/build/app/outputs/bundle -name '*.aab' | head -1)
-          echo "AAB: $AAB"
-          # AAB signature verification using bundletool
-          if ! command -v bundletool &> /dev/null; then
-            # Download bundletool if not available
-            wget -q https://github.com/google/bundletool/releases/latest/download/bundletool-all.jar -O /tmp/bundletool.jar
-            BUNDLETOOL="/tmp/bundletool.jar"
-          else
-            BUNDLETOOL="bundletool"
+          if [ -z "$AAB" ]; then
+            echo "::error::No .aab was produced"
+            exit 1
           fi
-          echo "Bundletool: $BUNDLETOOL"
+          echo "AAB: $AAB ($(numfmt --to=iec "$(stat -c%s "$AAB")"))"
+
+          # An AAB is JAR-signed, not signed with the APK Signature Scheme, so
+          # apksigner cannot read it — jarsigner is the correct verifier.
+          jarsigner -verify -verbose:summary -certs "$AAB" | tee /tmp/aab-sig.txt
+          if ! grep -q 'jar verified' /tmp/aab-sig.txt; then
+            echo "::error::AAB signature did not verify"
+            exit 1
+          fi
+
+          # app/build.gradle.kts falls back to the DEBUG signing config when no
+          # release keystore is present. That fallback is deliberate (a keyless
+          # run still yields an artifact), but it must never pass silently as a
+          # release build, so assert the signer is not the debug certificate
+          # whenever a release keystore was supplied.
+          if [ "$HAS_KEYSTORE" = "true" ] && grep -q 'CN=Android Debug' /tmp/aab-sig.txt; then
+            echo "::error::AAB is debug-signed even though a release keystore is configured"
+            exit 1
+          fi
+          echo "Signature verified."
 
       - name: Confirm no secrets leaked into the artifact
         run: |
           set -euo pipefail
           AAB=$(find app/build/app/outputs/bundle -name '*.aab' | head -1)
-          # Extract and check for signing material
           if unzip -l "$AAB" | grep -qiE '\.(jks|keystore)$|key\.properties'; then
             echo "::error::Signing material found inside the AAB"
             exit 1
@@ -166,25 +174,34 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cairodrive-aab
-          path: app/build/app/outputs/bundle/release/app-release.aab
+          # Globbed, not hardcoded to release/: a debug run writes
+          # bundle/debug/app-debug.aab, which a release-only path would miss and
+          # then fail on if-no-files-found: error.
+          path: app/build/app/outputs/bundle/*/*.aab
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
 
-      - name: Generate build info
+      - name: Generate build summary
         if: always()
         run: |
           set -euo pipefail
-          AAB=$(find app/build/app/outputs/bundle -name '*.aab' 2>/dev/null || echo "Not found")
-          if [ "$AAB" != "Not found" ]; then
-            echo "## AAB Build Summary" >> $GITHUB_STEP_SUMMARY
+          # `find` exits 0 when it matches nothing, so the previous
+          # `|| echo "Not found"` fallback never fired and left AAB empty —
+          # which then passed a `!= "Not found"` guard and blew up in stat.
+          # Test the variable itself instead.
+          AAB=$(find app/build/app/outputs/bundle -name '*.aab' 2>/dev/null | head -1 || true)
+          if [ -n "$AAB" ] && [ -f "$AAB" ]; then
+            echo "## ✅ AAB Build Successful" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "- **File**: $(basename "$AAB")" >> $GITHUB_STEP_SUMMARY
-            echo "- **Size**: $(numfmt --to=iec $(stat -c%s "$AAB"))" >> $GITHUB_STEP_SUMMARY
-            echo "- **Build Type**: ${{ inputs.build_type || 'release' }}" >> $GITHUB_STEP_SUMMARY
-            echo "- **Artifact**: cairodrive-aab" >> $GITHUB_STEP_SUMMARY
+            echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| File | $(basename "$AAB") |" >> $GITHUB_STEP_SUMMARY
+            echo "| Size | $(numfmt --to=iec $(stat -c%s "$AAB")) |" >> $GITHUB_STEP_SUMMARY
+            echo "| Build Type | ${{ inputs.build_type || 'release' }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Artifact | cairodrive-aab |" >> $GITHUB_STEP_SUMMARY
+            echo "| Search | Google Places API (Primary) + MagicLane (Fallback) |" >> $GITHUB_STEP_SUMMARY
           fi
 
-      # Runs even when earlier steps fail, so signing material never survives.
       - name: Clean up signing material
         if: always()
         run: |

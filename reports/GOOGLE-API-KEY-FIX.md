@@ -1,9 +1,27 @@
 # GOOGLE-API-KEY-FIX.md
 
-The Google Places request is rejected with `API_KEY_ANDROID_APP_BLOCKED`. This is
-a **Google Cloud configuration** issue, not a code issue, and the fix is applied
-in **your** Google Cloud Console — I have no access to it. This document states
-exactly what to change and why. Nothing here bypasses or weakens the restriction.
+**Update:** the CairoDrive app itself had a real bug that made this rejection
+happen unconditionally, independent of anything below. `GooglePlacesSearchProvider`
+issued raw HTTP requests to the Places API without ever sending
+`X-Android-Package` / `X-Android-Cert` — the headers an Android-app-restricted
+key checks on every call. The Places SDK adds them automatically; a raw
+`package:http` call must add them itself, or the key rejects the request as
+unidentified no matter what is allow-listed in Cloud Console.
+
+That's fixed: the app now reads its own true package name + signing-cert SHA-1
+from `PackageManager` at runtime (`AppIdentity.kt` / `app_identity.dart` — never
+hardcoded, since the cert differs between a local debug build and the CI-signed
+release build) and attaches them to every Places request. It also logs the
+*actual* Google rejection reason (e.g. `PERMISSION_DENIED — API_KEY_ANDROID_APP_BLOCKED`)
+via `print`, visible in `adb logcat`, instead of the generic "rejected the API
+key" that used to hide it. On startup it also logs the resolved
+`package=... certSha1=...` pair directly, so it can be copy-pasted into Cloud
+Console without decompiling anything.
+
+The rest of this document — registering that (package, SHA-1) pair as an
+allowed Android app for the key — is still a real, separate step that only you
+can do in Cloud Console. The header fix makes the request identify itself
+correctly; Cloud Console still has to be told that identity is allowed.
 
 ## What the live tests proved (facts)
 

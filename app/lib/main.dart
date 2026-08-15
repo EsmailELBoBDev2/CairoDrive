@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:magiclane_maps_flutter/magiclane_maps_flutter.dart' as gem;
 
 import 'src/config/app_config.dart';
+import 'src/config/app_identity.dart';
 import 'src/engine/engine_ports.dart';
 import 'src/engine/magiclane/magiclane_adapters.dart';
 import 'src/navigation/destination_controller.dart';
@@ -35,6 +36,20 @@ class _CairoDriveAppState extends State<CairoDriveApp> {
     super.initState();
     _wireUp();
     _initialiseEngine();
+    _resolveGoogleIdentity();
+  }
+
+  /// Fills in the app's true (package, signing-cert SHA-1) on the Google
+  /// provider once the platform channel resolves. Fire-and-forget: this is a
+  /// fast local PackageManager call (no network), typically done well before
+  /// the user finishes typing a 2-character query, and every search made
+  /// before it resolves still works — just without the identity headers an
+  /// Android-app-restricted key needs. See AppIdentity for why this exists.
+  Future<void> _resolveGoogleIdentity() async {
+    final identity = await AppIdentity.resolve();
+    if (identity == null) return;
+    _google.androidPackage = identity.androidPackage;
+    _google.androidCertSha1 = identity.certSha1;
   }
 
   /// Composition root — the one place providers and engines are assembled.
