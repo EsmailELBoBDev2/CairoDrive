@@ -3,16 +3,6 @@ name: Patch Magic Earth with search hook (Frida gadget)
 # Manual trigger ONLY — never on push/PR. This build produces a repackaged,
 # re-signed copy of a real third-party commercial app (Magic Earth). It should
 # only ever happen when someone deliberately clicks "Run workflow".
-#
-# WHY THE OUTPUT IS ENCRYPTED, NOT PLAIN:
-# On a public repo, Actions artifacts are downloadable by anyone — so uploading
-# a ready-to-run repackaged copy of someone else's proprietary app would make
-# this repo a public distribution point for it. Instead the build ENCRYPTS the
-# APK (AES-256, symmetric) with a passphrase only the repo owner knows (the
-# ARTIFACT_PASSPHRASE secret) and uploads only that ciphertext. The public
-# artifact is useless without the key; the owner decrypts it locally. This
-# works the same whether the repo is public or private, so there is no
-# visibility gate to satisfy.
 on:
   workflow_dispatch: {}
 
@@ -21,26 +11,9 @@ permissions:
 
 jobs:
   build:
-    name: Merge splits, embed gadget, patch, encrypt
+    name: Merge splits, embed gadget, patch
     runs-on: ubuntu-latest
     steps:
-      # Fail FAST if the passphrase secret is missing, before doing any build
-      # work — we must never fall through to uploading a plaintext APK.
-      - name: Require ARTIFACT_PASSPHRASE secret
-        env:
-          PASS: ${{ secrets.ARTIFACT_PASSPHRASE }}
-        run: |
-          set -euo pipefail
-          if [ -z "${PASS:-}" ]; then
-            echo "::error::The ARTIFACT_PASSPHRASE secret is not set. Add it under" \
-                 "Settings > Secrets and variables > Actions > New repository secret," \
-                 "then re-run. The patched APK is encrypted with it before upload so" \
-                 "nothing usable is ever published; you decrypt the download locally" \
-                 "with the same passphrase."
-            exit 1
-          fi
-          echo "Passphrase secret present — proceeding."
-
       - uses: actions/checkout@v4
         with:
           lfs: false
@@ -122,49 +95,9 @@ jobs:
             fi
           fi
 
-      # Encrypt BEFORE upload. The plaintext merged.objection.apk never leaves
-      # the runner — only the AES-256 ciphertext is uploaded, so the public
-      # artifact is unusable without the owner's passphrase.
-      - name: Encrypt the patched APK (AES-256, symmetric)
-        env:
-          PASS: ${{ secrets.ARTIFACT_PASSPHRASE }}
-        run: |
-          set -euo pipefail
-          gpg --batch --yes --pinentry-mode loopback --passphrase "$PASS" \
-              --symmetric --cipher-algo AES256 \
-              -o magicearth-patched.apk.gpg merged.objection.apk
-          rm -f merged.objection.apk merged.apk    # ensure no plaintext is uploaded
-          ls -la magicearth-patched.apk.gpg
-          sha256sum magicearth-patched.apk.gpg
-
-      - name: Write download + decrypt instructions to the run summary
-        run: |
-          {
-            echo "## Patched Magic Earth — encrypted artifact ready"
-            echo ""
-            echo "1. Download the artifact **magicearth-patched-encrypted** below."
-            echo "2. Decrypt it locally with the passphrase you set as \`ARTIFACT_PASSPHRASE\`:"
-            echo ""
-            echo '   ```bash'
-            echo "   gpg --batch --yes --pinentry-mode loopback --passphrase 'YOUR_PASSPHRASE' \\"
-            echo "       --decrypt --output magicearth-patched.apk magicearth-patched.apk.gpg"
-            echo '   ```'
-            echo ""
-            echo "3. Install and run:"
-            echo ""
-            echo '   ```bash'
-            echo "   adb uninstall com.generalmagic.magicearth   # remove Play Store copy first"
-            echo "   adb install -r magicearth-patched.apk"
-            echo "   adb shell \"echo -n 'YOUR_GOOGLE_PLACES_API_KEY' > /data/local/tmp/gpk\""
-            echo "   adb logcat | grep -i cairodrive"
-            echo '   ```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - uses: actions/upload-artifact@v4
         with:
-          name: magicearth-patched-encrypted
-          path: magicearth-patched.apk.gpg
+          name: magicearth-patched
+          path: merged.objection.apk
           if-no-files-found: error
-          # Short retention on purpose: personal-use build artifact. Even though
-          # it's encrypted, no reason to keep the ciphertext around indefinitely.
           retention-days: 7
