@@ -1,5 +1,38 @@
 # SEARCH-PATCH-DESIGN.md — Google Places into Magic Earth phone search
 
+## Update — request logic completed and verified against a real device
+
+Two real bugs were found and fixed by building the request logic once, testing
+it end-to-end in a throwaway app (CairoDrive) on a real phone, then porting the
+verified fix back into `patch/frida/cairodrive-search-hook.js`:
+
+1. **Missing identity headers.** A raw HTTP call to Places API (New) needs
+   `X-Android-Package` / `X-Android-Cert` — the Maps/Places SDK adds these
+   automatically, a hand-rolled request does not, and an Android-app-restricted
+   key rejects the call outright (403, `API_KEY_ANDROID_APP_BLOCKED`) without
+   them, regardless of Cloud Console config. The hook now resolves the true
+   running identity via `PackageManager` (Java interop, `resolveIdentity()`),
+   the same way as `app/android/.../AppIdentity.kt`.
+2. **`locationBias.circle.radius` over the API's 50000.0 ceiling.** A prior
+   default of 60000 caused every no-GPS-fix query to fail with HTTP 400
+   `INVALID_ARGUMENT`. Fixed at 50000 in `EGYPT.greaterCairoRadiusMeters`.
+
+**Open design question surfaced, not yet resolved:** `SearchRepositoryImpl::
+search` returns `List<Landmark>` synchronously (§1 call graph) — this is not a
+two-phase autocomplete-then-details UI. To preserve that contract, the hook
+now resolves Place Details for up to `TOP_K = 5` predictions per query (not
+lazily on tap), which costs more Google billing than a lazy-details design.
+Confirm on-device whether the real search screen needs every row pre-resolved,
+or whether a lazier seam exists, before treating `TOP_K` as final.
+
+**Still not done — genuinely needs a live device, not just more coding:**
+minting an SDK `Landmark` (Dart-heap object) and delivering it into
+`SearchMenuBloc`'s result stream in place of the original. Request/response
+handling is complete and independently testable via `adb logcat` alone, up to
+a plain JS array of resolved candidates; only that last delivery step needs
+Frida attached to the running app. See "DELIVERY (TODO)" in the hook source.
+
+
 Design for the integration point selected in `SEARCH-AUDIT.md`:
 a runtime hook on `SearchRepositoryImpl::search` at `libapp.so+0x926cc4`, keeping
 the existing search UI, destination model, routing and navigation untouched.
