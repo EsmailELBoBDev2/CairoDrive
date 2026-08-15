@@ -57,13 +57,13 @@ jobs:
       - name: Install objection
         run: pip install objection
 
-      - name: Fetch APKEditor
+      - name: Fetch APKEditor (pinned)
         run: |
           set -euo pipefail
-          curl -sSL --retry 3 -o APKEditor.jar \
-            "$(gh api repos/REAndroid/APKEditor/releases/latest --jq '.assets[] | select(.name | endswith(".jar")) | .browser_download_url' | head -1)"
-        env:
-          GH_TOKEN: ${{ github.token }}
+          curl -fSL --retry 4 -o APKEditor.jar \
+            "https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar"
+          # verify it's really APKEditor (a redirect saved as .jar has no help banner)
+          java -jar APKEditor.jar -h >/dev/null 2>&1 || { echo "::error::APKEditor.jar is not runnable"; exit 1; }
 
       # The original artifact set (a .7z-split APKMirror .apkm bundle of the
       # real Magic Earth app) already lives in this repo's root — see
