@@ -84,12 +84,25 @@ function _tryInitJavaLog() {
     }
   } catch (_) {}
 }
+// Frida 17 removed the old static Module.findExportByName(mod, name). Resolve
+// exports in a version-tolerant way (works on 16.x and 17.x).
+function findExport(moduleName, exportName) {
+  try {
+    if (moduleName) {
+      const m = Process.findModuleByName(moduleName);
+      if (m && typeof m.findExportByName === 'function') { const e = m.findExportByName(exportName); if (e) return e; }
+    }
+    if (typeof Module.findGlobalExportByName === 'function') { const e = Module.findGlobalExportByName(exportName); if (e) return e; }
+    if (typeof Module.getGlobalExportByName === 'function') { try { const e = Module.getGlobalExportByName(exportName); if (e) return e; } catch (_) {} }
+    if (typeof Module.findExportByName === 'function') return Module.findExportByName(moduleName, exportName);
+  } catch (_) {}
+  return null;
+}
 let _alogFn = undefined, _alogTag = null;
 function _nativeLog(msg) {
   try {
     if (_alogFn === undefined) {
-      const p = Module.findExportByName('liblog.so', '__android_log_write')
-             || Module.findExportByName(null, '__android_log_write');
+      const p = findExport('liblog.so', '__android_log_write');
       _alogFn = p ? new NativeFunction(p, 'int', ['int', 'pointer', 'pointer']) : null;
       _alogTag = Memory.allocUtf8String('cairodrive');
     }
@@ -132,8 +145,7 @@ function bytesToPrintable(arrbuf, max) {
 let _lastSearchHandle = null;
 function installCurlHook() {
   try {
-    const setopt = Module.findExportByName('libGEM.so', 'curl_easy_setopt')
-                || Module.findExportByName(null, 'curl_easy_setopt');
+    const setopt = findExport('libGEM.so', 'curl_easy_setopt');
     if (!setopt) {
       log('curl_easy_setopt NOT exported (curl is static in libGEM) — curl hook skipped for now');
       return;
@@ -223,18 +235,23 @@ function moduleContainsString(mod, needle) {
 }
 
 function verifyTarget(mod) {
-  const checks = [];
-  checks.push(['abi', Process.arch === TARGET.abi, `${Process.arch} vs ${TARGET.abi}`]);
+  const abiOk = Process.arch === TARGET.abi;
+  log(`gate abi: ${abiOk ? 'PASS' : 'FAIL'} (${Process.arch} vs ${TARGET.abi})`);
+
   const bid = readGnuBuildId(mod);
-  checks.push(['build-id', bid === TARGET.buildId, `${bid} vs ${TARGET.buildId}`]);
+  const bidMatch = bid === TARGET.buildId;
+  log(`gate build-id: ${bid === null ? 'UNREADABLE (advisory)' : (bidMatch ? 'PASS' : 'MISMATCH')} (${bid} vs ${TARGET.buildId})`);
+
   const hasHash = moduleContainsString(mod, TARGET.snapshotHash);
-  checks.push(['snapshot-hash', hasHash, hasHash ? 'present' : 'absent']);
-  let ok = true;
-  for (const [name, pass, detail] of checks) {
-    log(`gate ${name}: ${pass ? 'PASS' : 'FAIL'} (${detail})`);
-    ok = ok && pass;
-  }
-  return ok;
+  log(`gate snapshot-hash: ${hasHash ? 'PASS' : 'FAIL'} (${hasHash ? 'present' : 'absent'})`);
+
+  // The Dart snapshot hash is the DEFINITIVE identity of this exact libapp.so
+  // build (it embeds the compiler + snapshot version). Require abi + snapshot
+  // hash. build-id is only advisory here: fail the gate solely when we could
+  // actually read a build-id AND it mismatched; a null (unreadable) build-id
+  // must not veto an otherwise-confirmed match.
+  if (bid !== null && !bidMatch) { log('build-id readable but mismatched — refusing to apply offset.'); return false; }
+  return abiOk && hasHash;
 }
 
 // ---- Credential (resolved at attach time; never embedded) ------------------
