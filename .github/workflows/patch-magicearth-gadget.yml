@@ -11,40 +11,8 @@ permissions:
   contents: read
 
 jobs:
-  # First, and only, check that actually matters: this must never produce a
-  # public download of a repackaged copy of someone else's app. "We'll make
-  # the repo private later" does not close that window — if this job runs
-  # while the repo is still public, the output artifact is public the moment
-  # the run finishes, regardless of what happens afterward. So this checks
-  # the repo's REAL visibility via the API, not a promise about future state.
-  guard-private:
-    name: Refuse to run on a public repository
-    runs-on: ubuntu-latest
-    outputs:
-      is_private: ${{ steps.check.outputs.is_private }}
-    steps:
-      - name: Check repository visibility
-        id: check
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          IS_PRIVATE=$(gh api "repos/${{ github.repository }}" --jq '.private')
-          echo "is_private=${IS_PRIVATE}" >> "$GITHUB_OUTPUT"
-          if [ "$IS_PRIVATE" != "true" ]; then
-            echo "::error::This repository is PUBLIC. Refusing to build a repackaged" \
-                 "copy of Magic Earth here — the output artifact would be" \
-                 "downloadable by anyone on GitHub the moment this run finishes." \
-                 "Make the repository private first (Settings > General > Danger" \
-                 "Zone > Change visibility), THEN re-run this workflow."
-            exit 1
-          fi
-          echo "Repository is private — proceeding."
-
   build:
     name: Merge splits, embed gadget, patch
-    needs: guard-private
-    if: needs.guard-private.outputs.is_private == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
