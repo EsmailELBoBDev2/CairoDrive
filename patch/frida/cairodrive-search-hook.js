@@ -406,52 +406,151 @@ function runGoogleSearch(queryText) {
   return results;
 }
 
-// ---- Hook install ------------------------------------------------------
+// ---- Self-contained Dart string scanner (NO Blutter dependency) ------------
+// blutter_frida.js (the ~700KB generated helper the old path needed) is NOT
+// bundled in the gadget, so init/getArg/getTaggedObjectValue are undefined and
+// the query was never read. This scanner reads the query ourselves: given a
+// pointer, it dumps any printable ASCII (OneByteString/Latin-1) or UTF-16LE
+// (TwoByteString) runs in a window of memory. Fully guarded — a bad read never
+// throws out. Returns [{enc,off,text}].
+function scanStrings(p, windowSize) {
+  const found = [];
+  try {
+    if (!p || p.isNull()) return found;
+    const buf = p.readByteArray(windowSize);
+    if (!buf) return found;
+    const u8 = new Uint8Array(buf);
+    let run = '', start = -1;
+    for (let i = 0; i < u8.length; i++) {
+      const c = u8[i];
+      if (c >= 0x20 && c <= 0x7e) { if (!run) start = i; run += String.fromCharCode(c); }
+      else { if (run.length >= 2) found.push({ enc: 'a', off: start, text: run }); run = ''; }
+    }
+    if (run.length >= 2) found.push({ enc: 'a', off: start, text: run });
+    let w = '', wstart = -1;
+    for (let i = 0; i + 1 < u8.length; i += 2) {
+      const lo = u8[i], hi = u8[i + 1];
+      if (hi === 0 && lo >= 0x20 && lo <= 0x7e) { if (!w) wstart = i; w += String.fromCharCode(lo); }
+      else { if (w.length >= 2) found.push({ enc: 'u', off: wstart, text: w }); w = ''; }
+    }
+    if (w.length >= 2) found.push({ enc: 'u', off: wstart, text: w });
+  } catch (_) {}
+  return found;
+}
+
+// Heuristic: does a decoded string look like a user's search query rather than
+// a Dart-internal token (class name / package URI / type name)?
+function looksLikeQuery(s) {
+  if (!s || s.length < 2 || s.length > 120) return false;
+  if (s.indexOf('::') >= 0 || s.indexOf('package:') >= 0 || s.indexOf('dart:') >= 0) return false;
+  if (/^_?[A-Z][A-Za-z0-9]+$/.test(s) && s.indexOf(' ') < 0) return false; // CamelCase identifier
+  if (/^[0-9a-fA-Fx]+$/.test(s)) return false; // hex-ish
+  const printable = s.replace(/[^\x20-\x7e]/g, '').length;
+  return printable / s.length > 0.8;
+}
+
+// Collect string candidates reachable from a register value: the pointee, plus
+// one level of pointer indirection (the arg may be an object whose FIELD is the
+// String). Each candidate is tagged with where it came from.
+function collectCandidates(label, v, out) {
+  try {
+    if (!v || v.isNull()) return;
+    for (const f of scanStrings(v, 256)) out.push({ src: `${label}@+${f.off}${f.enc}`, text: f.text });
+    let base;
+    try { base = v.and(ptr('0xfffffffffffffff8')); } catch (_) { return; }
+    for (let s = 0; s < 16; s++) {
+      let slot;
+      try { slot = base.add(s * 8).readPointer(); } catch (_) { break; }
+      if (!slot || slot.isNull()) continue;
+      for (const f of scanStrings(slot, 160)) out.push({ src: `${label}[+${s * 8}]@+${f.off}${f.enc}`, text: f.text });
+    }
+  } catch (_) {}
+}
+
+let HITS = 0;
+
+// ---- Hook install ----------------------------------------------------------
 function install(mod) {
   const target = mod.base.add(TARGET.offsets.searchRepositoryImplSearch);
   log(`libapp.so base = ${mod.base}  ->  SearchRepositoryImpl::search @ ${target}`);
   Interceptor.attach(target, {
     onEnter(args) {
       try {
-        if (typeof init === 'function') init(this.context); // Blutter helper
+        HITS++;
+        const ctx = this.context;
+        const deep = HITS <= 8; // throttle verbose dumps to the first few hits
+        log(`===== HIT #${HITS}  SearchRepositoryImpl::search =====`);
+
+        // 1) Preferred: Blutter helpers, IF they happen to be present.
         let q = null;
         try {
-          const objPtr = (typeof getArg === 'function') ? getArg(this.context, 1) : null;
+          if (typeof init === 'function') init(ctx);
+          const objPtr = (typeof getArg === 'function') ? getArg(ctx, 1) : null;
           if (objPtr && typeof getTaggedObjectValue === 'function') {
             const [, , value] = getTaggedObjectValue(objPtr);
             q = extractSearchText(value);
+            if (q) log(`blutter path: query="${q}"`);
           }
         } catch (_) {}
-        this.query = q;
-        log('target reached: SearchRepositoryImpl::search  query=' + (q === null ? '(unresolved)' : JSON.stringify(q)));
 
-        if (q) {
-          const googleResults = runGoogleSearch(q);
-          this.googleResults = googleResults;
-          if (googleResults && googleResults.length) {
-            log(`Google candidates ready: ${googleResults.map((r) => r.name).join(', ')}`);
-          } else {
-            log('No usable Google results — original Magic Lane search result stands (fallback)');
+        // 2) Self-contained: scan arg registers + stack for the query text.
+        const cands = [];
+        for (const rn of ['x0','x1','x2','x3','x4','x5','x6','x7','x8']) {
+          let rv; try { rv = ctx[rn]; } catch (_) { continue; }
+          if (!rv || rv.isNull()) continue;
+          if (deep) log(` ${rn}=${rv}`);
+          collectCandidates(rn, rv, cands);
+        }
+        try {
+          const sp = ctx.sp;
+          for (let s = 0; s < 20; s++) {
+            let slot; try { slot = sp.add(s * 8).readPointer(); } catch (_) { continue; }
+            if (!slot || slot.isNull()) continue;
+            collectCandidates(`sp[+${s * 8}]`, slot, cands);
+          }
+        } catch (_) {}
+
+        // Dump every candidate for the first few hits so we can SEE the raw
+        // picture and confirm where the query lives.
+        if (deep) {
+          const seen = {};
+          for (const c of cands) {
+            const key = c.text + '|' + c.src;
+            if (seen[key]) continue; seen[key] = 1;
+            log(`  cand ${c.src}: "${c.text}"${looksLikeQuery(c.text) ? '  <= query-like' : ''}`);
           }
         }
-        // ---- DELIVERY (TODO — needs on-device iteration) ----------------
-        // `this.googleResults` above is a plain JS array of
-        // {placeId, name, address, latitude, longitude, category} — fully
-        // resolved, real coordinates, ready to become Landmarks. What is
-        // NOT done: minting an actual SDK `Landmark` (Landmark.withLatLng)
-        // on the Dart heap and substituting it for this call's return value
-        // /feeding SearchMenuBloc's result stream. That is Dart-heap object
-        // construction through Blutter's tagged-object writer, which cannot
-        // be authored or verified without Frida attached to the live
-        // process — see reports/SEARCH-PATCH-DESIGN.md §5 and
-        // RUNTIME-DEVICE-RUNBOOK.md steps 4-5 for the exact next actions.
+
+        // 3) Rank candidates: prefer query-like, then ones with a space, then
+        //    longer. This is the "try several, rank, pick the best" step.
+        if (!q) {
+          const queryish = cands.map((c) => c.text).filter(looksLikeQuery);
+          queryish.sort((a, b) =>
+            ((b.indexOf(' ') >= 0 ? 1000 : 0) + b.length) - ((a.indexOf(' ') >= 0 ? 1000 : 0) + a.length));
+          if (queryish.length) { q = queryish[0]; log(`picked best candidate query: "${q}"`); }
+        }
+
+        this.query = q;
+        if (!q) { log('no query recovered this hit (see cand dump above)'); return; }
+
+        // 4) Run the Google flow so stages 1-3 are visible end-to-end on-device.
+        const googleResults = runGoogleSearch(q);
+        this.googleResults = googleResults;
+        if (googleResults && googleResults.length) {
+          log(`GOOGLE RESULTS for "${q}":`);
+          googleResults.forEach((r, i) =>
+            log(`  [${i}] ${r.name} @ ${r.latitude},${r.longitude}  (${r.address || 'no addr'})`));
+        } else {
+          log(`no usable Google results for "${q}" (original Magic Lane search stands)`);
+        }
+        // DELIVERY still pending live iteration — this build proves stages 1-3.
       } catch (e) {
         log('onEnter guarded error (original search preserved): ' + e);
       }
     },
-    onLeave(retval) { /* delegation/fallback point — see DELIVERY note above */ },
+    onLeave(retval) { /* delivery/fallback point — pending live iteration */ },
   });
-  log('hook installed; existing search UI and navigation untouched.');
+  log('hook installed (self-contained probe mode).');
 }
 
 function extractSearchText(decoded) {
@@ -465,14 +564,28 @@ function extractSearchText(decoded) {
 
 // ---- Boot ----------------------------------------------------------------
 (function boot() {
+  if (typeof boot.tries === 'undefined') boot.tries = 0;
   const mod = Process.findModuleByName('libapp.so');
-  if (!mod) { setTimeout(boot, 500); return; }
-  log('GOOGLE_PLACES_API_KEY: ' + (GOOGLE_PLACES_API_KEY ? 'present' : 'ABSENT') + ' (value never printed)');
-  if (!verifyTarget(mod)) {
-    log('VERSION GATE FAILED — refusing to apply offset 0x926cc4. Re-run Blutter for this build and update the address table. No hook installed.');
+  if (!mod) {
+    boot.tries++;
+    if (boot.tries === 1 || boot.tries % 10 === 0) log(`waiting for libapp.so… (try ${boot.tries})`);
+    setTimeout(boot, 500);
     return;
   }
-  log('version gate passed; applying offset.');
-  resolveIdentity();
+  log('==================== cairodrive search hook: BOOT ====================');
+  log(`arch=${Process.arch} pointerSize=${Process.pointerSize} pid=${Process.id}`);
+  for (const name of ['libapp.so', 'libGEM.so', 'libflutter.so']) {
+    const m = Process.findModuleByName(name);
+    log(m ? `module ${name}: base=${m.base} size=0x${m.size.toString(16)}` : `module ${name}: NOT LOADED`);
+  }
+  log('GOOGLE_PLACES_API_KEY: ' +
+      (GOOGLE_PLACES_API_KEY ? `present (len=${GOOGLE_PLACES_API_KEY.length})` : 'ABSENT — put it in /data/local/tmp/gpk'));
+  if (!verifyTarget(mod)) {
+    log('VERSION GATE FAILED — not hooking (offset 0x926cc4 may be wrong for this build). See gate lines above.');
+    return;
+  }
+  log('version gate PASSED; resolving identity + installing hook.');
+  try { resolveIdentity(); } catch (e) { log('resolveIdentity error: ' + e); }
   install(mod);
+  log('==================== boot complete; search to trigger ================');
 })();
