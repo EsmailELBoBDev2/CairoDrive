@@ -75,7 +75,19 @@ jobs:
           # `m` reads the .apkm directly (no manual unzip needed) and merges
           # every split into one APK, stripping the split-requirement
           # manifest entries in the process.
-          java -jar APKEditor.jar m -i "$APKM" -o merged.apk -f
+          #
+          # -extractNativeLibs true is REQUIRED here. Without it, APKEditor
+          # writes extractNativeLibs="false" into the merged manifest, which
+          # tells Android to mmap the .so files straight from the APK and so
+          # demands that EVERY native lib be stored uncompressed. That holds
+          # for Magic Earth's own libs, but the next step (objection/apktool
+          # rebuild) re-DEFLATES the three frida-gadget .so files it injects —
+          # breaking the "all stored" contract and making the install die with
+          # `INSTALL_FAILED_INVALID_APK: Failed to extract native libraries,
+          # res=-2`. Setting it true makes the installer extract (decompress)
+          # libs at install time, so the compressed gadget libs are fine.
+          # Verified locally end-to-end against the real archive.
+          java -jar APKEditor.jar m -i "$APKM" -o merged.apk -f -extractNativeLibs true
           ls -lh merged.apk
 
       - name: Install objection's required commands (apktool, adb, zipalign, apksigner)
