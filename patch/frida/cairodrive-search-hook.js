@@ -48,23 +48,119 @@ const TARGET = {
   },
 };
 
-// ---- Logging: mirror every line to Android logcat (tag: cairodrive) --------
-// In autonomous gadget "script" mode nothing consumes console.log, so ALSO
-// write to logcat via __android_log_write (works from any thread, no
-// Java.perform needed). View on device with:  adb logcat -s cairodrive
-let _alogFn = undefined;   // resolved lazily; null if the symbol is unavailable
-let _alogTag = null;
-function _logcat(msg) {
+// ---- Logging: multi-channel so SOMETHING always reaches logcat -------------
+// Prior builds used only __android_log_write (via null-module lookup) + a
+// console.log that goes nowhere in autonomous gadget mode — and produced no
+// visible output. This routes every line through THREE channels:
+//   1) android.util.Log.i (Java) — the canonical path, once the VM is ready
+//   2) __android_log_write resolved explicitly from liblog.so (any thread)
+//   3) console.log (harmless if unconsumed)
+// View on device with:  adb logcat -s cairodrive
+let _JavaLog = null, _javaReady = false;
+const _pending = [];
+function _tryInitJavaLog() {
+  if (_javaReady) return;
+  try {
+    if (typeof Java !== 'undefined' && Java.available) {
+      Java.perform(() => { _JavaLog = Java.use('android.util.Log'); });
+      _javaReady = !!_JavaLog;
+      if (_javaReady) { for (const m of _pending.splice(0)) { try { _JavaLog.i('cairodrive', m); } catch (_) {} } }
+    }
+  } catch (_) {}
+}
+let _alogFn = undefined, _alogTag = null;
+function _nativeLog(msg) {
   try {
     if (_alogFn === undefined) {
-      const p = Module.findExportByName(null, '__android_log_write');
+      const p = Module.findExportByName('liblog.so', '__android_log_write')
+             || Module.findExportByName(null, '__android_log_write');
       _alogFn = p ? new NativeFunction(p, 'int', ['int', 'pointer', 'pointer']) : null;
       _alogTag = Memory.allocUtf8String('cairodrive');
     }
-    if (_alogFn) _alogFn(4 /* ANDROID_LOG_INFO */, _alogTag, Memory.allocUtf8String(msg));
+    if (_alogFn) _alogFn(4 /* INFO */, _alogTag, Memory.allocUtf8String(msg));
   } catch (_) {}
 }
-function log(m) { const s = '[cairodrive] ' + m; console.log(s); _logcat(s); }
+function log(m) {
+  const s = '[cairodrive] ' + m;
+  try { console.log(s); } catch (_) {}
+  _nativeLog(s);
+  if (!_javaReady) _tryInitJavaLog();
+  if (_javaReady && _JavaLog) { try { _JavaLog.i('cairodrive', String(m)); } catch (_) {} }
+  else { _pending.push(String(m)); }
+}
+
+// A loud "the script is actually executing" beacon, retried on a timer until
+// the Java VM is up so it fires even if we loaded before ART was ready.
+function beacon(n) {
+  log(`>>> SCRIPT ALIVE beacon #${n} (javaReady=${_javaReady}) <<<`);
+  if (n < 6) setTimeout(() => beacon(n + 1), 800);
+}
+
+function bytesToPrintable(arrbuf, max) {
+  try {
+    const u8 = new Uint8Array(arrbuf);
+    let s = '';
+    for (let i = 0; i < u8.length && i < (max || 256); i++) {
+      const c = u8[i];
+      s += (c >= 0x20 && c <= 0x7e) ? String.fromCharCode(c) : '.';
+    }
+    return s;
+  } catch (_) { return '(unreadable)'; }
+}
+
+// ---- libGEM native curl hook: capture the search request + response --------
+// Search is ONLINE (…/search_maps7 via libGEM's CurlHttpEngine). Hooking curl
+// gives us BOTH the query (POST body) and the result wire format (response),
+// with no Dart-object construction needed. curl is often statically linked
+// into libGEM, so the symbol may not be exported — handled gracefully.
+let _lastSearchHandle = null;
+function installCurlHook() {
+  try {
+    const setopt = Module.findExportByName('libGEM.so', 'curl_easy_setopt')
+                || Module.findExportByName(null, 'curl_easy_setopt');
+    if (!setopt) {
+      log('curl_easy_setopt NOT exported (curl is static in libGEM) — curl hook skipped for now');
+      return;
+    }
+    log('curl_easy_setopt @ ' + setopt + ' — hooking to capture search traffic');
+    const CURLOPT_URL = 10002, CURLOPT_POSTFIELDS = 10015, CURLOPT_WRITEFUNCTION = 20011;
+    const seenCb = {};
+    Interceptor.attach(setopt, {
+      onEnter(args) {
+        try {
+          const handle = args[0];
+          const opt = args[1].toInt32();
+          if (opt === CURLOPT_URL) {
+            const url = args[2].readCString();
+            if (url && url.indexOf('search') >= 0) {
+              log('CURL search URL: ' + url + '  [handle ' + handle + ']');
+              _lastSearchHandle = handle.toString();
+            }
+          } else if (opt === CURLOPT_POSTFIELDS) {
+            try { const body = args[2].readCString(); if (body) log('CURL POST body: ' + body.slice(0, 500)); } catch (_) {}
+          } else if (opt === CURLOPT_WRITEFUNCTION) {
+            const cb = args[2];
+            const key = cb.toString();
+            if (!seenCb[key]) {
+              seenCb[key] = 1;
+              Interceptor.attach(cb, {
+                onEnter(a) { this.p = a[0]; this.n = a[1].toInt32() * a[2].toInt32(); },
+                onLeave() {
+                  try {
+                    if (this.n > 0 && this.n <= 2048) {
+                      const buf = this.p.readByteArray(Math.min(this.n, 400));
+                      log(`CURL resp ${this.n}B: ${bytesToPrintable(buf, 400)}`);
+                    }
+                  } catch (_) {}
+                }
+              });
+            }
+          }
+        } catch (_) {}
+      }
+    });
+  } catch (e) { log('installCurlHook error: ' + e); }
+}
 
 // ---- Version gate ----------------------------------------------------------
 // Reads the GNU build-id note straight from the mapped ELF, so it works before
@@ -563,13 +659,20 @@ function extractSearchText(decoded) {
 }
 
 // ---- Boot ----------------------------------------------------------------
-(function boot() {
-  if (typeof boot.tries === 'undefined') boot.tries = 0;
+// Fire the alive beacon + install the curl hook IMMEDIATELY (these don't need
+// libapp.so). If we see the beacon but not the Dart-hook logs, we know the
+// script runs and logging works, and can focus on the search path.
+log('script loaded — starting beacon + curl hook');
+beacon(1);
+try { installCurlHook(); } catch (e) { log('curl hook boot error: ' + e); }
+
+(function bootDart() {
+  if (typeof bootDart.tries === 'undefined') bootDart.tries = 0;
   const mod = Process.findModuleByName('libapp.so');
   if (!mod) {
-    boot.tries++;
-    if (boot.tries === 1 || boot.tries % 10 === 0) log(`waiting for libapp.so… (try ${boot.tries})`);
-    setTimeout(boot, 500);
+    bootDart.tries++;
+    if (bootDart.tries === 1 || bootDart.tries % 10 === 0) log(`waiting for libapp.so… (try ${bootDart.tries})`);
+    setTimeout(bootDart, 500);
     return;
   }
   log('==================== cairodrive search hook: BOOT ====================');
