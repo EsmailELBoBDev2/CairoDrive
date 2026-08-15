@@ -57,10 +57,25 @@ jobs:
           cp "$BASE_APK" merged.apk
           ls -lh merged.apk
 
-      - name: Install apktool (objection shells out to it)
+      - name: Install objection's required commands (apktool, adb, zipalign, apksigner)
         run: |
           set -euo pipefail
-          sudo apt-get install -y -qq apktool
+          sudo apt-get install -y -qq apktool adb
+          # objection's startup check does a blanket `shutil.which()` presence
+          # test on aapt/adb/apksigner/apktool/zipalign before it will run at
+          # all (objection/utils/patchers/base.py) — none of these are actually
+          # invoked against a device here (we pass --architecture explicitly),
+          # they just need to resolve on PATH.
+          #
+          # zipalign/apksigner ship with the Android SDK build-tools, which
+          # ubuntu-latest runners preinstall under $ANDROID_HOME but do NOT put
+          # on PATH (only ANDROID_HOME/ANDROID_SDK_ROOT are set) — same reason
+          # the sanity-check step below resolves aapt2 by hand instead of
+          # calling it bare. Add the newest installed build-tools dir to PATH
+          # for the rest of this job.
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
+          echo "Using build-tools: $BUILD_TOOLS"
+          echo "$BUILD_TOOLS" >> "$GITHUB_PATH"
 
       - name: Embed Frida gadget (search hook, autoload script mode)
         run: |
