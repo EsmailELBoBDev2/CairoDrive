@@ -48,7 +48,23 @@ const TARGET = {
   },
 };
 
-function log(m) { console.log('[cairodrive] ' + m); }
+// ---- Logging: mirror every line to Android logcat (tag: cairodrive) --------
+// In autonomous gadget "script" mode nothing consumes console.log, so ALSO
+// write to logcat via __android_log_write (works from any thread, no
+// Java.perform needed). View on device with:  adb logcat -s cairodrive
+let _alogFn = undefined;   // resolved lazily; null if the symbol is unavailable
+let _alogTag = null;
+function _logcat(msg) {
+  try {
+    if (_alogFn === undefined) {
+      const p = Module.findExportByName(null, '__android_log_write');
+      _alogFn = p ? new NativeFunction(p, 'int', ['int', 'pointer', 'pointer']) : null;
+      _alogTag = Memory.allocUtf8String('cairodrive');
+    }
+    if (_alogFn) _alogFn(4 /* ANDROID_LOG_INFO */, _alogTag, Memory.allocUtf8String(msg));
+  } catch (_) {}
+}
+function log(m) { const s = '[cairodrive] ' + m; console.log(s); _logcat(s); }
 
 // ---- Version gate ----------------------------------------------------------
 // Reads the GNU build-id note straight from the mapped ELF, so it works before
