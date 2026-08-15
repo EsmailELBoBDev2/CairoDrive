@@ -612,21 +612,39 @@ function _printableRatio(s) {
   }
   return ok / s.length;
 }
-// Decode a Dart String at an UNTAGGED heap address. Tries OneByte + TwoByte.
+function _clean(s) {
+  if (!s) return s;
+  // strip leading/trailing null + control bytes (padding / adjacent header)
+  let a = 0, b = s.length;
+  while (a < b && s.charCodeAt(a) < 0x20) a++;
+  while (b > a && s.charCodeAt(b - 1) < 0x20) b--;
+  return s.slice(a, b);
+}
+// Decode a Dart String at an UNTAGGED heap address. On-device this build keeps
+// OneByte char data at +0x10 (not +0xC), so try BOTH offsets and both widths,
+// strip null padding, and keep the cleanest/longest printable result.
 function decodeStringAt(objBase) {
   try {
-    const len = objBase.add(8).readU32() >> 1; // length Smi
-    if (len <= 0 || len > 2000) return null;
-    let one = null, two = null;
-    try {
-      const b = objBase.add(0xC).readByteArray(len);
-      if (b) { const u8 = new Uint8Array(b); let s = ''; for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]); one = s; }
-    } catch (_) {}
-    try { let s = ''; for (let i = 0; i < len; i++) s += String.fromCharCode(objBase.add(0xC + 2 * i).readU16()); two = s; } catch (_) {}
-    const po = _printableRatio(one), pt = _printableRatio(two);
-    if (po >= 0.85 && po >= pt) return { kind: '1', text: one, len };
-    if (pt >= 0.85) return { kind: '2', text: two, len };
-    return null;
+    const len = objBase.add(8).readU32() >> 1; // length Smi (approximate)
+    if (len <= 0 || len > 4000) return null;
+    let best = null;
+    for (const off of [0x10, 0xC]) {
+      try {
+        const b = objBase.add(off).readByteArray(len);
+        if (b) {
+          const u8 = new Uint8Array(b); let s = '';
+          for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+          const c = _clean(s);
+          if (c.length >= 1) { const pr = _printableRatio(c); if (pr >= 0.85 && (!best || c.length > best.text.length)) best = { kind: '1', text: c, off, len, pr }; }
+        }
+      } catch (_) {}
+      try {
+        let s = ''; for (let i = 0; i < len; i++) s += String.fromCharCode(objBase.add(off + 2 * i).readU16());
+        const c = _clean(s);
+        if (c.length >= 1) { const pr = _printableRatio(c); if (pr >= 0.85 && (!best || c.length > best.text.length)) best = { kind: '2', text: c, off, len, pr }; }
+      } catch (_) {}
+    }
+    return best;
   } catch (_) { return null; }
 }
 // Given a raw register/tagged value, dump the object's class id, try to decode
@@ -681,12 +699,18 @@ function install(mod) {
           log(` ${rn}=${rv}`);
           dumpDartObject(rn, rv, heapBase, found);
         }
-        // Report every decoded string so we can see exactly where the typed
-        // query lives (search a KNOWN word to spot it).
-        const uniq = {};
-        for (const f of found) { if (!uniq[f.text]) { uniq[f.text] = f.src; } }
-        log(`  -- decoded strings this hit: ${Object.keys(uniq).length} --`);
-        this.query = null;
+        // Pick the recovered query: the longest decoded string that is not a
+        // Dart toString ("Instance of ...") and looks like typed text.
+        let query = null, querySrc = null;
+        for (const f of found) {
+          const t = f.text;
+          if (!t || t.length < 2) continue;
+          if (t.indexOf('Instance of') >= 0 || t.indexOf('package:') >= 0) continue;
+          if (!query || t.length > query.length) { query = t; querySrc = f.src; }
+        }
+        if (query) log(`  >>> RECOVERED QUERY [${querySrc}] = ${JSON.stringify(query)}`);
+        else log('  >>> no query recovered this hit');
+        this.query = query;
         // Google call intentionally DISABLED this iteration: it crashed with
         // NetworkOnMainThreadException (ran on the UI thread) and we need the
         // correct query first. Next step wires networking off-thread.
