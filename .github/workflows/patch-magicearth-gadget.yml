@@ -95,7 +95,10 @@ jobs:
             echo "::warning::No recorded base.apk hash to compare against"
 
       - name: Merge splits into one installable APK
-        run: java -jar APKEditor.jar m -i splits -o merged.apk
+        run: |
+          set -euo pipefail
+          java -jar APKEditor.jar m -d splits -o merged.apk
+          ls -la merged.apk
 
       - name: Embed Frida gadget (search hook, autoload script mode)
         run: |
