@@ -128,6 +128,18 @@ class GooglePlacesSearchProvider implements SearchProvider {
     final origin = query.origin;
     final language = query.languageCode ?? EgyptRegion.inferLanguageCode(query.text);
 
+    // Places API (New) Autocomplete hard-rejects locationBias.circle.radius
+    // outside [0.0, 50000.0] with HTTP 400 INVALID_ARGUMENT. Clamped here,
+    // at the request boundary, rather than trusting every value that reaches
+    // this point to already be in range — SearchQuery.biasRadiusMeters is
+    // caller-supplied and defaults to exactly the limit, so any caller
+    // raising it (or EgyptRegion's constant drifting again) would silently
+    // break every search with no GPS fix yet.
+    final radius = (origin == null
+            ? EgyptRegion.greaterCairoRadiusMeters
+            : query.biasRadiusMeters)
+        .clamp(0.0, 50000.0);
+
     final body = <String, dynamic>{
       'input': query.text,
       'sessionToken': _currentSessionToken,
@@ -139,9 +151,7 @@ class GooglePlacesSearchProvider implements SearchProvider {
             'latitude': (origin ?? EgyptRegion.cairoCenter).latitude,
             'longitude': (origin ?? EgyptRegion.cairoCenter).longitude,
           },
-          'radius': origin == null
-              ? EgyptRegion.greaterCairoRadiusMeters
-              : query.biasRadiusMeters,
+          'radius': radius,
         },
       },
       // `origin` makes Google return distanceMeters on each prediction.

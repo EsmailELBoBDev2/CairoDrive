@@ -17,7 +17,14 @@ class EgyptRegion {
 
   /// Radius covering greater Cairo — Giza, New Cairo, 6th of October,
   /// Sheikh Zayed, Shubra el-Kheima, Helwan.
-  static const double greaterCairoRadiusMeters = 60000;
+  ///
+  /// Pinned to 50000, not the ~60km that would actually enclose all of
+  /// those: Places API (New) Autocomplete rejects locationBias.circle.radius
+  /// above 50000.0 with HTTP 400 INVALID_ARGUMENT — this is the API's hard
+  /// ceiling, not a stylistic choice. Every request with no GPS fix yet
+  /// (query.origin == null, e.g. a cold-started app) used to hit this and
+  /// fail outright.
+  static const double greaterCairoRadiusMeters = 50000;
 
   /// Rough bounding box of the greater-Cairo metropolitan area.
   static const double _minLat = 29.75;
