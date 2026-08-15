@@ -30,6 +30,22 @@
 
 'use strict';
 
+// ---- PROOF-OF-EXECUTION marker ---------------------------------------------
+// Write a file the instant this script is evaluated, so we can tell — via a
+// single adb command, independent of logcat — whether the gadget actually
+// runs our script. Check on device with:
+//   adb shell cat /sdcard/Android/data/com.generalmagic.magicearth/files/cairodrive_ran.txt
+(function writeRunMarker() {
+  const paths = [
+    '/storage/emulated/0/Android/data/com.generalmagic.magicearth/files/cairodrive_ran.txt',
+    '/sdcard/Android/data/com.generalmagic.magicearth/files/cairodrive_ran.txt',
+    '/data/local/tmp/cairodrive_ran.txt',
+  ];
+  for (const p of paths) {
+    try { const f = new File(p, 'w'); f.write('cairodrive script evaluated\n'); f.flush(); f.close(); } catch (_) {}
+  }
+})();
+
 // ---- Target binding: valid ONLY for this exact build -----------------------
 // Re-verified this session: all six original .7z volumes hash-match the
 // values recorded when these offsets were derived (reports/SHA256SUMS.txt /
