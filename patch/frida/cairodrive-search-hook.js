@@ -598,6 +598,69 @@ function collectCandidates(label, v, out) {
 
 let HITS = 0;
 
+// ---- Precise Dart 3.12 string decoding (compressed pointers) ---------------
+// Confirmed on-device: this app uses compressed pointers (nonzero x28 heap
+// base). Object fields are 4-byte COMPRESSED tagged pointers; full address =
+// heapBase + compressedValue. String layout: header 8B, length Smi @ +0x8,
+// char data @ +0xC (Latin-1 OneByte / UTF-16 TwoByte).
+function _printableRatio(s) {
+  if (!s || s.length === 0) return 0;
+  let ok = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 9 || c === 10 || c === 13 || (c >= 0x20 && c < 0x7f) || c >= 0xa0) ok++;
+  }
+  return ok / s.length;
+}
+// Decode a Dart String at an UNTAGGED heap address. Tries OneByte + TwoByte.
+function decodeStringAt(objBase) {
+  try {
+    const len = objBase.add(8).readU32() >> 1; // length Smi
+    if (len <= 0 || len > 2000) return null;
+    let one = null, two = null;
+    try {
+      const b = objBase.add(0xC).readByteArray(len);
+      if (b) { const u8 = new Uint8Array(b); let s = ''; for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]); one = s; }
+    } catch (_) {}
+    try { let s = ''; for (let i = 0; i < len; i++) s += String.fromCharCode(objBase.add(0xC + 2 * i).readU16()); two = s; } catch (_) {}
+    const po = _printableRatio(one), pt = _printableRatio(two);
+    if (po >= 0.85 && po >= pt) return { kind: '1', text: one, len };
+    if (pt >= 0.85) return { kind: '2', text: two, len };
+    return null;
+  } catch (_) { return null; }
+}
+// Given a raw register/tagged value, dump the object's class id, try to decode
+// it directly as a String, and walk its compressed-pointer fields looking for
+// String fields (where the query text usually lives). Returns decoded strings.
+function dumpDartObject(label, raw, heapBase, out) {
+  try {
+    if (!raw || raw.isNull()) return;
+    if (raw.and(1).toInt32() !== 1) return; // Smi / not a heap pointer
+    const base = raw.sub(1);                // untag
+    let cid = -1;
+    try { cid = (base.readU32() >>> 12) & 0xFFFFF; } catch (_) {}
+    // Is the register itself a String?
+    const self = decodeStringAt(base);
+    if (self && self.text.length >= 1) { log(`  ${label} (cid=${cid}) IS string(${self.kind},len${self.len}): ${JSON.stringify(self.text)}`); out.push({ src: label, text: self.text }); }
+    else { log(`  ${label} cid=${cid} (walking fields…)`); }
+    if (!heapBase) return;
+    // Walk compressed 4-byte fields.
+    for (let off = 8; off <= 8 + 4 * 48; off += 4) {
+      let v32; try { v32 = base.add(off).readU32(); } catch (_) { break; }
+      if ((v32 & 1) !== 1) continue;        // not a heap-tagged compressed ptr
+      let full; try { full = heapBase.add(v32); } catch (_) { continue; }
+      const fbase = full.sub(1);
+      const s = decodeStringAt(fbase);
+      if (s && s.text.length >= 2 && _printableRatio(s.text) >= 0.85) {
+        log(`  ${label}[field+${off}] -> string(${s.kind},len${s.len}): ${JSON.stringify(s.text)}`);
+        out.push({ src: `${label}+${off}`, text: s.text });
+      }
+    }
+  } catch (e) { log(`  ${label} dump error: ${e}`); }
+}
+
+let HITS2 = 0;
+
 // ---- Hook install ----------------------------------------------------------
 function install(mod) {
   const target = mod.base.add(TARGET.offsets.searchRepositoryImplSearch);
@@ -605,81 +668,35 @@ function install(mod) {
   Interceptor.attach(target, {
     onEnter(args) {
       try {
-        HITS++;
+        HITS2++;
         const ctx = this.context;
-        const deep = HITS <= 8; // throttle verbose dumps to the first few hits
-        log(`===== HIT #${HITS}  SearchRepositoryImpl::search =====`);
-
-        // 1) Preferred: Blutter helpers, IF they happen to be present.
-        let q = null;
-        try {
-          if (typeof init === 'function') init(ctx);
-          const objPtr = (typeof getArg === 'function') ? getArg(ctx, 1) : null;
-          if (objPtr && typeof getTaggedObjectValue === 'function') {
-            const [, , value] = getTaggedObjectValue(objPtr);
-            q = extractSearchText(value);
-            if (q) log(`blutter path: query="${q}"`);
-          }
-        } catch (_) {}
-
-        // 2) Self-contained: scan arg registers + stack for the query text.
-        const cands = [];
-        for (const rn of ['x0','x1','x2','x3','x4','x5','x6','x7','x8']) {
+        log(`===== HIT #${HITS2}  search =====`);
+        let heapBase = null;
+        try { heapBase = ctx.x28.shl(32); } catch (_) {}
+        log(` x28=${ctx.x28} heapBase=${heapBase}`);
+        const found = [];
+        // Dart 3.12 arm64: receiver=x1, args=x2,x3,x5,x6,x7. Inspect all.
+        for (const rn of ['x1', 'x2', 'x3', 'x5', 'x6', 'x7', 'x0']) {
           let rv; try { rv = ctx[rn]; } catch (_) { continue; }
-          if (!rv || rv.isNull()) continue;
-          if (deep) log(` ${rn}=${rv}`);
-          collectCandidates(rn, rv, cands);
+          log(` ${rn}=${rv}`);
+          dumpDartObject(rn, rv, heapBase, found);
         }
-        try {
-          const sp = ctx.sp;
-          for (let s = 0; s < 20; s++) {
-            let slot; try { slot = sp.add(s * 8).readPointer(); } catch (_) { continue; }
-            if (!slot || slot.isNull()) continue;
-            collectCandidates(`sp[+${s * 8}]`, slot, cands);
-          }
-        } catch (_) {}
-
-        // Dump every candidate for the first few hits so we can SEE the raw
-        // picture and confirm where the query lives.
-        if (deep) {
-          const seen = {};
-          for (const c of cands) {
-            const key = c.text + '|' + c.src;
-            if (seen[key]) continue; seen[key] = 1;
-            log(`  cand ${c.src}: "${c.text}"${looksLikeQuery(c.text) ? '  <= query-like' : ''}`);
-          }
-        }
-
-        // 3) Rank candidates: prefer query-like, then ones with a space, then
-        //    longer. This is the "try several, rank, pick the best" step.
-        if (!q) {
-          const queryish = cands.map((c) => c.text).filter(looksLikeQuery);
-          queryish.sort((a, b) =>
-            ((b.indexOf(' ') >= 0 ? 1000 : 0) + b.length) - ((a.indexOf(' ') >= 0 ? 1000 : 0) + a.length));
-          if (queryish.length) { q = queryish[0]; log(`picked best candidate query: "${q}"`); }
-        }
-
-        this.query = q;
-        if (!q) { log('no query recovered this hit (see cand dump above)'); return; }
-
-        // 4) Run the Google flow so stages 1-3 are visible end-to-end on-device.
-        const googleResults = runGoogleSearch(q);
-        this.googleResults = googleResults;
-        if (googleResults && googleResults.length) {
-          log(`GOOGLE RESULTS for "${q}":`);
-          googleResults.forEach((r, i) =>
-            log(`  [${i}] ${r.name} @ ${r.latitude},${r.longitude}  (${r.address || 'no addr'})`));
-        } else {
-          log(`no usable Google results for "${q}" (original Magic Lane search stands)`);
-        }
-        // DELIVERY still pending live iteration — this build proves stages 1-3.
+        // Report every decoded string so we can see exactly where the typed
+        // query lives (search a KNOWN word to spot it).
+        const uniq = {};
+        for (const f of found) { if (!uniq[f.text]) { uniq[f.text] = f.src; } }
+        log(`  -- decoded strings this hit: ${Object.keys(uniq).length} --`);
+        this.query = null;
+        // Google call intentionally DISABLED this iteration: it crashed with
+        // NetworkOnMainThreadException (ran on the UI thread) and we need the
+        // correct query first. Next step wires networking off-thread.
       } catch (e) {
         log('onEnter guarded error (original search preserved): ' + e);
       }
     },
     onLeave(retval) { /* delivery/fallback point — pending live iteration */ },
   });
-  log('hook installed (self-contained probe mode).');
+  log('hook installed (compressed-pointer decoder).');
 }
 
 function extractSearchText(decoded) {
