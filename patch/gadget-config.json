@@ -1,7 +1,9 @@
 {
   "interaction": {
-    "type": "script",
-    "path": "libfrida-gadget.script.so",
-    "on_change": "reload"
+    "type": "listen",
+    "address": "127.0.0.1",
+    "port": 27042,
+    "on_port_conflict": "fail",
+    "on_load": "resume"
   }
 }
