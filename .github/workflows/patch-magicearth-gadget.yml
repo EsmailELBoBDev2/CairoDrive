@@ -74,43 +74,46 @@ jobs:
       # The original artifact set (a .7z-split APKMirror .apkm bundle of the
       # real Magic Earth app) already lives in this repo's root — see
       # reports/original-archive-checksums.txt for its recorded hashes.
-      - name: Reassemble and extract the original split APK set
+      - name: Reassemble the original Magic Earth .apkm
         run: |
           set -euo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq p7zip-full
-          mkdir -p original apkm-out splits
-          7z x -y -o original CairoDrive.7z.001
-          APKM=$(find original -name '*.apkm' | head -1)
+          mkdir -p original
+          # 7-Zip's -o output-dir switch MUST be glued to the path (no space).
+          # "7z x -o original" -> "Command line error: Too short switch: -o"
+          # (exit 7). This was the real cause of the earlier failed runs — it
+          # died here, never reaching APKEditor.
+          7z x -y -ooriginal CairoDrive.7z.001
+          APKM=$(find original -iname '*.apkm' | head -1)
           echo "APKM: $APKM"
-          unzip -o -q "$APKM" -d apkm-out
-          # objection/APKEditor need real .apk files, not .apkm's internal naming
-          find apkm-out -name '*.apk' -exec cp {} splits/ \;
-          ls -la splits/
-
-      - name: Verify against recorded checksums
-        run: |
-          set -euo pipefail
-          sha256sum splits/base.apk
-          grep 'original/base.apk' reports/original-archive-checksums.txt || \
-            echo "::warning::No recorded base.apk hash to compare against"
+          echo "APKM=$APKM" >> "$GITHUB_ENV"
 
       - name: Merge splits into one installable APK
         run: |
           set -euo pipefail
-          echo "=== Checking APKEditor help ==="
-          java -jar APKEditor.jar m --help 2>&1 || java -jar APKEditor.jar m -h 2>&1 || java -jar APKEditor.jar 2>&1 | head -50
-          echo "=== Attempting merge ==="
-          java -jar APKEditor.jar m --input splits --output merged.apk
+          # APKEditor's 'm' takes the .apkm bundle DIRECTLY (auto-detected);
+          # -i input, -o output, -f force. Single-dash flags only (no GNU --).
+          java -jar APKEditor.jar m -i "$APKM" -o merged.apk -f
           ls -la merged.apk
+
+      - name: Install apktool (objection shells out to it)
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y -qq apktool
 
       - name: Embed Frida gadget (search hook, autoload script mode)
         run: |
           set -euo pipefail
+          # --skip-resources: Magic Earth is a ~150MB commercial Flutter app;
+          # apktool's full resource recompile routinely fails on apps this size.
+          # Manifest is still patched (INTERNET perm, extractNativeLibs,
+          # loadLibrary), so the gadget still loads. objection re-signs (v2+).
           objection patchapk \
             --source merged.apk \
             --architecture arm64-v8a \
             --gadget-config patch/gadget-config.json \
-            -l patch/frida/cairodrive-search-hook.js
+            -l patch/frida/cairodrive-search-hook.js \
+            --skip-resources
           ls -la merged.objection.apk
 
       - name: Sanity check — confirm this is Magic Earth, re-signed, not a fresh app
