@@ -31,26 +31,28 @@ jobs:
         run: pip install objection
 
       - name: Fetch APKEditor (pinned)
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Use GitHub API to find the actual download URL for APKEditor v1.4.9
-          DL_URL=$(gh api repos/REAndroid/APKEditor/releases/tags/V1.4.9 \
-            --jq '.assets[] | select(.name == "APKEditor-1.4.9.jar") | .browser_download_url' \
-            | head -1)
-          if [ -z "$DL_URL" ]; then
-            echo "::error::Could not find APKEditor-1.4.9.jar in release assets"
+          # Direct download from GitHub releases (v1.4.9)
+          curl -fSL --retry 5 --max-time 60 -o APKEditor.jar \
+            "https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar"
+
+          # Verify file size is reasonable (should be > 1MB)
+          SIZE=$(stat -c%s APKEditor.jar)
+          if [ "$SIZE" -lt 1048576 ]; then
+            echo "::error::APKEditor.jar is too small ($SIZE bytes), download likely failed"
             exit 1
           fi
-          curl -fSL --retry 4 -o APKEditor.jar "$DL_URL"
-          # Verify it's a valid JAR (starts with PK magic bytes for ZIP format)
+
+          # Verify it's a valid JAR (ZIP format)
           if ! file APKEditor.jar | grep -q "Zip"; then
-            echo "::error::Downloaded file is not a valid ZIP/JAR archive"
+            echo "::error::Downloaded file is not a valid ZIP/JAR: $(file APKEditor.jar)"
             exit 1
           fi
-          # verify it's really APKEditor
-          java -jar APKEditor.jar -h >/dev/null 2>&1 || { echo "::error::APKEditor.jar is not runnable"; exit 1; }
+
+          # Verify it's runnable
+          java -jar APKEditor.jar -h >/dev/null 2>&1 || { echo "::error::APKEditor.jar failed help check"; exit 1; }
+          echo "APKEditor v1.4.9 verified"
 
       # The original artifact set (a .7z-split APKMirror .apkm bundle of the
       # real Magic Earth app) already lives in this repo's root — see
