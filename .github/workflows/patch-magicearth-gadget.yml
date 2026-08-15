@@ -67,14 +67,22 @@ jobs:
           set -euo pipefail
           # --skip-resources: Magic Earth is a ~150MB commercial Flutter app;
           # apktool's full resource recompile routinely fails on apps this size.
-          # Manifest is still patched (INTERNET perm, extractNativeLibs,
-          # loadLibrary), so the gadget still loads. objection re-signs (v2+).
+          # --ignore-nativelibs is REQUIRED alongside --skip-resources (objection
+          # refuses to start otherwise): with resources undecoded, objection can't
+          # safely re-parse AndroidManifest.xml, so it skips only the
+          # extractNativeLibs="false"->"true" manifest tweak. The two steps that
+          # actually embed the gadget — injecting the loadLibrary() smali call and
+          # copying libfrida-gadget.so into lib/<arch>/ — run unconditionally in
+          # objection's source regardless of this flag, so the gadget still loads.
+          # INTERNET permission injection also still runs (Magic Earth already
+          # declares it, so this is a no-op check, not a manifest rewrite).
           objection patchapk \
             --source merged.apk \
             --architecture arm64-v8a \
             --gadget-config patch/gadget-config.json \
             -l patch/frida/cairodrive-search-hook.js \
-            --skip-resources
+            --skip-resources \
+            --ignore-nativelibs
           ls -la merged.objection.apk
 
       - name: Sanity check — confirm this is Magic Earth, re-signed, not a fresh app
