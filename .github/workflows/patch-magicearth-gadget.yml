@@ -33,28 +33,49 @@ jobs:
       # The original artifact set (a .7z-split APKMirror .apkm bundle of the
       # real Magic Earth app) already lives in this repo's root — see
       # reports/original-archive-checksums.txt for its recorded hashes.
-      - name: Extract and merge Magic Earth APKs using zipalign
+      #
+      # IMPORTANT: the .apkm is a real Android App Bundle split set — base.apk
+      # PLUS ~34 config splits (arm64_v8a/armeabi_v7a/x86_64, 7 density
+      # buckets, 24 locales). base.apk alone declares
+      # android:requiredSplitTypes="base__abi,base__density" in its manifest,
+      # so `adb install` on base.apk alone fails with
+      # INSTALL_FAILED_MISSING_SPLIT — verified locally against the real
+      # archive. All splits must be merged into one APK with no split
+      # requirement left in the manifest; APKEditor's `m` command does this
+      # (and is purpose-built to read .apkm/.apks/.xapk directly).
+      - name: Fetch APKEditor and merge Magic Earth's splits into one installable APK
         run: |
           set -euo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq p7zip-full
-          mkdir -p original apks
+
+          curl -fSL --retry 5 -o APKEditor.jar \
+            "https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar"
+          SIZE=$(stat -c%s APKEditor.jar)
+          if [ "$SIZE" -lt 1048576 ]; then
+            echo "::error::APKEditor.jar is too small ($SIZE bytes), download likely failed"
+            exit 1
+          fi
+          if ! file APKEditor.jar | grep -q "Zip"; then
+            echo "::error::Downloaded file is not a valid ZIP/JAR: $(file APKEditor.jar)"
+            exit 1
+          fi
+          # NOTE: do NOT gate on the exit code of `-h`/`-help` here. APKEditor
+          # prints its help text correctly but always exits 2 on -h, even on
+          # success (verified locally) — treating that as failure is what
+          # caused earlier CI runs to wrongly conclude the download was
+          # corrupt. Size + zip-magic above are the real corruption checks.
+          echo "APKEditor v1.4.9 downloaded ($SIZE bytes)"
+
+          mkdir -p original
           # 7-Zip's -o output-dir switch MUST be glued to the path (no space).
           7z x -y -ooriginal CairoDrive.7z.001
           APKM=$(find original -iname '*.apkm' | head -1)
           echo "APKM: $APKM"
-          # Extract the APKs from the .apkm (which is just a ZIP/zip-compatible format)
-          unzip -o -q "$APKM" -d apks
-          echo "Extracted APKs:"
-          ls -lh apks/
 
-          # Find base APK (usually the largest and contains core app)
-          BASE_APK=$(find apks -name "base.apk" -o -name "base-*.apk" | head -1)
-          if [ -z "$BASE_APK" ]; then
-            # Fallback: get largest APK file
-            BASE_APK=$(ls -S apks/*.apk | head -1)
-          fi
-          echo "Using base APK: $BASE_APK"
-          cp "$BASE_APK" merged.apk
+          # `m` reads the .apkm directly (no manual unzip needed) and merges
+          # every split into one APK, stripping the split-requirement
+          # manifest entries in the process.
+          java -jar APKEditor.jar m -i "$APKM" -o merged.apk -f
           ls -lh merged.apk
 
       - name: Install objection's required commands (apktool, adb, zipalign, apksigner)
