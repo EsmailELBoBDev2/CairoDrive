@@ -844,6 +844,14 @@ function findFirstCoordPair(raw, heapBase, depth, visited) {
 // corrupts adjacent heap objects.
 function patchStringInPlace(node, newText) {
   try {
+    // Preflight: prove this address is still live/readable BEFORE writing.
+    // Converts a raw "access violation" abort into a clean, diagnosable skip
+    // — tells us the candidate was stale/misidentified rather than that the
+    // write logic itself is unsafe.
+    try { node.base.readU8(); } catch (e) {
+      log(`patchStringInPlace: target ${node.base} unreadable at write time (stale/bad candidate) — skipping: ${e}`);
+      return null;
+    }
     const text = newText.length > node.len ? newText.slice(0, node.len) : newText;
     const bytes = [];
     for (let i = 0; i < text.length; i++) bytes.push(text.charCodeAt(i) & 0xff);
@@ -851,6 +859,63 @@ function patchStringInPlace(node, newText) {
     node.base.add(0x10).writeByteArray(bytes);
     return text;
   } catch (e) { log('patchStringInPlace error: ' + e); return null; }
+}
+
+// ---- Keyed resolver: locate the "result" entry inside the returned Map -----
+// Confirmed via Blutter disassembly: objectMethod's return is an
+// OperationResult (cid 1145) wrapping ONE real field at +8, a Map — and the
+// getter code pulls a literal "result" key out of THAT map before handing it
+// back to Dart callers. The generic depth-6 field walk above (deepDump /
+// findFirstString / findFirstCoordPair) has no idea which key is the answer,
+// so empirically it grabs whatever plausible-looking string/double it reaches
+// first — which turned out to be unrelated Flutter widget/localization
+// strings ("Move down", "helperError") and color-channel doubles, not the
+// actual Landmark data. This resolver is narrower: it walks the same field
+// grid, but ONLY accepts a hit when a field decodes to the literal string
+// "result" — then reads the NEXT compressed-pointer slot in that same backing
+// array as the value (Dart compact-hash Map `_data` arrays store key/value
+// pairs in adjacent slots: data[2i]=key, data[2i+1]=value). Returns the tagged
+// pointer to the value (same representation as a register/`raw` elsewhere),
+// or null.
+let _keyBudget = 0;
+function findKeyedValue(raw, heapBase, keyText, depth, visited) {
+  if (_keyBudget <= 0) return null;
+  if (!visited) visited = new Set();
+  try {
+    if (!raw || raw.isNull() || raw.and(1).toInt32() !== 1) return null;
+    const base = raw.sub(1);
+    const vkey = base.toString();
+    if (visited.has(vkey)) return null;
+    visited.add(vkey);
+    _keyBudget--;
+    if (!heapBase || depth <= 0) return null;
+    // Pass 1: look for the key literally among THIS object's own fields, so
+    // we can read the paired value slot right next to it.
+    for (let off = 8; off <= 8 + 4 * 60; off += 4) {
+      if (_keyBudget <= 0) break;
+      let v32; try { v32 = base.add(off).readU32(); } catch (_) { break; }
+      if ((v32 & 1) !== 1) continue;
+      let childRaw; try { childRaw = heapBase.add(v32); } catch (_) { continue; }
+      const s = decodeStringAt(childRaw.sub(1));
+      if (s && s.text === keyText) {
+        let vv32; try { vv32 = base.add(off + 4).readU32(); } catch (_) { continue; }
+        if ((vv32 & 1) !== 1) continue; // paired slot isn't a heap pointer — skip
+        let valRaw; try { valRaw = heapBase.add(vv32); } catch (_) { continue; }
+        log(`    [KEYED] found "${keyText}" @ ${base}+${off}, value slot @ +${off + 4} -> ${valRaw}`);
+        return valRaw;
+      }
+    }
+    // Pass 2: recurse into children looking for the key elsewhere.
+    for (let off = 8; off <= 8 + 4 * 60; off += 4) {
+      if (_keyBudget <= 0) break;
+      let v32; try { v32 = base.add(off).readU32(); } catch (_) { break; }
+      if ((v32 & 1) !== 1) continue;
+      let child; try { child = heapBase.add(v32); } catch (_) { continue; }
+      const found = findKeyedValue(child, heapBase, keyText, depth - 1, visited);
+      if (found) return found;
+    }
+    return null;
+  } catch (_) { return null; }
 }
 
 // ---- Hook install ----------------------------------------------------------
@@ -1005,29 +1070,75 @@ function installObjectMethodHook(mod) {
         const g = _lastGoogleResults && _lastGoogleResults[0];
         if (!g) { log('    (no pending Google result — mutation skipped)'); return; }
         const m = this.omMethod;
+
+        // Strategy A (preferred): anchor on the literal "result" key inside
+        // the returned Map, then only look at what's THERE — narrow, so it
+        // can't wander into unrelated widget/localization heap noise the way
+        // the blind depth-6 walk (Strategy B below) did.
+        _keyBudget = 200;
+        const keyedVal = findKeyedValue(retval, this.omHeapBase, 'result', 6);
+
         if (m === 'getName' || m === 'getAddress') {
           const wantText = m === 'getName' ? g.name : (g.address || g.name);
-          _findBudget = 400;
-          const node = findFirstString(retval, this.omHeapBase, 6);
+          let node = null, via = null;
+          if (keyedVal) {
+            const direct = decodeStringAt(keyedVal.sub(1));
+            if (direct && direct.text.length >= 1) { node = { base: keyedVal.sub(1), len: direct.len }; via = 'KEYED-direct'; }
+            else {
+              // "result" value isn't itself a String — unwrap one more level.
+              _findBudget = 60;
+              const nested = findFirstString(keyedVal, this.omHeapBase, 2);
+              if (nested) { node = nested; via = 'KEYED-nested'; }
+            }
+          }
+          if (!node) {
+            _findBudget = 400;
+            const fallback = findFirstString(retval, this.omHeapBase, 6);
+            if (fallback) { node = fallback; via = 'GENERIC-fallback'; }
+          }
           if (node) {
+            log(`    [${via}] candidate string @ ${node.base} (len ${node.len})`);
             const applied = patchStringInPlace(node, wantText);
             log(applied
-              ? `    >>> MUTATION APPLIED: ${m} string patched -> ${JSON.stringify(applied)} (orig cap ${node.len} chars)`
-              : `    >>> MUTATION FAILED: ${m} patch threw`);
+              ? `    >>> MUTATION APPLIED [${via}]: ${m} string patched -> ${JSON.stringify(applied)} (orig cap ${node.len} chars)`
+              : `    >>> MUTATION FAILED [${via}]: ${m} patch threw / candidate stale`);
           } else {
-            log(`    >>> MUTATION SKIPPED: no String field found in ${m} result to patch`);
+            log(`    >>> MUTATION SKIPPED: no String field found in ${m} result to patch (keyed and generic both missed)`);
           }
         } else if (m === 'getCoordinates') {
-          _findBudget2 = 400;
-          const pair = findFirstCoordPair(retval, this.omHeapBase, 6);
+          let pair = null, via = null;
+          if (keyedVal) {
+            // Check the "result" value's own inline doubles first (tight, 1
+            // level), then its keyed "latitude"/"longitude" sub-entries, then
+            // a shallow generic walk scoped to just this subtree.
+            try {
+              const kb = keyedVal.sub(1);
+              const hits = [];
+              for (let off = 8; off <= 8 + 8 * 16; off += 8) {
+                try { const d = kb.add(off).readDouble(); if (looksLikeCoord(d)) hits.push(off); } catch (_) {}
+              }
+              if (hits.length >= 2) { pair = { base: kb, latOff: hits[0], lngOff: hits[1] }; via = 'KEYED-direct'; }
+            } catch (_) {}
+            if (!pair) {
+              _findBudget2 = 60;
+              const nested = findFirstCoordPair(keyedVal, this.omHeapBase, 3);
+              if (nested) { pair = nested; via = 'KEYED-nested'; }
+            }
+          }
+          if (!pair) {
+            _findBudget2 = 400;
+            const fallback = findFirstCoordPair(retval, this.omHeapBase, 6);
+            if (fallback) { pair = fallback; via = 'GENERIC-fallback'; }
+          }
           if (pair) {
+            log(`    [${via}] candidate coord pair @ ${pair.base} (+${pair.latOff}/+${pair.lngOff})`);
             try {
               pair.base.add(pair.latOff).writeDouble(g.latitude);
               pair.base.add(pair.lngOff).writeDouble(g.longitude);
-              log(`    >>> MUTATION APPLIED: coordinates patched -> ${g.latitude},${g.longitude} (was @ +${pair.latOff}/+${pair.lngOff})`);
-            } catch (e) { log('    >>> MUTATION FAILED: coordinates write error: ' + e); }
+              log(`    >>> MUTATION APPLIED [${via}]: coordinates patched -> ${g.latitude},${g.longitude} (was @ +${pair.latOff}/+${pair.lngOff})`);
+            } catch (e) { log(`    >>> MUTATION FAILED [${via}]: coordinates write error: ` + e); }
           } else {
-            log('    >>> MUTATION SKIPPED: no coordinate-looking double pair found');
+            log('    >>> MUTATION SKIPPED: no coordinate-looking double pair found (keyed and generic both missed)');
           }
         }
       } catch (e) { log('objectMethod onLeave error: ' + e); }
