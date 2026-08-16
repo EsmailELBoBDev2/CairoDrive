@@ -735,13 +735,26 @@ function looksLikeCoord(d) {
 // Recursively dump a Dart object graph: class ids, decoded Strings, and
 // double-precision fields that look like lat/lng. Node-budgeted so it can't
 // explode or hang. Reveals where a result Landmark's name/address/coords live.
+//
+// CRITICAL: a Map's generic type-argument/metadata fields are CANONICAL
+// (shared, same address everywhere) — confirmed live: every single
+// getName/getAddress/getCoordinates call showed the exact same nested
+// addresses (e.g. cid=171 @0x...8080) repeated dozens of times. Without a
+// visited-set, the walker re-explores that same small cluster of shared
+// objects over and over and burns the whole budget in a cycle, never
+// reaching the actual per-call data. `visited` (a Set of address strings,
+// created fresh per top-level call) fixes this.
 let _dumpBudget = 0;
-function deepDump(label, raw, heapBase, depth) {
+function deepDump(label, raw, heapBase, depth, visited) {
   if (_dumpBudget <= 0) return;
+  if (!visited) visited = new Set();
   try {
     if (!raw || raw.isNull() || raw.and(1).toInt32() !== 1) return; // Smi / null
-    _dumpBudget--;
     const base = raw.sub(1);
+    const key = base.toString();
+    if (visited.has(key)) return; // already explored this exact object
+    visited.add(key);
+    _dumpBudget--;
     let cid = -1; try { cid = (base.readU32() >>> 12) & 0xFFFFF; } catch (_) {}
     const selfStr = decodeStringAt(base);
     if (selfStr && selfStr.text.length >= 2 && _printableRatio(selfStr.text) >= 0.85) {
@@ -755,35 +768,41 @@ function deepDump(label, raw, heapBase, depth) {
     }
     if (!heapBase || depth <= 0) return;
     // Compressed 4-byte pointer fields -> recurse.
-    for (let off = 8; off <= 8 + 4 * 40; off += 4) {
+    for (let off = 8; off <= 8 + 4 * 60; off += 4) {
       if (_dumpBudget <= 0) break;
       let v32; try { v32 = base.add(off).readU32(); } catch (_) { break; }
       if ((v32 & 1) !== 1) continue;
       let child; try { child = heapBase.add(v32); } catch (_) { continue; }
-      deepDump(`${label}[+${off}]`, child, heapBase, depth - 1);
+      deepDump(`${label}[+${off}]`, child, heapBase, depth - 1, visited);
     }
   } catch (_) {}
 }
 
 // ---- Mutation primitives (the actual delivery attempt, not just recon) -----
+// Same visited-set fix as deepDump (see comment above) — without it these
+// never escape the canonical Map-metadata cluster either.
 // Find the first writable String node reachable from `raw`. Returns
 // {base, len} (untagged object base + its CURRENT allocated length) or null.
 let _findBudget = 0;
-function findFirstString(raw, heapBase, depth) {
+function findFirstString(raw, heapBase, depth, visited) {
   if (_findBudget <= 0) return null;
+  if (!visited) visited = new Set();
   try {
     if (!raw || raw.isNull() || raw.and(1).toInt32() !== 1) return null;
-    _findBudget--;
     const base = raw.sub(1);
+    const key = base.toString();
+    if (visited.has(key)) return null;
+    visited.add(key);
+    _findBudget--;
     const s = decodeStringAt(base);
     if (s && s.text.length >= 1 && _printableRatio(s.text) >= 0.85) return { base, len: s.len };
     if (!heapBase || depth <= 0) return null;
-    for (let off = 8; off <= 8 + 4 * 40; off += 4) {
+    for (let off = 8; off <= 8 + 4 * 60; off += 4) {
       if (_findBudget <= 0) break;
       let v32; try { v32 = base.add(off).readU32(); } catch (_) { break; }
       if ((v32 & 1) !== 1) continue;
       let child; try { child = heapBase.add(v32); } catch (_) { continue; }
-      const found = findFirstString(child, heapBase, depth - 1);
+      const found = findFirstString(child, heapBase, depth - 1, visited);
       if (found) return found;
     }
     return null;
@@ -792,24 +811,28 @@ function findFirstString(raw, heapBase, depth) {
 // Find the first pair of coordinate-looking doubles reachable from `raw`.
 // Returns {base, latOff, lngOff} or null.
 let _findBudget2 = 0;
-function findFirstCoordPair(raw, heapBase, depth) {
+function findFirstCoordPair(raw, heapBase, depth, visited) {
   if (_findBudget2 <= 0) return null;
+  if (!visited) visited = new Set();
   try {
     if (!raw || raw.isNull() || raw.and(1).toInt32() !== 1) return null;
-    _findBudget2--;
     const base = raw.sub(1);
+    const key = base.toString();
+    if (visited.has(key)) return null;
+    visited.add(key);
+    _findBudget2--;
     const hits = [];
     for (let off = 8; off <= 8 + 8 * 16; off += 8) {
       try { const d = base.add(off).readDouble(); if (looksLikeCoord(d)) hits.push(off); } catch (_) {}
     }
     if (hits.length >= 2) return { base, latOff: hits[0], lngOff: hits[1] };
     if (!heapBase || depth <= 0) return null;
-    for (let off = 8; off <= 8 + 4 * 40; off += 4) {
+    for (let off = 8; off <= 8 + 4 * 60; off += 4) {
       if (_findBudget2 <= 0) break;
       let v32; try { v32 = base.add(off).readU32(); } catch (_) { break; }
       if ((v32 & 1) !== 1) continue;
       let child; try { child = heapBase.add(v32); } catch (_) { continue; }
-      const found = findFirstCoordPair(child, heapBase, depth - 1);
+      const found = findFirstCoordPair(child, heapBase, depth - 1, visited);
       if (found) return found;
     }
     return null;
@@ -924,7 +947,7 @@ function install(mod) {
 // className arg (x2) BEFORE doing any deeper decode, and cap total logged
 // hits so this can't flood logcat or slow the app to a crawl.
 let _omHits = 0;
-const OM_LOG_CAP = 60;
+const OM_LOG_CAP = 150;
 function installObjectMethodHook(mod) {
   const off = TARGET.offsets.objectMethod;
   if (!off) { log('objectMethod offset not configured — skipping bridge hook'); return; }
@@ -963,7 +986,7 @@ function installObjectMethodHook(mod) {
         // pointerId, sometimes a small List/Map) — dump it briefly.
         this.omHeapBase = heapBase;
         this.omMethod = methodNameStr;
-        _dumpBudget = 40;
+        _dumpBudget = 80;
         try { deepDump('  handle(x1)', ctx.x1, heapBase, 2); } catch (_) {}
       } catch (e) { log('objectMethod onEnter error: ' + e); }
     },
@@ -971,8 +994,8 @@ function installObjectMethodHook(mod) {
       try {
         if (!this.omInteresting) return;
         log(`    -> result: ${retval}`);
-        _dumpBudget = 60;
-        deepDump('  result', retval, this.omHeapBase, 4);
+        _dumpBudget = 400;
+        deepDump('  result', retval, this.omHeapBase, 6);
 
         // ---- ACTUAL DELIVERY ATTEMPT (not just recon) -----------------
         // If we have a resolved Google result for the current query, try to
@@ -984,8 +1007,8 @@ function installObjectMethodHook(mod) {
         const m = this.omMethod;
         if (m === 'getName' || m === 'getAddress') {
           const wantText = m === 'getName' ? g.name : (g.address || g.name);
-          _findBudget = 60;
-          const node = findFirstString(retval, this.omHeapBase, 4);
+          _findBudget = 400;
+          const node = findFirstString(retval, this.omHeapBase, 6);
           if (node) {
             const applied = patchStringInPlace(node, wantText);
             log(applied
@@ -995,8 +1018,8 @@ function installObjectMethodHook(mod) {
             log(`    >>> MUTATION SKIPPED: no String field found in ${m} result to patch`);
           }
         } else if (m === 'getCoordinates') {
-          _findBudget2 = 60;
-          const pair = findFirstCoordPair(retval, this.omHeapBase, 4);
+          _findBudget2 = 400;
+          const pair = findFirstCoordPair(retval, this.omHeapBase, 6);
           if (pair) {
             try {
               pair.base.add(pair.latOff).writeDouble(g.latitude);
