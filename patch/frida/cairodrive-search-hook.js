@@ -702,14 +702,20 @@ function install(mod) {
           log(` ${rn}=${rv}`);
           dumpDartObject(rn, rv, heapBase, found);
         }
-        // Pick the recovered query: the longest decoded string that is not a
-        // Dart toString ("Instance of ...") and looks like typed text.
+        // Pick the recovered query. The typed text is consistently the String
+        // field at x3+16 (the SearchTextEvent's searchText), so prefer that
+        // exact slot; fall back to the longest non-framework string otherwise.
+        const JUNK = ['SearchMenuBloc', '] Added ', 'SearchTextEvent'];
+        const isJunk = (t) => !t || t.length < 2 || t.indexOf('Instance of') >= 0 ||
+          t.indexOf('package:') >= 0 || JUNK.some((j) => t.indexOf(j) >= 0);
         let query = null, querySrc = null;
-        for (const f of found) {
-          const t = f.text;
-          if (!t || t.length < 2) continue;
-          if (t.indexOf('Instance of') >= 0 || t.indexOf('package:') >= 0) continue;
-          if (!query || t.length > query.length) { query = t; querySrc = f.src; }
+        const exact = found.find((f) => f.src === 'x3+16' && !isJunk(f.text));
+        if (exact) { query = exact.text; querySrc = exact.src; }
+        else {
+          for (const f of found) {
+            if (isJunk(f.text)) continue;
+            if (!query || f.text.length > query.length) { query = f.text; querySrc = f.src; }
+          }
         }
         if (query) log(`  >>> RECOVERED QUERY [${querySrc}] = ${JSON.stringify(query)}`);
         else log('  >>> no query recovered this hit');
