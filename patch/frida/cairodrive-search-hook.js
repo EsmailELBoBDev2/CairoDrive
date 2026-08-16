@@ -479,6 +479,7 @@ function runGoogleSearch(queryText) {
     googleHeaders({ 'X-Goog-FieldMask': AUTOCOMPLETE_FIELD_MASK, 'Content-Type': 'application/json' }),
     body);
 
+  if (!acResp) { log('Google autocomplete: no response (network error)'); return null; }
   if (acResp.status === 429) { log('Google autocomplete: quota exceeded'); return null; }
   if (acResp.status === 401 || acResp.status === 403) {
     log(`Google autocomplete rejected (HTTP ${acResp.status}): ${describeGoogleError(acResp.status, acResp.body)}. ` +
@@ -507,6 +508,7 @@ function runGoogleSearch(queryText) {
     const uri = `${DETAILS_BASE}${pred.placeId}`;
     const detResp = httpJson('GET', uri,
       googleHeaders({ 'X-Goog-FieldMask': DETAILS_FIELD_MASK }), null);
+    if (!detResp) { log(`Place Details for ${pred.placeId}: no response — skipping`); continue; }
     if (detResp.status < 200 || detResp.status >= 300) {
       log(`Place Details for ${pred.placeId} failed (HTTP ${detResp.status}): ` +
           `${describeGoogleError(detResp.status, detResp.body)} — skipping this candidate`);
@@ -678,6 +680,7 @@ function dumpDartObject(label, raw, heapBase, out) {
 }
 
 let HITS2 = 0;
+let _lastGoogleQuery = null; // debounce so we don't re-query Google per keystroke
 
 // ---- Hook install ----------------------------------------------------------
 function install(mod) {
@@ -711,9 +714,30 @@ function install(mod) {
         if (query) log(`  >>> RECOVERED QUERY [${querySrc}] = ${JSON.stringify(query)}`);
         else log('  >>> no query recovered this hit');
         this.query = query;
-        // Google call intentionally DISABLED this iteration: it crashed with
-        // NetworkOnMainThreadException (ran on the UI thread) and we need the
-        // correct query first. Next step wires networking off-thread.
+
+        // Run Google OFF the app's UI thread: doing HTTP directly in onEnter
+        // throws NetworkOnMainThreadException. setTimeout(...,0) defers to
+        // Frida's own timer thread, which is not the Android main looper, so
+        // networking is allowed there. Debounced on the query text so we don't
+        // hammer Google on every keystroke.
+        if (query && query.trim().length >= 3) {
+          const qClean = query.trim();
+          if (qClean !== _lastGoogleQuery) {
+            _lastGoogleQuery = qClean;
+            setTimeout(function () {
+              try {
+                log(`Google search starting for ${JSON.stringify(qClean)} …`);
+                const results = runGoogleSearch(qClean);
+                if (results && results.length) {
+                  log(`GOOGLE RESULTS (${results.length}) for ${JSON.stringify(qClean)}:`);
+                  results.forEach((r, i) => log(`  [${i}] ${r.name} @ ${r.latitude},${r.longitude} (${r.address || 'no addr'})`));
+                } else {
+                  log(`Google returned no usable results for ${JSON.stringify(qClean)}`);
+                }
+              } catch (e) { log('Google search error: ' + e); }
+            }, 0);
+          }
+        }
       } catch (e) {
         log('onEnter guarded error (original search preserved): ' + e);
       }
