@@ -137,6 +137,41 @@ function bytesToPrintable(arrbuf, max) {
   } catch (_) { return '(unreadable)'; }
 }
 
+// ---- Parallel probe: Dart NativePort delivery (Dart_PostCObject) -----------
+// Per SDK research, search results return ASYNCHRONOUSLY: a libGEM worker
+// posts a Dart_CObject to a NativePort, and the SDK's dispatcher on the Dart
+// isolate turns it into the List<Landmark> handed to onComplete/the Bloc. If
+// we can see (or later, forge) that post, that's a second independent
+// delivery seam, separate from the synchronous SearchRepositoryImpl::search
+// hook. Try every known export name across the loaded modules; log whichever
+// resolves (or that none did) so we know if this path is even available.
+function installPostCObjectProbe() {
+  const NAMES = ['Dart_PostCObject', 'Dart_PostCObject_DL', 'Dart_PostInteger'];
+  const MODULES = [null, 'libflutter.so', 'libapp.so'];
+  let hooked = 0;
+  for (const modName of MODULES) {
+    for (const name of NAMES) {
+      try {
+        const addr = findExport(modName, name);
+        if (!addr) continue;
+        const key = modName + '!' + name;
+        log(`Dart NativePort probe: found ${name} in ${modName || '(global)'} @ ${addr}`);
+        Interceptor.attach(addr, {
+          onEnter(a) {
+            try {
+              log(`>>> ${name} called: port_id=${a[0]} message=${a[1]}`);
+              // Dart_CObject layout starts with an int32 'type' tag at offset 0.
+              try { log(`    CObject.type=${a[1].readS32()}`); } catch (_) {}
+            } catch (_) {}
+          },
+        });
+        hooked++;
+      } catch (e) { log(`Dart NativePort probe error for ${name}/${modName}: ${e}`); }
+    }
+  }
+  log(`Dart NativePort probe: ${hooked} hook(s) installed`);
+}
+
 // ---- libGEM native curl hook: capture the search request + response --------
 // Search is ONLINE (…/search_maps7 via libGEM's CurlHttpEngine). Hooking curl
 // gives us BOTH the query (POST body) and the result wire format (response),
@@ -680,7 +715,47 @@ function dumpDartObject(label, raw, heapBase, out) {
 }
 
 let HITS2 = 0;
-let _lastGoogleQuery = null; // debounce so we don't re-query Google per keystroke
+let _lastGoogleQuery = null;   // debounce so we don't re-query Google per keystroke
+let _lastGoogleResults = null; // most recent resolved Google results (for delivery)
+
+// ---- Deep memory inspector (recon for delivery) ----------------------------
+// A plausible geographic coordinate: finite, non-integer, |x| in (0,180].
+function looksLikeCoord(d) {
+  return typeof d === 'number' && isFinite(d) && Math.abs(d) > 0.0001 &&
+    Math.abs(d) <= 180 && Math.floor(d) !== d;
+}
+// Recursively dump a Dart object graph: class ids, decoded Strings, and
+// double-precision fields that look like lat/lng. Node-budgeted so it can't
+// explode or hang. Reveals where a result Landmark's name/address/coords live.
+let _dumpBudget = 0;
+function deepDump(label, raw, heapBase, depth) {
+  if (_dumpBudget <= 0) return;
+  try {
+    if (!raw || raw.isNull() || raw.and(1).toInt32() !== 1) return; // Smi / null
+    _dumpBudget--;
+    const base = raw.sub(1);
+    let cid = -1; try { cid = (base.readU32() >>> 12) & 0xFFFFF; } catch (_) {}
+    const selfStr = decodeStringAt(base);
+    if (selfStr && selfStr.text.length >= 2 && _printableRatio(selfStr.text) >= 0.85) {
+      log(`  ${label} cid=${cid} STRING ${JSON.stringify(selfStr.text)}`);
+      return;
+    }
+    log(`  ${label} cid=${cid} @${base}`);
+    // Doubles (coordinates) at 8-aligned offsets.
+    for (let off = 8; off <= 8 + 8 * 16; off += 8) {
+      try { const d = base.add(off).readDouble(); if (looksLikeCoord(d)) log(`    ${label}[+${off}] double=${d}`); } catch (_) {}
+    }
+    if (!heapBase || depth <= 0) return;
+    // Compressed 4-byte pointer fields -> recurse.
+    for (let off = 8; off <= 8 + 4 * 40; off += 4) {
+      if (_dumpBudget <= 0) break;
+      let v32; try { v32 = base.add(off).readU32(); } catch (_) { break; }
+      if ((v32 & 1) !== 1) continue;
+      let child; try { child = heapBase.add(v32); } catch (_) { continue; }
+      deepDump(`${label}[+${off}]`, child, heapBase, depth - 1);
+    }
+  } catch (_) {}
+}
 
 // ---- Hook install ----------------------------------------------------------
 function install(mod) {
@@ -694,6 +769,7 @@ function install(mod) {
         log(`===== HIT #${HITS2}  search =====`);
         let heapBase = null;
         try { heapBase = ctx.x28.shl(32); } catch (_) {}
+        this.heapBase = heapBase;
         log(` x28=${ctx.x28} heapBase=${heapBase}`);
         const found = [];
         // Dart 3.12 arm64: receiver=x1, args=x2,x3,x5,x6,x7. Inspect all.
@@ -734,6 +810,7 @@ function install(mod) {
               try {
                 log(`Google search starting for ${JSON.stringify(qClean)} …`);
                 const results = runGoogleSearch(qClean);
+                if (results && results.length) { _lastGoogleResults = results; }
                 if (results && results.length) {
                   log(`GOOGLE RESULTS (${results.length}) for ${JSON.stringify(qClean)}:`);
                   results.forEach((r, i) => log(`  [${i}] ${r.name} @ ${r.latitude},${r.longitude} (${r.address || 'no addr'})`));
@@ -748,9 +825,22 @@ function install(mod) {
         log('onEnter guarded error (original search preserved): ' + e);
       }
     },
-    onLeave(retval) { /* delivery/fallback point — pending live iteration */ },
+    onLeave(retval) {
+      try {
+        if (HITS2 > 3) return; // inspect only the first few hits to limit noise
+        const hb = this.heapBase;
+        log(`----- onLeave HIT #${HITS2}: retval=${retval} -----`);
+        _dumpBudget = 300;
+        deepDump('retval', retval, hb, 4);
+        // The result list may not be the return value (delivery is async via
+        // NativePort). Also walk the receiver (x1) — the repo/bloc may hold it.
+        _dumpBudget = 300;
+        try { deepDump('x1recv', this.context.x1, hb, 3); } catch (_) {}
+        log('----- end onLeave -----');
+      } catch (e) { log('onLeave error: ' + e); }
+    },
   });
-  log('hook installed (compressed-pointer decoder).');
+  log('hook installed (compressed-pointer decoder + return inspector).');
 }
 
 function extractSearchText(decoded) {
@@ -769,6 +859,7 @@ function extractSearchText(decoded) {
 log('script loaded — starting beacon + curl hook');
 beacon(1);
 try { installCurlHook(); } catch (e) { log('curl hook boot error: ' + e); }
+try { installPostCObjectProbe(); } catch (e) { log('NativePort probe boot error: ' + e); }
 
 (function bootDart() {
   if (typeof bootDart.tries === 'undefined') bootDart.tries = 0;
