@@ -765,6 +765,71 @@ function deepDump(label, raw, heapBase, depth) {
   } catch (_) {}
 }
 
+// ---- Mutation primitives (the actual delivery attempt, not just recon) -----
+// Find the first writable String node reachable from `raw`. Returns
+// {base, len} (untagged object base + its CURRENT allocated length) or null.
+let _findBudget = 0;
+function findFirstString(raw, heapBase, depth) {
+  if (_findBudget <= 0) return null;
+  try {
+    if (!raw || raw.isNull() || raw.and(1).toInt32() !== 1) return null;
+    _findBudget--;
+    const base = raw.sub(1);
+    const s = decodeStringAt(base);
+    if (s && s.text.length >= 1 && _printableRatio(s.text) >= 0.85) return { base, len: s.len };
+    if (!heapBase || depth <= 0) return null;
+    for (let off = 8; off <= 8 + 4 * 40; off += 4) {
+      if (_findBudget <= 0) break;
+      let v32; try { v32 = base.add(off).readU32(); } catch (_) { break; }
+      if ((v32 & 1) !== 1) continue;
+      let child; try { child = heapBase.add(v32); } catch (_) { continue; }
+      const found = findFirstString(child, heapBase, depth - 1);
+      if (found) return found;
+    }
+    return null;
+  } catch (_) { return null; }
+}
+// Find the first pair of coordinate-looking doubles reachable from `raw`.
+// Returns {base, latOff, lngOff} or null.
+let _findBudget2 = 0;
+function findFirstCoordPair(raw, heapBase, depth) {
+  if (_findBudget2 <= 0) return null;
+  try {
+    if (!raw || raw.isNull() || raw.and(1).toInt32() !== 1) return null;
+    _findBudget2--;
+    const base = raw.sub(1);
+    const hits = [];
+    for (let off = 8; off <= 8 + 8 * 16; off += 8) {
+      try { const d = base.add(off).readDouble(); if (looksLikeCoord(d)) hits.push(off); } catch (_) {}
+    }
+    if (hits.length >= 2) return { base, latOff: hits[0], lngOff: hits[1] };
+    if (!heapBase || depth <= 0) return null;
+    for (let off = 8; off <= 8 + 4 * 40; off += 4) {
+      if (_findBudget2 <= 0) break;
+      let v32; try { v32 = base.add(off).readU32(); } catch (_) { break; }
+      if ((v32 & 1) !== 1) continue;
+      let child; try { child = heapBase.add(v32); } catch (_) { continue; }
+      const found = findFirstCoordPair(child, heapBase, depth - 1);
+      if (found) return found;
+    }
+    return null;
+  } catch (_) { return null; }
+}
+// Overwrite an EXISTING OneByteString's bytes in place. Length can only
+// shrink (or stay equal) — never grows past the original allocation, so this
+// is always safe to attempt: a too-long replacement is truncated, never
+// corrupts adjacent heap objects.
+function patchStringInPlace(node, newText) {
+  try {
+    const text = newText.length > node.len ? newText.slice(0, node.len) : newText;
+    const bytes = [];
+    for (let i = 0; i < text.length; i++) bytes.push(text.charCodeAt(i) & 0xff);
+    node.base.add(8).writeU32(text.length << 1); // shrink the length Smi
+    node.base.add(0x10).writeByteArray(bytes);
+    return text;
+  } catch (e) { log('patchStringInPlace error: ' + e); return null; }
+}
+
 // ---- Hook install ----------------------------------------------------------
 function install(mod) {
   const target = mod.base.add(TARGET.offsets.searchRepositoryImplSearch);
@@ -897,6 +962,7 @@ function installObjectMethodHook(mod) {
         // x1 is the handle the caller already unwrapped (often a Smi
         // pointerId, sometimes a small List/Map) — dump it briefly.
         this.omHeapBase = heapBase;
+        this.omMethod = methodNameStr;
         _dumpBudget = 40;
         try { deepDump('  handle(x1)', ctx.x1, heapBase, 2); } catch (_) {}
       } catch (e) { log('objectMethod onEnter error: ' + e); }
@@ -907,6 +973,40 @@ function installObjectMethodHook(mod) {
         log(`    -> result: ${retval}`);
         _dumpBudget = 60;
         deepDump('  result', retval, this.omHeapBase, 4);
+
+        // ---- ACTUAL DELIVERY ATTEMPT (not just recon) -----------------
+        // If we have a resolved Google result for the current query, try to
+        // overwrite what this getter just returned so the on-screen row
+        // shows Google's data instead of the native engine's. Guarded and
+        // best-effort: on any failure the original result is untouched.
+        const g = _lastGoogleResults && _lastGoogleResults[0];
+        if (!g) { log('    (no pending Google result — mutation skipped)'); return; }
+        const m = this.omMethod;
+        if (m === 'getName' || m === 'getAddress') {
+          const wantText = m === 'getName' ? g.name : (g.address || g.name);
+          _findBudget = 60;
+          const node = findFirstString(retval, this.omHeapBase, 4);
+          if (node) {
+            const applied = patchStringInPlace(node, wantText);
+            log(applied
+              ? `    >>> MUTATION APPLIED: ${m} string patched -> ${JSON.stringify(applied)} (orig cap ${node.len} chars)`
+              : `    >>> MUTATION FAILED: ${m} patch threw`);
+          } else {
+            log(`    >>> MUTATION SKIPPED: no String field found in ${m} result to patch`);
+          }
+        } else if (m === 'getCoordinates') {
+          _findBudget2 = 60;
+          const pair = findFirstCoordPair(retval, this.omHeapBase, 4);
+          if (pair) {
+            try {
+              pair.base.add(pair.latOff).writeDouble(g.latitude);
+              pair.base.add(pair.lngOff).writeDouble(g.longitude);
+              log(`    >>> MUTATION APPLIED: coordinates patched -> ${g.latitude},${g.longitude} (was @ +${pair.latOff}/+${pair.lngOff})`);
+            } catch (e) { log('    >>> MUTATION FAILED: coordinates write error: ' + e); }
+          } else {
+            log('    >>> MUTATION SKIPPED: no coordinate-looking double pair found');
+          }
+        }
       } catch (e) { log('objectMethod onLeave error: ' + e); }
     },
   });
