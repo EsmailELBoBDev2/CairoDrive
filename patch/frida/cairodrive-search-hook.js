@@ -61,6 +61,14 @@ const TARGET = {
     searchRepositoryImplSearch: 0x926cc4, // ★ query in, List<Landmark> out
     searchServiceSearch: 0x9275d8, // original Magic Lane path (fallback)
     searchMenuTextEvent: 0x926770, // SearchTextEvent / "searchText"
+    // Confirmed via a real Blutter run against this exact libapp.so (class id
+    // 4017 for SearchRepositoryImpl matched our own live cid readout exactly,
+    // and both offsets above matched byte-for-byte): every Landmark property
+    // read (name/address/coordinates/id) funnels through this ONE static
+    // bridge: objectMethod(handle, className, methodName, {args, ...}) ->
+    // marshals into native libGEM and back. This is a single choke point
+    // covering all Landmark getters — see gem_kit_platform_interface.dart.
+    objectMethod: 0x6c79f0,
   },
 };
 
@@ -843,6 +851,67 @@ function install(mod) {
   log('hook installed (compressed-pointer decoder + return inspector).');
 }
 
+// ---- objectMethod hook: the universal native-SDK property bridge -----------
+// Confirmed via Blutter: Landmark.name / .address / .coordinates / .id are
+// ALL implemented as objectMethod(handle, "Landmark", "<getterName>", {args})
+// -> native libGEM -> a Map<String,dynamic> result. This single function is
+// called constantly for map rendering too, so we cheaply filter on the
+// className arg (x2) BEFORE doing any deeper decode, and cap total logged
+// hits so this can't flood logcat or slow the app to a crawl.
+let _omHits = 0;
+const OM_LOG_CAP = 60;
+function installObjectMethodHook(mod) {
+  const off = TARGET.offsets.objectMethod;
+  if (!off) { log('objectMethod offset not configured — skipping bridge hook'); return; }
+  const target = mod.base.add(off);
+  log(`objectMethod @ ${target} — hooking native SDK property bridge (Landmark-filtered)`);
+  Interceptor.attach(target, {
+    onEnter(args) {
+      try {
+        const ctx = this.context;
+        let heapBase = null; try { heapBase = ctx.x28.shl(32); } catch (_) {}
+        // x2 = className arg. Cheap bail-out: decode only this first.
+        let classNameStr = null;
+        try {
+          const x2 = ctx.x2;
+          if (x2 && !x2.isNull() && x2.and(1).toInt32() === 1) {
+            const s = decodeStringAt(x2.sub(1));
+            if (s) classNameStr = s.text;
+          }
+        } catch (_) {}
+        if (classNameStr !== 'Landmark') { this.omInteresting = false; return; }
+        if (_omHits >= OM_LOG_CAP) { this.omInteresting = false; return; }
+        _omHits++;
+        this.omInteresting = true;
+
+        let methodNameStr = null;
+        try {
+          const x3 = ctx.x3;
+          if (x3 && !x3.isNull() && x3.and(1).toInt32() === 1) {
+            const s = decodeStringAt(x3.sub(1));
+            if (s) methodNameStr = s.text;
+          }
+        } catch (_) {}
+
+        log(`### objectMethod[#${_omHits}] Landmark.${methodNameStr || '?'}  (x1=${ctx.x1})`);
+        // x1 is the handle the caller already unwrapped (often a Smi
+        // pointerId, sometimes a small List/Map) — dump it briefly.
+        this.omHeapBase = heapBase;
+        _dumpBudget = 40;
+        try { deepDump('  handle(x1)', ctx.x1, heapBase, 2); } catch (_) {}
+      } catch (e) { log('objectMethod onEnter error: ' + e); }
+    },
+    onLeave(retval) {
+      try {
+        if (!this.omInteresting) return;
+        log(`    -> result: ${retval}`);
+        _dumpBudget = 60;
+        deepDump('  result', retval, this.omHeapBase, 4);
+      } catch (e) { log('objectMethod onLeave error: ' + e); }
+    },
+  });
+}
+
 function extractSearchText(decoded) {
   if (typeof decoded === 'string') return decoded;
   if (decoded && typeof decoded === 'object') {
@@ -885,5 +954,6 @@ try { installPostCObjectProbe(); } catch (e) { log('NativePort probe boot error:
   log('version gate PASSED; resolving identity + installing hook.');
   try { resolveIdentity(); } catch (e) { log('resolveIdentity error: ' + e); }
   install(mod);
+  try { installObjectMethodHook(mod); } catch (e) { log('objectMethod hook boot error: ' + e); }
   log('==================== boot complete; search to trigger ================');
 })();
